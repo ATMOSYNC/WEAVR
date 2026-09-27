@@ -41,7 +41,12 @@ IMD gauges — the probabilistic counterpart to Phase 1's Tier 0 baseline —
 and documents its dispersion characteristics (`weavr.verify.spread_skill_ratio`,
 `calibrated_spread_skill_ratio`): the lagged ensemble is measured to be
 strongly under-dispersive at every lead, a finding later phases' weighting
-decisions need to account for.
+decisions need to account for. See
+[docs/phase3-cv-and-regional-scheme.md](docs/phase3-cv-and-regional-scheme.md)
+for Phase 3's scoping decisions, and
+[src/weavr/regions.py](src/weavr/regions.py) for `assign_regions`, which
+pools weavr's common India grid into Sreekala & Babu's six homogeneous
+monsoon rainfall zones (WC/SI/WI/CI/NE1/NE2) for per-region skill weighting.
 
 ## Development
 
