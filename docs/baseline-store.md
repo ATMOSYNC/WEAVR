@@ -219,3 +219,57 @@ python scripts/build_lagged_ensemble_store.py
 Override the output location, window, lead hours, init cadence, or lag
 parameters via `--out`, `--start`/`--end`, `--lead-hours`,
 `--init-cadence-days`, `--n-lags`, `--lag-spacing-hours`.
+
+## Phase 4 addition: the real IFS 50-member ensemble store
+
+This row's own earlier note ("full-ensemble access is a Phase 1+ decision
+if BMA/EMOS needs individual members") is now exercised: Phase 4's
+EMOS-CSG/BMA combiners need a real per-member ensemble spread, not the
+collapsed `ifs_ens_mean` field, so `scripts/build_ifs_ensemble_store.py`
+pulls WeatherBench 2's real, uncollapsed 50-member IFS ensemble
+(`gs://weatherbench2/datasets/ifs_ens/2018-2022-1440x721.zarr`) for
+`total_precipitation_24hr` only, at exactly `data/baseline_2020_jjas.zarr`'s
+own 18 weekly JJAS-2020 timestamps (read directly from that store, not
+re-derived) and 5 lead hours, into `data/ifs_ens_2020_jjas.zarr`
+(`(time, member, prediction_timedelta, latitude, longitude)`, `member` 1-50,
+renamed from the raw archive's own `number` coordinate for consistency with
+`weavr.verify`'s `member_dim="member"` convention).
+
+**Real cost, measured live**: each `(time, prediction_timedelta)` pair is
+one native Zarr chunk bundling all 50 members and the full global grid
+(confirmed directly: chunk shape `(1, 50, 1, 721, 1440)`) — a single-chunk
+probe measured **~34s and ~208MB** for `total_precipitation_24hr` alone.
+Fetching one variable only (not the 2-variable estimate
+`docs/phase-1-data-requirements.md` originally scoped) puts real cost at
+**18 timestamps × 5 leads = 90 chunks, ~183.8s/timestamp average, ~55
+minutes of real GCS transfer time, ~277MB on disk** (Zarr compression
+shrinks this well below the raw ~19GB transferred) — smaller than the
+original ~2-2.5h/~30-35GB two-variable estimate, as expected.
+
+**A real operational problem found running the full pull, not estimated:**
+this machine's idle-sleep silently killed the fetch's live GCS connections
+three separate times mid-run (confirmed via `nettop`: `bytes_in` frozen
+byte-for-byte across repeated checks, not just slow) — the script's own
+resumability (each successful timestamp cached to a small per-timestamp
+NetCDF file in `data/ifs_ens_2020_jjas.zarr.staging/`, with the manifest
+skipping already-fetched timestamps on retry) meant each stall only cost
+the one in-flight timestamp's progress, not the whole run, and a real
+keep-awake hold requested partway through stopped it recurring. No
+production code was affected by this — it's an operational note about
+running a multi-minute unattended fetch on a laptop, not a bug in the
+fetch logic itself, but worth recording since it will recur for any
+similarly long-running local fetch this project runs later.
+
+Every timestamp fetched cleanly (no all-NaN cells, no missing members) —
+unlike GraphCast's lagged pseudo-ensemble, the real IFS archive has no
+lead-range gap to produce fewer-than-full members at short leads.
+
+```bash
+python scripts/build_ifs_ensemble_store.py
+```
+
+Override the output location, baseline store to align against, or lead
+hours via `--out`, `--baseline-store`, `--lead-hours`. Idempotent and
+resumable: a failed or interrupted run can simply be re-invoked, and
+already-fetched timestamps (cached in the `.staging` directory next to the
+output store) are skipped, not re-fetched.
