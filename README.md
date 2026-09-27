@@ -18,6 +18,10 @@ climatology archive SEEPS/ACC-for-precipitation need.
 [src/weavr/verify.py](src/weavr/verify.py) implements the Phase 1
 verification protocol itself: RMSE/bias/ACC, CRPS/Brier, SEEPS, FSS, and
 POD/FAR/CSI/ETS at IMD's own rain thresholds.
+[src/weavr/splits.py](src/weavr/splits.py) is the only sanctioned way to
+split time series data in this codebase: `leave_one_year_out` (needs 2+
+years, not yet true for the current single-season baseline store) and
+`seasonal_block_split` (usable now) — never a random split.
 
 ## Development
 
