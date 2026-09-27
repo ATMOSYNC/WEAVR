@@ -15,6 +15,9 @@ useful for Phase 1 bias-correction work. See
 what each Phase 1 verification metric needs and what was extended:
 `scripts/build_seeps_climatology.py` builds the multi-year IMD-only
 climatology archive SEEPS/ACC-for-precipitation need.
+[src/weavr/verify.py](src/weavr/verify.py) implements the Phase 1
+verification protocol itself: RMSE/bias/ACC, CRPS/Brier, SEEPS, FSS, and
+POD/FAR/CSI/ETS at IMD's own rain thresholds.
 
 ## Development
 
