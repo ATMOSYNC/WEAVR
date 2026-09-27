@@ -121,6 +121,15 @@ scope; Neal et al.'s 30-weather-pattern classification (covers only
 1979-2016, not this project's 2020 season) and western-disturbance
 presence (real, but ~50x rarer in JJAS than winter -- near-zero signal in
 a JJAS-only season) are not.
+[src/weavr/regimes.py](src/weavr/regimes.py) implements the first
+covariate directly (`classify_monsoon_active_break`, spot-checked against
+real, independently reported 2020 monsoon activity); the other two are
+built by [scripts/fetch_omi_mjo_index.py](scripts/fetch_omi_mjo_index.py)
+and
+[scripts/build_monsoon_depression_index.py](scripts/build_monsoon_depression_index.py)
+-- real per-category counts for all three (14 active / 3 break days; an
+8-phase MJO spread; 14 real depression-or-stronger days) are in
+`docs/phase5-regime-covariate-scope.md`'s own step 2 update.
 
 ## Development
 

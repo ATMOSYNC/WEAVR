@@ -130,3 +130,40 @@ break, MJO phase (OMI), and monsoon-depression presence.
 | Monsoon-depression presence | In scope, new fetch | Vishnu et al. (2020) methodology; kieranmrhunt/monsoon-low-atlas's extended catalogue, provenance to be re-verified in step 2 |
 | Western-disturbance presence | Out of scope | Real data likely exists, but ~50x rarer in JJAS than winter — near-zero signal in a JJAS-only single season |
 | Neal et al. (2022) 30-pattern classification | Out of scope | Real dataset, but covers only 1979-2016, not this project's 2020 season; reproducing it needs new clustering methodology, not a data fetch |
+
+## Step 2 results: all three built, real per-category counts
+
+All three in-scope covariates were built for real against 2020 JJAS
+(`src/weavr/regimes.py`, `scripts/fetch_omi_mjo_index.py`,
+`scripts/build_monsoon_depression_index.py`):
+
+- **Monsoon active/break**: of 122 real JJAS days, **14 active** (2020-08-13
+  to 08-17 and 08-20 to 08-24 and 08-27 to 08-30, three separate ≥3-day
+  spells) and **3 break** (2020-09-28 to 09-30, at monsoon withdrawal);
+  105 neutral. Spot-checked against a real, independently reported source
+  (not just internal consistency): contemporary coverage of the 2020
+  monsoon season reports "a very active monsoon from August 11 to 14"
+  and renewed heavy rain "from August 18" — this classifier's own computed
+  active spells (Aug 13-17, Aug 20-24) land within 1-2 days of both real
+  reported windows, a real, checked correspondence (not an exact match,
+  expected given the pooled-climatology simplification documented above).
+- **MJO phase**: real OMI PC1/PC2 fetched for all 122 JJAS days; every one
+  of the 8 phases occurs at least 7 times across the season (phase counts:
+  1:10, 2:7, 3:23, 4:17, 5:12, 6:13, 7:17, 8:23) — a real, usable spread
+  for conditioning, not concentrated in one or two phases.
+- **Monsoon-depression presence**: 2,059 real hourly low-pressure-system
+  positions found in the India domain over 2020 JJAS (1,886 "low", 109
+  "depression", 44 "deep_depression", 20 "cyclonic_storm"); after
+  requiring depression-or-stronger (`imd_category >= 2`) and collapsing to
+  IMD days, **14 of 122 days** have a real depression (or stronger)
+  present.
+
+Provenance note, resolved: the v5.6 catalogue flagged as unverified in
+step 1 is confirmed still unpublished (`"zenodo_status": "not_published"`
+in its own release manifest, checked again here). **v5.5.1 is the version
+actually used** — confirmed published (Zenodo DOI 10.5281/zenodo.22142640,
+`"zenodo_status": "published"` in its own release manifest) and
+successfully downloaded (61MB parquet, 287,773 real rows, 58 columns
+including a direct IMD-equivalent `imd_category`/`imd_label` classification
+this project uses as-is rather than re-deriving one from raw intensity
+fields).

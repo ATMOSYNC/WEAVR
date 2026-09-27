@@ -21,6 +21,8 @@ dependencies = [
     "netcdf4",
     "xskillscore",
     "scipy",
+    "pyarrow",
+    "requests",
 ]
 
 [project.optional-dependencies]
