@@ -77,6 +77,15 @@ into IMD's rain-intensity bins (dry/light/heavy/very_heavy/extremely_heavy
 contingency scoring at the same thresholds, with missing (NaN) forecast
 values explicitly excluded rather than silently landing in the last bin
 (`numpy.digitize`'s own default behavior).
+[src/weavr/emos.py](src/weavr/emos.py) implements issue #6's named default
+combiner, EMOS-CSG: `fit_emos_csg` fits a censored-shifted-gamma
+distribution (Scheuerer & Hamill 2015; Baran & Nemoda 2016) per rain-
+intensity bin, per ensemble source, minimizing CRPS via a from-scratch,
+numerically-verified closed form (`csgd_crps`) rather than the paper's own
+published equation, which did not reproduce the correct value when checked
+against brute-force numerical integration. Falls back to a point-mass-at-
+zero prediction, flagged via `CensoredShiftedGammaResult.is_fallback`, for
+a bin with too few train days or a degenerate (all-dry) climatology.
 
 ## Development
 
