@@ -140,13 +140,22 @@ no ensemble spread of their own. HRES and `ifs_ens_mean` are untouched.
   2019-11-16..2021-01-31, Pangu covers 2018-01-01..2022-12-31. **No sample
   point runs off either archive's edge in the time dimension.**
 - **Member availability is limited by lead range, not by archive edge, and
-  only at the two shortest lead times.** Both archives' `prediction_timedelta`
-  axis starts at 6h (no 0h or negative lead exists). A lagged member
-  initialized *after* the nominal init time needs a *shorter* lead to reach
-  the same valid time; at nominal lead 24h, offsets of +36h/+48h would need
-  leads of -12h/-24h, which don't exist. Measured directly: **lead=24h gets
-  6 of 9 members, lead=48h gets 8 of 9, and lead=72h/96h/120h all get the
-  full 9** — not padded with a substitute value, left as fewer real members.
+  only at the shortest lead times — differently per variable.** Both
+  archives' `prediction_timedelta` axis starts at 6h (no 0h or negative lead
+  exists). A lagged member initialized *after* the nominal init time needs a
+  *shorter* lead to reach the same valid time; at nominal lead 24h, offsets
+  of +36h/+48h would need leads of -12h/-24h, which don't exist for either
+  variable. This alone gives **`2m_temperature`: lead=24h gets 6 of 9
+  members, lead=48h gets 8 of 9, lead=72h+ gets the full 9.**
+  **`total_precipitation_24hr` has a second, stricter constraint**, found
+  only by checking the actual fetched *values* (not assumed to match
+  temperature's pattern, which was the original mistake here — see the
+  "second real bug" note below): a 24-hour precipitation accumulation is
+  NaN in WeatherBench 2's own data for any lead below 24h, even though the
+  index entry exists at every 6h step. This gives
+  **`total_precipitation_24hr`: lead=24h gets 5 of 9 members, lead=48h gets
+  7 of 9, lead=72h+ gets the full 9** — not padded with a substitute value,
+  left as fewer real members.
 - **Fetch cost, measured live**: a single-chunk fetch measured ~2.3-2.6s for
   both sources (consistent with Phase 0's ~0.75-2s estimate for this chunk
   shape). The exact set of needed (nominal_time, lead, offset) combinations
@@ -173,6 +182,26 @@ stall) before re-running the full pull, which then completed well inside
 20 minutes for both sources combined — comfortably under the naive
 ~92-minute serial estimate, since per-week batching gives real, stable
 concurrency instead of either a stall or an unparallelized serial crawl.
+
+**A second real bug, found later while implementing Phase 2 step 4's
+dispersion diagnostics, not during this step's original execution:** this
+doc originally claimed `total_precipitation_24hr` followed the same 6/9,
+8/9, 9/9 pattern as `2m_temperature`, because the original verification
+checked the NaN pattern using `2m_temperature` as a stand-in for "the
+graphcast group" and never re-checked it against the precipitation
+variable specifically. Measuring the real dispersion numbers for
+precipitation surfaced a mismatch (5 members counted, not the expected 6)
+that traced back to WeatherBench 2's `total_precipitation_24hr` being NaN
+below 24h lead (see above) — a genuinely different, stricter constraint
+this doc had silently conflated with temperature's. This also uncovered a
+related bug in `src/weavr/ensemble.py`'s `build_lagged_ensemble`, which
+counted a member as valid whenever `.sel()` didn't raise, without checking
+whether the returned data was itself all-NaN — fixed there, with a
+regression test (`tests/test_ensemble.py::TestBuildLaggedEnsembleAllNanValues`)
+using a synthetic source that reproduces this exact index-exists-but-data-
+is-NaN shape. The store's own fetched *data* was never wrong (it correctly
+contains real NaNs at these cells); only this doc's and `ensemble.py`'s
+*description/count* of validity was.
 
 Store layout: one group per source (`graphcast`, `pangu`), each indexed by
 `(nominal_time, lead_hours, member_offset_hours, latitude, longitude)` —

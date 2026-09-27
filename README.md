@@ -37,7 +37,11 @@ lagged ensemble from an already-open source dataset, producing the
 [docs/phase2-ensemble-baseline-results.md](docs/phase2-ensemble-baseline-results.md)
 for Phase 2's exit criterion: `scripts/run_phase2_ensemble_baseline.py`
 scores GraphCast's lagged precipitation ensemble with CRPS/Brier against
-IMD gauges — the probabilistic counterpart to Phase 1's Tier 0 baseline.
+IMD gauges — the probabilistic counterpart to Phase 1's Tier 0 baseline —
+and documents its dispersion characteristics (`weavr.verify.spread_skill_ratio`,
+`calibrated_spread_skill_ratio`): the lagged ensemble is measured to be
+strongly under-dispersive at every lead, a finding later phases' weighting
+decisions need to account for.
 
 ## Development
 

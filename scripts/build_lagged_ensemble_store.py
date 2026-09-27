@@ -26,14 +26,22 @@ Scope, decided by what was checked, not assumed:
   so every nominal forecast gets a full 9-member window at the *time* axis.
   This is a checked finding, not an assumption -- see docs/baseline-store.md.
 - **Member availability is limited by *lead*, not by archive edge, and only at
-  the two shortest lead times.** Both archives' `prediction_timedelta` axis
-  starts at 6h (there is no 0h or negative lead). A lagged member initialized
-  *after* the nominal init time needs a *shorter* lead to reach the same valid
-  time (required_lead = nominal_lead - offset_hours); at nominal_lead=24h, an
-  offset of +36h or +48h would need a lead of -12h or -24h, which does not
-  exist. Measured directly against both sources' real `prediction_timedelta`
-  index (6h steps, 6..240h): **lead=24h gets 6 of 9 members, lead=48h gets 8 of
-  9, and lead=72h/96h/120h all get the full 9** -- documented here and in
+  the shortest lead times -- differently per variable.** Both archives'
+  `prediction_timedelta` axis starts at 6h (there is no 0h or negative lead).
+  A lagged member initialized *after* the nominal init time needs a *shorter*
+  lead to reach the same valid time (required_lead = nominal_lead -
+  offset_hours); at nominal_lead=24h, an offset of +36h or +48h would need a
+  lead of -12h or -24h, which does not exist for either variable. This alone
+  gives **`2m_temperature`: lead=24h gets 6 of 9 members, lead=48h gets 8 of
+  9, lead=72h+ gets the full 9.** `total_precipitation_24hr` has a second,
+  stricter constraint on top of that, found only by checking the actual
+  fetched values (not assumed to match temperature's pattern): the source
+  index exists at every 6h step, but the *data itself* is NaN for any lead
+  below 24h -- a 24-hour accumulation isn't defined until a full 24h of
+  forecast has elapsed. This gives **`total_precipitation_24hr`: lead=24h
+  gets 5 of 9 members, lead=48h gets 7 of 9, lead=72h+ gets the full 9** (see
+  `src/weavr/ensemble.py`'s `build_lagged_ensemble`, which checks fetched
+  values for this, not just index existence). Documented here and in
   docs/baseline-store.md rather than padding the missing members with a
   substitute value.
 - **Fetch cost, measured live**: a single-chunk fetch (one (time,
