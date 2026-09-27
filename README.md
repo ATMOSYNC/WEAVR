@@ -86,6 +86,19 @@ published equation, which did not reproduce the correct value when checked
 against brute-force numerical integration. Falls back to a point-mass-at-
 zero prediction, flagged via `CensoredShiftedGammaResult.is_fallback`, for
 a bin with too few train days or a degenerate (all-dry) climatology.
+[src/weavr/bma.py](src/weavr/bma.py) implements issue #6's named
+comparison combiner, hierarchical BMA: `fit_hierarchical_bma` fits a
+mixture, per rain-intensity bin and per `weavr.regions` zone, of each
+source's own point-mass-plus-power-transformed-gamma predictive
+distribution (Sloughter et al. 2007 -- not Raftery et al. 2005's Gaussian
+form), with mixture weights fit by EM. Ensemble sources (GraphCast, IFS)
+regress their component's variance on real per-cell ensemble spread;
+HRES, with no ensemble, uses Sloughter et al.'s own fixed-variance
+"kernel dressing" route instead. `score_bma` estimates CRPS via Monte
+Carlo sampling (no closed form exists for a general mixture), reusing
+`weavr.verify.crps`'s ensemble machinery -- the same predict/score
+interface shape as `weavr.emos.score_csgd`, so Phase 4's final comparison
+can call both combiners identically.
 
 ## Development
 
