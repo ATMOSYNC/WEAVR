@@ -30,6 +30,10 @@ See [docs/baseline-store.md](docs/baseline-store.md)'s Phase 2 addition for
 Pangu init times a ±4-starts/12h-spaced lagged ensemble needs, turning these
 deterministic AI models into probabilistic ensembles comparable to NWP
 ensemble members.
+[src/weavr/ensemble.py](src/weavr/ensemble.py) is the pure-function
+counterpart: `build_lagged_ensemble` assembles one nominal forecast's
+lagged ensemble from an already-open source dataset, producing the
+`member`-dimensioned shape `verify.py`'s `crps`/`brier_score` expect.
 
 ## Development
 
