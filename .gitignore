@@ -14,5 +14,6 @@ coverage.xml
 htmlcov/
 *.nc
 *.zarr
+/data/
 .env
 .DS_Store

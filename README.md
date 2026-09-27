@@ -3,7 +3,11 @@
 Hybrid AI–NWP multi-model forecast blending (SIH PS 26081).
 
 See [docs/phase-plan.md](docs/phase-plan.md) for the build plan, tracked as
-GitHub issues per phase.
+GitHub issues per phase. See [docs/data-sources.md](docs/data-sources.md),
+[docs/grid-and-time-convention.md](docs/grid-and-time-convention.md), and
+[docs/baseline-store.md](docs/baseline-store.md) for the Phase 0 data
+pipeline: `scripts/build_baseline_store.py` builds the baseline JJAS
+forecast + IMD observation store.
 
 ## Development
 
