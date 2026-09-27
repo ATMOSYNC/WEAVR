@@ -47,6 +47,11 @@ for Phase 3's scoping decisions, and
 [src/weavr/regions.py](src/weavr/regions.py) for `assign_regions`, which
 pools weavr's common India grid into Sreekala & Babu's six homogeneous
 monsoon rainfall zones (WC/SI/WI/CI/NE1/NE2) for per-region skill weighting.
+[src/weavr/weighting.py](src/weavr/weighting.py) fits those per-region
+weights (`fit_region_weights`): unconstrained regression per Wanders &
+Wood (2016), negative weights clipped to zero (Wang et al. 2025) and
+renormalized to sum to 1, with a documented equal-weight fallback for
+regions with too few train samples or a rank-deficient fit.
 
 ## Development
 
