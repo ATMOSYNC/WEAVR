@@ -58,6 +58,13 @@ fits and scores the real regional blend against IMD gauges and compares
 it directly, region by region and lead by lead, against Tier 0's
 equal-weight mean — the regional blend wins domain-wide at every lead and
 in 22 of 30 region×lead cells, not universally, reported plainly either way.
+See [docs/phase4-data-and-combiner-scope.md](docs/phase4-data-and-combiner-scope.md)
+for Phase 4's scoping decisions: `seasonal_block_split` substitutes for an
+unreachable rolling training window, GraphCast's lagged pseudo-ensemble
+plus a newly-decided real IFS 50-member ensemble pull back the EMOS-CSG/BMA
+combiners (HEPPI is a validation reference only, not training data), and
+the real per-bin sample counts found the extreme-rain bin (204.5mm+) is
+never fittable at any lead.
 
 ## Development
 
