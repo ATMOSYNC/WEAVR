@@ -25,6 +25,12 @@ years, not yet true for the current single-season baseline store) and
 [docs/tier0-baseline-results.md](docs/tier0-baseline-results.md) for Phase
 1's exit criterion: `scripts/run_tier0_baseline.py` scores the equal-weight
 mean forecast against IMD gauges — the benchmark every later phase must beat.
+[src/weavr/ensemble.py](src/weavr/ensemble.py) is Phase 2's pure-function
+core: `build_lagged_ensemble` turns a deterministic AI forecast source
+(GraphCast, Pangu) into a ±4-starts/12h-spaced lagged pseudo-ensemble for
+one nominal (init_time, lead) forecast, producing the `member`-dimensioned
+shape `verify.py`'s `crps`/`brier_score` expect. `scripts/build_lagged_ensemble_store.py`
+supplies the extra init times it needs beyond Phase 1's baseline store.
 
 ## Development
 
