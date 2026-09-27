@@ -113,3 +113,80 @@ breakdown. Two things came out of that check:
   with the reasoning). This store's `ifs_ens_mean` group therefore still
   cannot support CRPS/Brier; that isn't a bug to fix here, it's a known,
   documented limitation until Phase 2.
+
+## Phase 2 addition: lagged-ensemble input store
+
+Built separately by
+[`scripts/build_lagged_ensemble_store.py`](../scripts/build_lagged_ensemble_store.py)
+into `data/lagged_ensemble_inputs_2020_jjas.zarr` — a separate script and
+store, not an extension of `build_baseline_store.py`, because the shape of
+what it builds (a per-nominal-forecast cluster of extra init times, each
+queried at a lead adjusted to land on a shared valid time) doesn't fit this
+store's flat `(time, prediction_timedelta)` sampling grid without
+distortion — the same reasoning that made `build_seeps_climatology.py` a
+separate script in Phase 1.
+
+**Scope: GraphCast and Pangu only.** These are the phase-plan's named "AI
+models" — the ones with a single deterministic forecast per init time and
+no ensemble spread of their own. HRES and `ifs_ens_mean` are untouched.
+
+**Checked, not assumed, live against the real GCS archives:**
+
+- Both GraphCast's and Pangu's WeatherBench 2 stores are confirmed
+  12-hourly at native resolution (listing the actual zarr time index, not
+  trusting the module docstring's claim).
+- Both archives span well outside the ±48h window needed around every one
+  of Phase 1's 18 weekly JJAS-2020 sample points — GraphCast covers
+  2019-11-16..2021-01-31, Pangu covers 2018-01-01..2022-12-31. **No sample
+  point runs off either archive's edge in the time dimension.**
+- **Member availability is limited by lead range, not by archive edge, and
+  only at the two shortest lead times.** Both archives' `prediction_timedelta`
+  axis starts at 6h (no 0h or negative lead exists). A lagged member
+  initialized *after* the nominal init time needs a *shorter* lead to reach
+  the same valid time; at nominal lead 24h, offsets of +36h/+48h would need
+  leads of -12h/-24h, which don't exist. Measured directly: **lead=24h gets
+  6 of 9 members, lead=48h gets 8 of 9, and lead=72h/96h/120h all get the
+  full 9** — not padded with a substitute value, left as fewer real members.
+- **Fetch cost, measured live**: a single-chunk fetch measured ~2.3-2.6s for
+  both sources (consistent with Phase 0's ~0.75-2s estimate for this chunk
+  shape). The exact set of needed (nominal_time, lead, offset) combinations
+  — not a cartesian time×lead superset, which would have cost ~3x more — is
+  2214 chunk fetches total across both sources' variables. Short of the
+  ~2-2.5h/~30-35GB IFS full-ensemble pull Phase 1 deferred — tractable to
+  just run, not a scope-cutting tradeoff worth interrupting for.
+
+**A real bug found running the full pull, not just estimated:** the first
+implementation issued a single vectorized `xr.Dataset.sel()` call covering
+all ~1476 (time, lead) pairs for a source at once. On the real run (not the
+small smoke test, which stayed under the threshold that triggers this) that
+call **stalled indefinitely** — confirmed live, not assumed: network
+byte-counters (`nettop`) sat completely flat for 45+ seconds while the
+process was still alive, and a stack sample (`sample`) showed the async I/O
+thread parked in a socket wait (`kevent`) with the main thread blocked
+waiting on it, i.e. no forward progress, not just a slow request. Likely a
+pathological interaction between zarr v3's async I/O layer and a very large
+single vectorized selection under heavy concurrent load. **Fixed** by
+batching the fetch into one smaller vectorized `.sel()`/`.load()` call per
+nominal week (~41 combos each) instead of one call for all ~738 combos —
+verified the fix on a 4-week smoke test (bytes-in climbing steadily, no
+stall) before re-running the full pull, which then completed well inside
+20 minutes for both sources combined — comfortably under the naive
+~92-minute serial estimate, since per-week batching gives real, stable
+concurrency instead of either a stall or an unparallelized serial crawl.
+
+Store layout: one group per source (`graphcast`, `pangu`), each indexed by
+`(nominal_time, lead_hours, member_offset_hours, latitude, longitude)` —
+`nominal_time`/`lead_hours` match Phase 1's existing weekly sample points
+and lead hours exactly, `member_offset_hours` is
+`[-48, -36, -24, -12, 0, 12, 24, 36, 48]`. Cells with no valid lead in the
+source (the lead=24h/48h gaps above) are `NaN`, not a fetch failure.
+
+## Regenerating the lagged-ensemble input store
+
+```bash
+python scripts/build_lagged_ensemble_store.py
+```
+
+Override the output location, window, lead hours, init cadence, or lag
+parameters via `--out`, `--start`/`--end`, `--lead-hours`,
+`--init-cadence-days`, `--n-lags`, `--lag-spacing-hours`.
