@@ -25,6 +25,11 @@ years, not yet true for the current single-season baseline store) and
 [docs/tier0-baseline-results.md](docs/tier0-baseline-results.md) for Phase
 1's exit criterion: `scripts/run_tier0_baseline.py` scores the equal-weight
 mean forecast against IMD gauges — the benchmark every later phase must beat.
+See [docs/baseline-store.md](docs/baseline-store.md)'s Phase 2 addition for
+`scripts/build_lagged_ensemble_store.py`, which pulls the extra GraphCast/
+Pangu init times a ±4-starts/12h-spaced lagged ensemble needs, turning these
+deterministic AI models into probabilistic ensembles comparable to NWP
+ensemble members.
 
 ## Development
 
