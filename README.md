@@ -145,6 +145,17 @@ conditioned on monsoon active/break instead of spatial region); given this
 weak evidence and a training set with only 2 "active" days per lead, the
 user decided via `AskUserQuestion` not to build the optional heavier
 GBM/ViT-style gating model issue #7 names.
+[scripts/run_tier3_regime_conditioned_baseline.py](scripts/run_tier3_regime_conditioned_baseline.py)
+applies issue #7's own go/no-go criterion (decided before running it: beat
+Phase 4's real EMOS-CSG/BMA on domain-wide CRPS at >= 3 of 5 leads),
+recomputing Phase 4's own combiners on the identical split. **Result: NO
+GO** -- the regime-conditioned model wins 0 of 5 leads domain-wide, and 0
+of 15 (lead, bin) cells, reported plainly per
+`docs/phase5-regime-conditioned-results.md`'s own step 4 (which also names
+why: weak underlying regime signal, plus a structural CRPS disadvantage
+from being a deterministic point-forecast blend rather than a fitted
+predictive distribution like EMOS-CSG/BMA). Phase 5's regime-conditioned
+model is not adopted.
 
 ## Development
 

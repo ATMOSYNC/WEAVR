@@ -136,3 +136,109 @@ a two-category weight split without overfitting. Issue #7's own condition
 ("only if Phase 4 plateaus" and only with genuine headroom) is not met.
 Step 4 therefore evaluates only the simple regime-stratified reweighting
 (`src/weavr/regime_weighting.py`) against Phase 4's real Tier 2 numbers.
+
+## Step 4: the pre-stated go/no-go criterion and the real result
+
+Produced by
+[`scripts/run_tier3_regime_conditioned_baseline.py`](../scripts/run_tier3_regime_conditioned_baseline.py),
+recomputing Phase 4's own EMOS-CSG/BMA fits and scores on the identical
+aligned samples and `seasonal_block_split` the regime-conditioned blend
+uses (per Tier 1/Tier 2's own precedent -- see that script's docstring for
+why Phase 4's own recorded numbers are not read directly). Full numbers in
+[`results/tier3_regime_conditioned_baseline.csv`](../results/tier3_regime_conditioned_baseline.csv)
+(domain-wide, per lead) and
+[`results/tier3_regime_conditioned_baseline_by_bin.csv`](../results/tier3_regime_conditioned_baseline_by_bin.csv)
+(per bin).
+
+**Criterion, decided before running the script** (stated in that script's
+own docstring, not adjusted afterward): the regime-conditioned model
+"beats Phase 4" if its domain-wide CRPS is the lowest of the four methods
+at a majority of leads (>= 3 of 5) -- the same "count leads won" framing
+every prior tier in this project has used for its own headline comparison.
+
+**A real, checked scoring note**: the regime-conditioned model
+(`weavr.regime_weighting`) is structurally a Tier-1-shaped model -- a
+deterministic OLS blend of `graphcast`/`hres`/`ifs_ens_mean`, conditioned
+on monsoon phase instead of region -- not a fitted predictive distribution
+like EMOS-CSG or BMA. Its CRPS is scored via the real identity "CRPS of a
+point-mass distribution equals absolute error," the correct proper score
+for the distribution it actually outputs, not an approximation. This means
+part of any gap below is structural (a point forecast has no way to hedge
+uncertain days the way a fitted distribution can), not solely about
+whether monsoon-phase conditioning itself helped -- named plainly so the
+result isn't misread as "regime conditioning failed" when part of it is
+"a point-forecast blend was compared to two properly probabilistic
+models."
+
+### Domain-wide CRPS (mm), all four methods, same split
+
+| Lead (h) | Regime-conditioned | EMOS-graphcast | EMOS-ifs_ens | BMA | Winner |
+|---|---|---|---|---|---|
+| 24  | 5.95 | 3.76 | 3.76 | **3.72** | BMA |
+| 48  | 6.36 | **3.74** | 3.83 | 3.80 | EMOS-graphcast |
+| 72  | 6.18 | **3.64** | 3.90 | 3.83 | EMOS-graphcast |
+| 96  | 6.80 | **4.41** | 4.64 | 4.64 | EMOS-graphcast |
+| 120 | 7.22 | 4.46 | 4.55 | **4.45** | BMA |
+
+**The regime-conditioned model wins 0 of 5 leads.** By the pre-stated
+criterion (needs >= 3 of 5), this is a clean, unambiguous **NO GO** --
+not a close call decided by which metric was chosen after the fact.
+
+### Per-bin: the same result holds in every stratum, not just on aggregate
+
+Pooled CRPS by lead and bin (dry/light/heavy -- `very_heavy`/
+`extremely_heavy` are all-fallback or near-empty at every lead, as Phase 4
+step 6 already found):
+
+| Lead (h) | Bin | Regime-conditioned | EMOS-graphcast | EMOS-ifs_ens | BMA |
+|---|---|---|---|---|---|
+| 24  | dry   | 3.16 | 2.01 | 2.05 | 1.96 |
+| 24  | light | 13.48 | 8.49 | 8.38 | 8.41 |
+| 24  | heavy | 40.70 | 23.02 | 23.96 | 46.49 |
+| 48  | dry   | 3.02 | 1.78 | 1.85 | 1.80 |
+| 48  | light | 14.29 | 8.56 | 8.73 | 8.80 |
+| 48  | heavy | 62.88 | 23.29 | 21.91 | 19.33 |
+| 72  | dry   | 3.11 | 1.75 | 1.90 | 1.79 |
+| 72  | light | 12.78 | 7.71 | 8.19 | 7.99 |
+| 72  | heavy | 46.50 | 26.82 | 30.10 | 45.80 |
+| 96  | dry   | 4.01 | 2.46 | 2.60 | 2.51 |
+| 96  | light | 12.06 | 8.07 | 8.43 | 8.40 |
+| 96  | heavy | 38.00 | 27.05 | 30.99 | 61.01 |
+| 120 | dry   | 4.14 | 2.62 | 2.63 | 2.60 |
+| 120 | light | 12.61 | 7.69 | 7.92 | 7.71 |
+| 120 | heavy | 33.74 | 15.11 | 15.79 | 13.97 |
+
+The regime-conditioned model does not win a single (lead, bin) cell above
+-- consistent with the domain-wide result, not an artifact of aggregation.
+One real exception, noted for completeness but excluded from the verdict:
+at 96h, the `very_heavy` bin (a single test cell) shows the regime model
+at 26.3mm against EMOS-graphcast/EMOS-ifs_ens's 111.5mm -- but that EMOS
+cell `is_fallback=True` (a point-mass-at-zero prediction against a huge
+real observation, per `docs/tier2-hierarchical-baseline-results.md`'s own
+description of this exact cell), so this is a single degenerate-fallback
+comparison, not evidence the regime model is broadly competitive at
+extreme rain -- the same reasoning Phase 4 step 6 already used to exclude
+an analogous all-fallback cell from its own per-bin table.
+
+### Honest conclusion
+
+**No go.** The regime-conditioned model does not beat Phase 4's real
+EMOS-CSG/BMA combiners by the criterion stated before this script was run,
+at any lead, in any bin. Per this file's own established framing (Phase 3's
+regional blend not winning everywhere; Phase 4's two combiners splitting
+which they win), this is reported as this phase's real, valid outcome, not
+adjusted or re-scoped to look better. Contributing factors, both real and
+worth separating for anyone extending this work: (1) step 3.1 already found
+only weak, noisy evidence that monsoon phase explains this project's own
+error pattern, so a large win was never expected; (2) the model itself is
+a deterministic point-forecast blend, structurally at a CRPS disadvantage
+against two models that fit an actual predictive distribution -- the same
+"same small sample size, worse here" caveat every prior tier has
+stated applies doubly, since regime-conditioning can only shrink an
+already-small training pool (14 samples, 2 "active") further. This is a
+"no go on today's data," not proof monsoon-phase conditioning can never
+help -- a different, honest conclusion this file is careful to keep
+separate, per this project's own established practice.
+
+Issue #7's own go/no-go criterion has been applied, honestly, to a real fit
+against real data: Phase 5's regime-conditioned model is not adopted.
