@@ -220,7 +220,7 @@ def _fit_component(
         )
         gamma_variance_intercept = max(gamma_variance_intercept, _TINY)
     else:
-        gamma_variance_intercept = float(max(np.mean(residual_sq), _TINY))
+        gamma_variance_intercept = max(float(np.mean(residual_sq)), _TINY)
         gamma_variance_slope = 0.0
 
     return BmaComponentFit(
