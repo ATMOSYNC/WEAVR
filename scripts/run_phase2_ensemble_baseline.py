@@ -227,6 +227,12 @@ def score_precip_lead(
         for t in thresholds
     }
 
+    n_members = float(test_ensemble.notnull().sum(dim="member").mean())
+    spread_mm = float(V.ensemble_spread(test_ensemble))
+    rmse_of_mean_mm = float(V.rmse(test_ensemble.mean(dim="member", skipna=True), test_obs))
+    ratio = float(V.spread_skill_ratio(test_ensemble, test_obs))
+    calibrated_ratio = V.calibrated_spread_skill_ratio(n_members)
+
     return {
         "n_samples": int(ensemble_mm.sizes["sample"]),
         "n_train": int(train_mask.sum()),
@@ -234,6 +240,11 @@ def score_precip_lead(
         "split": split_kind,
         "crps_mm": float(V.crps(test_ensemble, test_obs)),
         "brier": brier_by_threshold,
+        "n_members": n_members,
+        "spread_mm": spread_mm,
+        "rmse_of_mean_mm": rmse_of_mean_mm,
+        "spread_skill_ratio": ratio,
+        "calibrated_spread_skill_ratio": calibrated_ratio,
     }
 
 
@@ -273,12 +284,13 @@ def main() -> int:
             print(f"[lead {lead_hours:>3}h] {group}/{var}: {result}")
 
     print("\nTemperature ensembles (built, not scored -- no matching-resolution IMD ground truth):")
-    temperature_counts = {}
+    print("Spread magnitude only below -- descriptive, no error to compare against.")
+    temperature_rows = []
     for group, var in UNSCORED_TEMPERATURE_SOURCES:
         dense = xr.open_zarr(args.lagged_store, group=group, consolidated=True).load()
         raw_ds = _reconstruct_raw_source(dense, var)
-        n_built = 0
         for lead_hours in LEAD_HOURS:
+            n_built = 0
             for nominal_time in dense["nominal_time"].values:
                 try:
                     build_lagged_ensemble(
@@ -288,8 +300,24 @@ def main() -> int:
                     n_built += 1
                 except NoLaggedMembersError:
                     pass
-        temperature_counts[f"{group}/{var}"] = n_built
-        print(f"  {group}/{var}: {n_built} ensembles built across {len(LEAD_HOURS)} leads")
+
+            ensemble = build_ensembles_for_lead(
+                raw_ds, var, dense["nominal_time"].values, lead_hours
+            )
+            spread_k = float(V.ensemble_spread(ensemble))
+            temperature_rows.append(
+                {
+                    "source": group,
+                    "variable": var,
+                    "lead_hours": lead_hours,
+                    "n_built": n_built,
+                    "spread_k": spread_k,
+                }
+            )
+            print(
+                f"  [lead {lead_hours:>3}h] {group}/{var}: {n_built} ensembles built, "
+                f"spread={spread_k:.3f} K (descriptive only, no ground truth)"
+            )
 
     out_path = Path(args.out_csv)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -302,6 +330,11 @@ def main() -> int:
         "n_train",
         "n_test",
         "crps_mm",
+        "n_members",
+        "spread_mm",
+        "rmse_of_mean_mm",
+        "spread_skill_ratio",
+        "calibrated_spread_skill_ratio",
     ]
     for t in V.IMD_RAIN_THRESHOLDS_MM:
         fieldnames.append(f"brier_{t}mm")
@@ -316,6 +349,16 @@ def main() -> int:
             writer.writerow(flat)
 
     print(f"\nWrote {out_path}")
+
+    temperature_out_path = out_path.parent / "phase2_temperature_dispersion.csv"
+    with temperature_out_path.open("w", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["source", "variable", "lead_hours", "n_built", "spread_k"]
+        )
+        writer.writeheader()
+        writer.writerows(temperature_rows)
+    print(f"Wrote {temperature_out_path}")
+
     return 0
 
 

@@ -154,6 +154,78 @@ class TestBuildLaggedEnsembleShortWindow:
         assert not bool(score.isnull().any())
 
 
+def _synthetic_precip_source(n_days: int = 20) -> xr.Dataset:
+    """A source shaped like GraphCast's real total_precipitation_24hr archive:
+    the (time, prediction_timedelta) index exists down to 6h, exactly like
+    _synthetic_source, but every value at a lead below 24h is NaN -- a real,
+    confirmed constraint (a 24-hour accumulation isn't defined until a full
+    24h of forecast has elapsed), not a missing index entry. `.sel()` on
+    these cells succeeds; the data itself is NaN.
+    """
+    times = pd.date_range("2020-06-01", periods=n_days * 2, freq="12h")
+    leads = np.arange(6, 241, 6)
+    lat = np.array([10.0, 10.25])
+    lon = np.array([70.0, 70.25])
+
+    rng = np.random.default_rng(0)
+    data = rng.normal(
+        loc=0.002, scale=0.001, size=(len(times), len(leads), len(lat), len(lon))
+    )
+    data[:, leads < 24, :, :] = np.nan
+    dims = ("time", "prediction_timedelta", "latitude", "longitude")
+    return xr.Dataset(
+        {"total_precipitation_24hr": (dims, data)},
+        coords={"time": times, "prediction_timedelta": leads, "latitude": lat, "longitude": lon},
+    )
+
+
+class TestBuildLaggedEnsembleAllNanValues:
+    def test_a_successful_fetch_with_all_nan_data_is_not_counted_as_valid(self):
+        # At lead_hours=24h, offset=+12h needs required_lead=12h -- above
+        # MIN_SOURCE_LEAD_HOURS=6h (the index exists, .sel() succeeds) but
+        # below precipitation's real 24h floor (the data is NaN there).
+        # This must be excluded from n_valid_members, not miscounted as a
+        # real member just because the fetch itself didn't raise.
+        ds = _synthetic_precip_source()
+        nominal_init = pd.Timestamp("2020-06-05T00:00:00")
+
+        ensemble = build_lagged_ensemble(
+            ds, "total_precipitation_24hr", nominal_init, lead_hours=24
+        )
+
+        # offsets -48,-36,-24,-12,0 need leads 72,60,48,36,24 -- all >=24h,
+        # real data. offset +12 needs lead 12h -- index exists, data is NaN.
+        # offsets +24,+36,+48 need leads 0,-12,-24 -- below MIN_SOURCE_LEAD_HOURS,
+        # index doesn't exist either. Only 5 of 9 are genuinely usable.
+        assert ensemble.attrs["n_valid_members"] == 5
+        assert bool(ensemble.sel(member=12).isnull().all())
+
+    def test_matches_the_real_non_null_count_exactly(self):
+        ds = _synthetic_precip_source()
+        nominal_init = pd.Timestamp("2020-06-05T00:00:00")
+
+        ensemble = build_lagged_ensemble(
+            ds, "total_precipitation_24hr", nominal_init, lead_hours=24
+        )
+
+        actual_non_null = int(ensemble.notnull().sum(dim="member").isel(latitude=0, longitude=0))
+        assert ensemble.attrs["n_valid_members"] == actual_non_null
+
+    def test_a_lead_with_no_all_nan_gap_is_unaffected(self):
+        # At lead_hours=72h, every required lead is >=24h -- the
+        # precipitation-specific NaN floor never applies, so this should
+        # behave identically to a normal temperature-like source (9/9).
+        ds = _synthetic_precip_source()
+        nominal_init = pd.Timestamp("2020-06-05T00:00:00")
+
+        ensemble = build_lagged_ensemble(
+            ds, "total_precipitation_24hr", nominal_init, lead_hours=72
+        )
+
+        assert ensemble.attrs["n_valid_members"] == 9
+        assert not bool(ensemble.isnull().any())
+
+
 class TestNoLaggedMembersError:
     def test_raises_when_every_offset_falls_outside_source_lead_range(self):
         ds = _synthetic_source()

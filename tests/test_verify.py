@@ -3,7 +3,19 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from weavr.verify import acc, bias, brier_score, contingency_scores, crps, fss, rmse, seeps
+from weavr.verify import (
+    acc,
+    bias,
+    brier_score,
+    calibrated_spread_skill_ratio,
+    contingency_scores,
+    crps,
+    ensemble_spread,
+    fss,
+    rmse,
+    seeps,
+    spread_skill_ratio,
+)
 
 
 def _da(values, dims="x"):
@@ -75,6 +87,82 @@ class TestBrierScore:
         obs_binary = _da([1.0])
         forecast = _da([0.5])
         assert float(brier_score(forecast, obs_binary, dim="x")) == pytest.approx(0.25)
+
+
+class TestCalibratedSpreadSkillRatio:
+    def test_matches_known_values(self):
+        # sqrt((M+1)/M) for M=9,8,6 -- the real member counts this project's
+        # leads produce (docs/baseline-store.md) -- not a flat 1.0.
+        assert calibrated_spread_skill_ratio(9) == pytest.approx(np.sqrt(10 / 9))
+        assert calibrated_spread_skill_ratio(8) == pytest.approx(np.sqrt(9 / 8))
+        assert calibrated_spread_skill_ratio(6) == pytest.approx(np.sqrt(7 / 6))
+
+    def test_approaches_one_as_members_grow(self):
+        assert calibrated_spread_skill_ratio(10_000) == pytest.approx(1.0, abs=1e-3)
+
+    def test_is_never_exactly_one_for_a_finite_ensemble(self):
+        assert calibrated_spread_skill_ratio(9) > 1.0
+
+
+class TestEnsembleSpread:
+    def test_zero_spread_ensemble(self):
+        ensemble = xr.DataArray(np.full((2, 5), 3.0), dims=["sample", "member"])
+        assert float(ensemble_spread(ensemble, dim="sample")) == pytest.approx(0.0)
+
+    def test_matches_ddof1_variance_directly(self):
+        rng = np.random.default_rng(0)
+        values = rng.normal(size=(1, 20))
+        ensemble = xr.DataArray(values, dims=["sample", "member"])
+        expected = float(np.sqrt(values.var(axis=1, ddof=1).mean()))
+        assert float(ensemble_spread(ensemble, dim="sample")) == pytest.approx(expected)
+
+    def test_ignores_nan_members_rather_than_treating_them_as_zero_spread(self):
+        # A short lagged window pads missing members with NaN
+        # (src/weavr/ensemble.py) -- those must be excluded from the
+        # variance calculation, not silently pull the spread toward zero.
+        with_nan = xr.DataArray(
+            np.array([[1.0, 2.0, 3.0, np.nan, np.nan]]), dims=["sample", "member"]
+        )
+        without_nan = xr.DataArray(np.array([[1.0, 2.0, 3.0]]), dims=["sample", "member"])
+
+        assert float(ensemble_spread(with_nan, dim="sample")) == pytest.approx(
+            float(ensemble_spread(without_nan, dim="sample"))
+        )
+
+
+class TestSpreadSkillRatio:
+    def test_calibrated_ensemble_scores_near_the_calibrated_ratio(self):
+        # obs and members drawn iid from the same distribution -- the
+        # definition of a perfectly reliable/calibrated ensemble -- should
+        # score a ratio close to calibrated_spread_skill_ratio(M), not 1.0
+        # and not far above it.
+        rng = np.random.default_rng(0)
+        m_members = 9
+        n_samples = 20_000
+        draws = rng.normal(size=(n_samples, m_members + 1))
+        obs = xr.DataArray(draws[:, 0], dims=["sample"])
+        ensemble = xr.DataArray(draws[:, 1:], dims=["sample", "member"])
+
+        ratio = float(spread_skill_ratio(ensemble, obs, dim="sample"))
+        calibrated = calibrated_spread_skill_ratio(m_members)
+
+        assert ratio == pytest.approx(calibrated, rel=0.05)
+
+    def test_under_dispersive_ensemble_scores_well_above_the_calibrated_ratio(self):
+        # Members clustered tightly (small spread) while obs varies far more
+        # than the ensemble does -- the real error is much larger than the
+        # ensemble's own spread, the definition of under-dispersion.
+        rng = np.random.default_rng(1)
+        n_samples = 2_000
+        obs = xr.DataArray(rng.normal(scale=10.0, size=n_samples), dims=["sample"])
+        ensemble = xr.DataArray(
+            rng.normal(loc=0.0, scale=0.1, size=(n_samples, 9)), dims=["sample", "member"]
+        )
+
+        ratio = float(spread_skill_ratio(ensemble, obs, dim="sample"))
+        calibrated = calibrated_spread_skill_ratio(9)
+
+        assert ratio > 3 * calibrated
 
 
 def _climatology_for_seeps(n_dry=150, n_wet=150, dry_value=0.0, dry_threshold=1.0):

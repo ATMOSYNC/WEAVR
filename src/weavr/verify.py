@@ -112,6 +112,73 @@ def brier_score(
     return xs.brier_score(obs_binary, probability_forecast, dim=dim)
 
 
+def ensemble_spread(
+    ensemble_forecast: xr.DataArray,
+    dim: Dim = None,
+    member_dim: str = "member",
+) -> xr.DataArray:
+    """Ensemble spread: the square root of the mean across-member variance.
+
+    Uses the unbiased (`ddof=1`) sample variance across members -- the
+    convention `calibrated_spread_skill_ratio`'s finite-ensemble-size
+    correction assumes (Fortin et al. 2014; Leutbecher & Palmer 2008), not
+    the population variance `ddof=0` would give. NaN members (a short
+    lagged window, see `src/weavr/ensemble.py`) are excluded via
+    `skipna=True`, not treated as zero-spread.
+
+    Averages *variance* across `dim` before taking the square root (not the
+    other way around) -- `E[spread^2]` is the quantity
+    `calibrated_spread_skill_ratio`'s derivation actually uses, and
+    averaging standard deviations directly would understate it (Jensen's
+    inequality: `sqrt` is concave).
+    """
+    per_sample_variance = ensemble_forecast.var(dim=member_dim, ddof=1, skipna=True)
+    mean_variance = (
+        per_sample_variance.mean(dim=dim, skipna=True)
+        if dim is not None
+        else per_sample_variance.mean(skipna=True)
+    )
+    return mean_variance**0.5
+
+
+def calibrated_spread_skill_ratio(n_members: float) -> float:
+    """The RMSE(ensemble mean)/spread ratio a *perfectly calibrated*
+    ensemble of `n_members` members should have -- not 1.0.
+
+    Verified by simulation, not assumed from a remembered formula: for a
+    reliable ensemble (obs and members drawn from the same distribution),
+    `E[(ensemble_mean - obs)^2] = (1 + 1/M) * E[ensemble_variance]`, so
+    `RMSE(mean) / spread` is expected to be `sqrt((M+1)/M)` -- e.g. ~1.054
+    for M=9, ~1.061 for M=8, ~1.080 for M=6 (the real member counts this
+    project's short-window leads produce, per docs/baseline-store.md), not
+    a flat 1.0 regardless of ensemble size.
+
+    A measured ratio well *above* this calibrated target indicates
+    under-dispersion: the ensemble's spread is narrower than a calibrated
+    ensemble of the same size would have, relative to its actual error.
+    """
+    return float(np.sqrt((n_members + 1) / n_members))
+
+
+def spread_skill_ratio(
+    ensemble_forecast: xr.DataArray,
+    obs: xr.DataArray,
+    dim: Dim = None,
+    member_dim: str = "member",
+) -> xr.DataArray:
+    """RMSE of the ensemble mean divided by the ensemble spread.
+
+    Compare against `calibrated_spread_skill_ratio(n_members)` for the same
+    `n_members`, not against 1.0 -- a calibrated ensemble's own ratio is
+    already greater than 1 due to finite-ensemble-size noise (see that
+    function's docstring). A ratio well above the calibrated target
+    indicates under-dispersion.
+    """
+    ensemble_mean = ensemble_forecast.mean(dim=member_dim, skipna=True)
+    spread = ensemble_spread(ensemble_forecast, dim=dim, member_dim=member_dim)
+    return rmse(ensemble_mean, obs, dim=dim) / spread
+
+
 # --- Categorical scores -------------------------------------------------------
 
 

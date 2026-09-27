@@ -69,13 +69,19 @@ def build_lagged_ensemble(
     (init_time, lead) pair actually produced each member, for inspection.
 
     **Members with no valid lead are NaN, not dropped, not raised on
-    individually.** A member initialized after the nominal init time needs
-    a *shorter* lead to reach the same valid time (required_lead =
-    lead_hours - offset); at short nominal leads this can fall below the
-    source's minimum lead (6h in both GraphCast's and Pangu's archives) --
-    e.g. at lead_hours=24h, offsets of +36h/+48h would need leads of
-    -12h/-24h, which don't exist (see docs/baseline-store.md's measured
-    6/9, 8/9, 9/9 member-count pattern by lead). NaN-padding to a fixed
+    individually.** Two genuinely different reasons a member can be
+    unavailable, both checked directly, not assumed to be the same case:
+    (1) the *index* doesn't exist -- a member initialized after the
+    nominal init time needs a *shorter* lead to reach the same valid time
+    (required_lead = lead_hours - offset), and this can fall below the
+    source's minimum lead (6h in both GraphCast's and Pangu's archives);
+    (2) the index exists but the *data* is NaN there anyway -- e.g.
+    WeatherBench 2's `total_precipitation_24hr` is NaN for any lead below
+    24h regardless of source, because a 24-hour accumulation isn't defined
+    until a full 24h has elapsed, a real constraint the generic 6h
+    `MIN_SOURCE_LEAD_HOURS` doesn't know about. Both cases are checked
+    explicitly (see docs/baseline-store.md's measured, per-variable
+    member-count pattern by lead). NaN-padding to a fixed
     9-member shape, rather than returning a shorter array per sample, was
     checked against `xskillscore.crps_ensemble` directly (used by
     `weavr.verify.crps`) rather than assumed safe: a 9-member array with 3
@@ -122,6 +128,20 @@ def build_lagged_ensemble(
                     }
                 )
                 member_da = member_da.drop_vars([init_time_dim, lead_dim], errors="ignore")
+                if bool(member_da.isnull().all()):
+                    # The (init_time, lead) index entry exists -- .sel() did
+                    # not raise -- but the source's own data is entirely NaN
+                    # there, a genuinely different case from a missing
+                    # index. Confirmed live, not assumed: WeatherBench 2's
+                    # total_precipitation_24hr is NaN for any lead below
+                    # 24h (a 24-hour accumulation isn't defined until a full
+                    # 24h has elapsed), even though MIN_SOURCE_LEAD_HOURS=6
+                    # (correct for temperature, which has no such floor)
+                    # lets the .sel() call through. Treating a fetch that
+                    # "succeeded" into an all-NaN array as a valid member
+                    # would overcount n_valid_members and could let
+                    # NoLaggedMembersError miss a genuinely all-NaN request.
+                    member_da = None
             except KeyError:
                 member_da = None
 
@@ -138,10 +158,10 @@ def build_lagged_ensemble(
     if n_valid == 0:
         raise NoLaggedMembersError(
             f"No lag member (of {len(offsets)} offsets, spacing={lag_spacing_hours}h) "
-            f"has a valid lead for init_time={init_timestamp}, lead_hours={lead_hours} -- "
-            f"every required lead fell outside the source's "
-            f"[{MIN_SOURCE_LEAD_HOURS}, {MAX_SOURCE_LEAD_HOURS}]h range, including the "
-            "nominal (0h) member."
+            f"produced usable data for init_time={init_timestamp}, lead_hours={lead_hours}, "
+            f"variable={variable!r} -- every required lead either fell outside the source's "
+            f"[{MIN_SOURCE_LEAD_HOURS}, {MAX_SOURCE_LEAD_HOURS}]h range or returned all-NaN "
+            "data, including the nominal (0h) member."
         )
 
     ensemble = xr.concat(member_arrays, dim=pd.Index(offsets, name="member"))
