@@ -21,7 +21,10 @@ POD/FAR/CSI/ETS at IMD's own rain thresholds.
 [src/weavr/splits.py](src/weavr/splits.py) is the only sanctioned way to
 split time series data in this codebase: `leave_one_year_out` (needs 2+
 years, not yet true for the current single-season baseline store) and
-`seasonal_block_split` (usable now) — never a random split.
+`seasonal_block_split` (usable now) — never a random split. See
+[docs/tier0-baseline-results.md](docs/tier0-baseline-results.md) for Phase
+1's exit criterion: `scripts/run_tier0_baseline.py` scores the equal-weight
+mean forecast against IMD gauges — the benchmark every later phase must beat.
 
 ## Development
 
