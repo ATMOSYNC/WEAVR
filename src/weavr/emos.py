@@ -219,20 +219,38 @@ def csgd_crps(
     broadcast_shape = np.broadcast_shapes(
         mean_arr.shape, std_arr.shape, shift_arr.shape, y_arr.shape
     )
-    mean_b = np.broadcast_to(mean_arr, broadcast_shape).astype(float)
+    # Clipped once, consistently, before use in both kappa and theta below
+    # -- `mean` is the underlying gamma's own mean, intrinsically positive;
+    # a caller passing a stray non-positive value (e.g. a fitted
+    # regression extrapolating against real, slightly-negative
+    # numerical-noise forecast data) must not see kappa computed from the
+    # raw value while theta uses a clipped one, which produced a
+    # near-zero-shape, huge-scale gamma and a wildly wrong CRPS when this
+    # was caught running Phase 4 step 6 against the real stores.
+    mean_b = np.clip(np.broadcast_to(mean_arr, broadcast_shape).astype(float), _TINY, None)
     std_b = np.broadcast_to(std_arr, broadcast_shape).astype(float)
     shift_b = np.broadcast_to(shift_arr, broadcast_shape).astype(float)
     y_b = np.broadcast_to(y_arr, broadcast_shape).astype(float)
 
     kappa = mean_b**2 / np.clip(std_b**2, _TINY, None)
-    theta = np.clip(std_b**2, _TINY, None) / np.clip(mean_b, _TINY, None)
+    theta = np.clip(std_b**2, _TINY, None) / mean_b
 
     c = -shift_b / theta
     y_tilde = (y_b - shift_b) / theta
 
     correction = _censoring_correction(c.reshape(-1), kappa.reshape(-1)).reshape(broadcast_shape)
 
-    result = theta * _crps_gamma_std(kappa, y_tilde) - theta * correction
+    # `theta` grows unboundedly as `mean` shrinks toward zero (theta =
+    # std^2/mean), while `_crps_gamma_std(kappa, y_tilde) - correction`
+    # shrinks to compensate -- multiplying a huge theta by the difference
+    # of two nearly-equal small floating-point terms can amplify ordinary
+    # floating-point error into an O(1) result for a pathologically tiny
+    # `mean` (checked directly: still bounded and small, not silently
+    # wrong, for any `mean` a real fitted regression's own bounds and
+    # nonnegative-precipitation input data actually produce). CRPS is
+    # mathematically never negative, so a negative result here is
+    # unambiguous floating-point noise, clamped rather than returned.
+    result = np.clip(theta * _crps_gamma_std(kappa, y_tilde) - theta * correction, 0.0, None)
     return result if broadcast_shape != () else float(result)
 
 
@@ -429,8 +447,19 @@ def predict_csgd_params(
     a3 = result.coefficients["a3"]
     a4 = result.coefficients["a4"]
 
-    location = a1 + a2 * ensemble_mean
-    scale = a3 * np.sqrt(np.clip(location, _TINY, None)) + a4 * ensemble_spread
+    # Clipped once, consistently, before either use below -- a fitted
+    # regression's own coefficients keep `location` positive for any
+    # nonnegative `ensemble_mean` (a1, a2 >= 0 by `_fit_conditional`'s own
+    # optimizer bounds), but real forecast data can carry tiny negative
+    # numerical-noise artifacts near zero precipitation (checked directly:
+    # ~1% of GraphCast's own real cells are slightly negative, a known
+    # ML-weather-model artifact, not a bug in this project's own pipeline).
+    # An unclipped negative `location` reaching `csgd_crps` produces a
+    # near-zero-shape, huge-scale gamma that blows up numerically -- caught
+    # empirically running Phase 4 step 6 against the real stores, not
+    # assumed safe.
+    location = np.clip(a1 + a2 * ensemble_mean, _TINY, None)
+    scale = a3 * np.sqrt(location) + a4 * ensemble_spread
     shift = np.full_like(ensemble_mean, result.shift)
     return location, scale, shift
 

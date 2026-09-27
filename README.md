@@ -99,6 +99,18 @@ Carlo sampling (no closed form exists for a general mixture), reusing
 `weavr.verify.crps`'s ensemble machinery -- the same predict/score
 interface shape as `weavr.emos.score_csgd`, so Phase 4's final comparison
 can call both combiners identically.
+See [docs/tier2-hierarchical-baseline-results.md](docs/tier2-hierarchical-baseline-results.md)
+for Phase 4's exit criterion:
+`scripts/run_tier2_hierarchical_baseline.py` fits and scores both real
+combiners against the real stores on one shared train/test split, and
+reports an honest, mixed comparison -- EMOS-CSG and BMA really do trade
+off which they win (EMOS-CSG dominates the "heavy" rain-intensity bin at
+most leads, BMA wins domain-wide at 2 of 5 leads), and Tier 2 does not
+beat Tier 0/Tier 1 everywhere either. Running it against the real data
+also caught and fixed a real numerical bug in `weavr.emos.csgd_crps`
+(tiny negative-precipitation numerical-noise artifacts in GraphCast's own
+real forecast data could produce a physically nonsensical CRPS), documented
+in that results doc.
 
 ## Development
 
