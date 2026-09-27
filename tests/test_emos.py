@@ -90,6 +90,35 @@ class TestCsgdCrpsProperties:
         assert far > near
 
 
+class TestCsgdCrpsHandlesNonPositiveMean:
+    # Regression test for a real bug caught running Phase 4 step 6 against
+    # the real stores: ~1% of GraphCast's own real forecast cells carry
+    # tiny negative numerical-noise artifacts (a known ML-weather-model
+    # characteristic). A fitted regression's `location = a1 + a2*
+    # ensemble_mean` can then come out non-positive, and `mean`'s kappa
+    # numerator using the raw value while theta's denominator used a
+    # clipped one produced a near-zero-shape, huge-scale gamma -- an
+    # uncorrected CRPS of ~1165mm for this exact real case (obs=0). Fixed
+    # by clipping `mean` once, consistently, before computing both kappa
+    # and theta.
+    def test_slightly_negative_mean_gives_a_sane_bounded_crps(self):
+        # The exact real (mean, std, shift, y) values recovered from a
+        # dry-bin GraphCast cell where the fitted regression's location
+        # came out negative.
+        mean, std, shift, y = -0.05115537274117088, 0.05879086349718349, -0.44782659545748243, 0.0
+
+        result = csgd_crps(mean, std, shift, y)
+
+        assert result >= 0.0
+        assert result < 5.0
+
+    def test_zero_mean_gives_a_sane_bounded_crps(self):
+        result = csgd_crps(0.0, 0.06, -0.45, 0.0)
+
+        assert result >= 0.0
+        assert result < 5.0
+
+
 def _synthetic_ensemble(rng: np.random.Generator, n_sample: int, n_space: int, n_member: int):
     times = np.arange(n_sample)
     lats = np.arange(n_space)
@@ -284,3 +313,24 @@ class TestPredictCsgdParams:
         assert mean[0] == pytest.approx(expected_mean)
         assert std[0] == pytest.approx(expected_std)
         assert shift[0] == -1.0
+
+    def test_negative_ensemble_mean_gives_a_positive_returned_location(self):
+        # Regression test: a fitted regression's own a1/a2 coefficients
+        # keep location positive for any *nonnegative* ensemble_mean, but
+        # real forecast data can carry tiny negative numerical-noise
+        # artifacts (see TestCsgdCrpsHandlesNonPositiveMean). The returned
+        # `location` must stay positive and consistent with the `scale`
+        # formula's own internal clipping, not silently negative.
+        result = CensoredShiftedGammaResult(
+            bin_label="dry",
+            source="synthetic",
+            shift=-0.1,
+            climatological_mean=1.0,
+            climatological_std=1.0,
+            coefficients={"a1": 0.01, "a2": 1.0, "a3": 1.0, "a4": 0.0},
+        )
+        location, scale, shift = predict_csgd_params(
+            result, np.array([-0.5]), np.array([0.1])
+        )
+        assert location[0] > 0.0
+        assert np.isfinite(scale[0])
