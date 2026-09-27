@@ -19,6 +19,8 @@ dependencies = [
     "imdlib",
     "cfgrib",
     "netcdf4",
+    "xskillscore",
+    "scipy",
 ]
 
 [project.optional-dependencies]
