@@ -10,7 +10,11 @@ pipeline: `scripts/build_baseline_store.py` builds the baseline JJAS
 forecast + IMD observation store. See
 [docs/heppi-reference-dataset.md](docs/heppi-reference-dataset.md) for a
 third-party NCMRWF-ensemble + IMD reference dataset (not redistributed here)
-useful for Phase 1 bias-correction work.
+useful for Phase 1 bias-correction work. See
+[docs/phase-1-data-requirements.md](docs/phase-1-data-requirements.md) for
+what each Phase 1 verification metric needs and what was extended:
+`scripts/build_seeps_climatology.py` builds the multi-year IMD-only
+climatology archive SEEPS/ACC-for-precipitation need.
 
 ## Development
 
