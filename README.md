@@ -69,6 +69,14 @@ for `scripts/build_ifs_ensemble_store.py`, which pulls that real IFS
 50-member ensemble into `data/ifs_ens_2020_jjas.zarr` — ~55 minutes of real
 GCS transfer time, resumable across the idle-sleep-induced connection
 stalls that interrupted the live run.
+[src/weavr/rain_bins.py](src/weavr/rain_bins.py) implements the first
+Phase 4 checkbox itself: `classify_rain_bin` labels each forecast value
+into IMD's rain-intensity bins (dry/light/heavy/very_heavy/extremely_heavy
+— the upper three are IMD's own published category names, at its own
+64.5/115.6/204.5mm boundaries), distinct from `verify.py`'s obs-vs-forecast
+contingency scoring at the same thresholds, with missing (NaN) forecast
+values explicitly excluded rather than silently landing in the last bin
+(`numpy.digitize`'s own default behavior).
 
 ## Development
 
