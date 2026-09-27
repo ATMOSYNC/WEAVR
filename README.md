@@ -51,7 +51,13 @@ monsoon rainfall zones (WC/SI/WI/CI/NE1/NE2) for per-region skill weighting.
 weights (`fit_region_weights`): unconstrained regression per Wanders &
 Wood (2016), negative weights clipped to zero (Wang et al. 2025) and
 renormalized to sum to 1, with a documented equal-weight fallback for
-regions with too few train samples or a rank-deficient fit.
+regions with too few train samples or a rank-deficient fit. See
+[docs/tier1-regional-weights-results.md](docs/tier1-regional-weights-results.md)
+for Phase 3's exit criterion: `scripts/run_tier1_regional_baseline.py`
+fits and scores the real regional blend against IMD gauges and compares
+it directly, region by region and lead by lead, against Tier 0's
+equal-weight mean — the regional blend wins domain-wide at every lead and
+in 22 of 30 region×lead cells, not universally, reported plainly either way.
 
 ## Development
 
