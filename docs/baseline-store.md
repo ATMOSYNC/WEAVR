@@ -91,3 +91,25 @@ python scripts/build_baseline_store.py \
 ```
 
 Override the output location with `--out` or `WEAVR_BASELINE_STORE_PATH`.
+
+## Phase 1 addition: SEEPS/ACC climatology archive
+
+This store alone isn't enough for every Phase 1 verification metric — see
+`docs/phase-1-data-requirements.md` for the full, checked-against-real-data
+breakdown. Two things came out of that check:
+
+- **SEEPS and precipitation ACC** need a multi-year per-gridpoint
+  climatology, which one JJAS season can't provide. Built separately by
+  `scripts/build_seeps_climatology.py` into
+  `data/imd_seeps_climatology_jjas.zarr` (IMD-only, JJAS 2006-2020, 15
+  years) — a separate script and store because the shape of what it builds
+  (many years of one variable, no forecast pairing) doesn't fit this
+  store's per-source-group layout. IMD-only pulls have no chunk-latency
+  problem, so extending this dimension cost no tractability tradeoff.
+- **CRPS/Brier and ACC-for-temperature** were checked and found to need,
+  respectively, a ~2-2.5 hour/~30-35GB full-ensemble pull and a separate
+  native-resolution climatology pipeline — both deliberately deferred
+  rather than pulled now (documented in `docs/phase-1-data-requirements.md`
+  with the reasoning). This store's `ifs_ens_mean` group therefore still
+  cannot support CRPS/Brier; that isn't a bug to fix here, it's a known,
+  documented limitation until Phase 2.
