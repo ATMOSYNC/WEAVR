@@ -64,7 +64,11 @@ unreachable rolling training window, GraphCast's lagged pseudo-ensemble
 plus a newly-decided real IFS 50-member ensemble pull back the EMOS-CSG/BMA
 combiners (HEPPI is a validation reference only, not training data), and
 the real per-bin sample counts found the extreme-rain bin (204.5mm+) is
-never fittable at any lead.
+never fittable at any lead. See `docs/baseline-store.md`'s Phase 4 addition
+for `scripts/build_ifs_ensemble_store.py`, which pulls that real IFS
+50-member ensemble into `data/ifs_ens_2020_jjas.zarr` — ~55 minutes of real
+GCS transfer time, resumable across the idle-sleep-induced connection
+stalls that interrupted the live run.
 
 ## Development
 
