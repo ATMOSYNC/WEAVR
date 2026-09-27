@@ -111,6 +111,16 @@ also caught and fixed a real numerical bug in `weavr.emos.csgd_crps`
 (tiny negative-precipitation numerical-noise artifacts in GraphCast's own
 real forecast data could produce a physically nonsensical CRPS), documented
 in that results doc.
+See [docs/phase5-regime-covariate-scope.md](docs/phase5-regime-covariate-scope.md)
+for Phase 5's scoping: which regime covariates issue #7 names are real and
+actually obtainable for this project's 2020 JJAS-only data -- monsoon
+active/break (Rajeevan, Gadgil & Bhate 2010, derivable from `imd_observed`
+directly) and MJO phase (Kiladis et al. 2014's OMI) and monsoon-depression
+presence (a real ERA5-derived low-pressure-system track catalogue) are in
+scope; Neal et al.'s 30-weather-pattern classification (covers only
+1979-2016, not this project's 2020 season) and western-disturbance
+presence (real, but ~50x rarer in JJAS than winter -- near-zero signal in
+a JJAS-only season) are not.
 
 ## Development
 
