@@ -33,7 +33,11 @@ ensemble members.
 [src/weavr/ensemble.py](src/weavr/ensemble.py) is the pure-function
 counterpart: `build_lagged_ensemble` assembles one nominal forecast's
 lagged ensemble from an already-open source dataset, producing the
-`member`-dimensioned shape `verify.py`'s `crps`/`brier_score` expect.
+`member`-dimensioned shape `verify.py`'s `crps`/`brier_score` expect. See
+[docs/phase2-ensemble-baseline-results.md](docs/phase2-ensemble-baseline-results.md)
+for Phase 2's exit criterion: `scripts/run_phase2_ensemble_baseline.py`
+scores GraphCast's lagged precipitation ensemble with CRPS/Brier against
+IMD gauges — the probabilistic counterpart to Phase 1's Tier 0 baseline.
 
 ## Development
 
