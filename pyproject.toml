@@ -18,6 +18,7 @@ dependencies = [
     "ecmwf-opendata",
     "imdlib",
     "cfgrib",
+    "netcdf4",
 ]
 
 [project.optional-dependencies]
