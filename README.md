@@ -130,6 +130,21 @@ and
 -- real per-category counts for all three (14 active / 3 break days; an
 8-phase MJO spread; 14 real depression-or-stronger days) are in
 `docs/phase5-regime-covariate-scope.md`'s own step 2 update.
+See [docs/phase5-regime-conditioned-results.md](docs/phase5-regime-conditioned-results.md)
+for step 3's real assessment of whether a regime covariate plausibly
+explains any of Phase 4's own error pattern (checked directly against the
+real Tier 2 train/test data, not assumed): the held-out test window used
+to measure Phase 4's heavy-bin EMOS-vs-BMA split turns out to have almost
+no regime diversity at any lead, ruling out a regime explanation for that
+specific alternation, while training data shows only a weak, noisy
+correlation between monsoon-active days and elevated heavy-rain cell
+counts. [src/weavr/regime_weighting.py](src/weavr/regime_weighting.py)
+implements the simplest defensible regime-stratified fit anyway (reusing
+`weavr.weighting.fit_region_weights`'s own OLS/fallback machinery,
+conditioned on monsoon active/break instead of spatial region); given this
+weak evidence and a training set with only 2 "active" days per lead, the
+user decided via `AskUserQuestion` not to build the optional heavier
+GBM/ViT-style gating model issue #7 names.
 
 ## Development
 
