@@ -12,17 +12,28 @@ This is purely additive: `dashboard/app.py` and `dashboard/views/*.py`
 (the existing Streamlit app) are not imported or touched by this module
 and keep working exactly as before.
 
+Also serves the static `dashboard-web/` frontend (step 3 of
+`workspace/frontend-prompts/`) from this same process, at `/` -- the
+simplest option given this step's own FastAPI decision, and it avoids
+needing CORS entirely since the frontend's `fetch()` calls stay
+same-origin. The API routes above are registered first, so `/api/*`
+always resolves to a real endpoint rather than the static mount's
+catch-all.
+
 Run with:
     pip install -e ".[dashboard-api]"
     uvicorn dashboard.api:app --reload
+Then open http://127.0.0.1:8000/ for the frontend.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.staticfiles import StaticFiles
 
 from dashboard.colors import PROBABILITY_COLORSCALE, RAIN_BIN_COLORS, rain_bin_index
 from dashboard.data_loading import (
@@ -37,6 +48,8 @@ from weavr.rain_bins import RAIN_BIN_LABELS
 from weavr.verify import IMD_RAIN_THRESHOLDS_MM
 
 app = FastAPI(title="WEAVR dashboard API")
+
+DASHBOARD_WEB_DIR = Path(__file__).resolve().parent.parent / "dashboard-web"
 
 
 def _validate_lead(lead: int, available: list[int]) -> None:
@@ -140,3 +153,11 @@ def meta_leads() -> dict[str, list[int]]:
             ),
         )
     return {"leads": blend_leads}
+
+
+# Registered last so it never shadows the /api/* routes above -- FastAPI
+# resolves routes in registration order, and this mount's catch-all would
+# otherwise intercept every path, including a typo'd /api/ call, and
+# return a 404 from the static-files layer instead of routing to FastAPI.
+if DASHBOARD_WEB_DIR.exists():
+    app.mount("/", StaticFiles(directory=DASHBOARD_WEB_DIR, html=True), name="dashboard-web")

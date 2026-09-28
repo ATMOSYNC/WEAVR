@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WEAVR dashboard</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <h1>WEAVR dashboard</h1>
+      <p class="app-caption">
+        A plain HTML/CSS/vanilla-JS frontend for the same 4 real views the
+        Streamlit app (<code>dashboard/app.py</code>) already ships, behind
+        a thin JSON API (<code>dashboard/api.py</code>). See
+        <code>docs/frontend-migration-scope.md</code> for the locked stack
+        decisions. Step 3 of this migration: only the weight-map view is
+        wired up yet.
+      </p>
+    </header>
+
+    <div class="app-body">
+      <nav class="app-nav" aria-label="Dashboard views">
+        <button class="nav-item is-active" data-view="weight-map" type="button">
+          Weight map
+        </button>
+        <button class="nav-item" data-view="skill-trends" type="button">
+          Skill trends
+        </button>
+        <button class="nav-item" data-view="blended-map" type="button">
+          Blended map
+        </button>
+        <button class="nav-item" data-view="extreme-probability" type="button">
+          Extreme-probability map
+        </button>
+      </nav>
+
+      <main class="app-main" id="app-main">
+        <!-- The active view's controls + chart are rendered here by main.js -->
+      </main>
+    </div>
+  </div>
+
+  <script src="js/colors.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/charts/weightMap.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
