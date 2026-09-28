@@ -43,7 +43,7 @@ def render() -> None:
         hover_data=["reason", "n_train_points"],
         title=f"Regional source weights at lead {lead}h",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     fallback_regions = sorted(subset.loc[subset["is_fallback"], "region"].unique())
     if fallback_regions:

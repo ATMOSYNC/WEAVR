@@ -15,14 +15,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+DASHBOARD_DATA_DIR = Path(__file__).resolve().parent / "data"
 
 DEFAULT_WEIGHTS_CSV = RESULTS_DIR / "tier1_regional_weights.csv"
 DEFAULT_TIER0_CSV = RESULTS_DIR / "tier0_baseline.csv"
 DEFAULT_TIER1_CSV = RESULTS_DIR / "tier1_regional_baseline.csv"
 DEFAULT_TIER2_CSV = RESULTS_DIR / "tier2_hierarchical_baseline.csv"
+DEFAULT_BLEND_GRID_NPZ = DASHBOARD_DATA_DIR / "example_blend_grid.npz"
 DEFAULT_TIER3_CSV = RESULTS_DIR / "tier3_regime_conditioned_baseline.csv"
 
 
@@ -155,3 +158,33 @@ def load_skill_trends_data(
             )
 
     return pd.DataFrame(rows)
+
+
+def available_blend_grid_leads(npz_path: str | Path = DEFAULT_BLEND_GRID_NPZ) -> list[int]:
+    """Lead times (hours) present in the committed example blend-grid export."""
+    with np.load(npz_path) as data:
+        return [int(lh) for lh in data["lead_hours"]]
+
+
+def load_blend_grid(lead_hours: int, npz_path: str | Path = DEFAULT_BLEND_GRID_NPZ) -> dict:
+    """Load one lead time's real example blended-forecast grid.
+
+    Built by `scripts/export_dashboard_example_grids.py` from Tier 1's real
+    regional blend (`docs/phase7-dashboard-scope.md`'s committed-example
+    decision) -- this function only reads the already-exported `.npz`, it
+    does not compute anything.
+
+    Returns `{"latitude": ndarray, "longitude": ndarray, "values": ndarray
+    (lat, lon), "sample_time": str, "lead_hours": int}`.
+    """
+    with np.load(npz_path) as data:
+        available = [int(lh) for lh in data["lead_hours"]]
+        if lead_hours not in available:
+            raise ValueError(f"lead_hours={lead_hours} not in this export's leads {available}")
+        return {
+            "latitude": data["latitude"],
+            "longitude": data["longitude"],
+            "values": data[f"blend_lead_{lead_hours}"],
+            "sample_time": str(data[f"sample_time_lead_{lead_hours}"]),
+            "lead_hours": lead_hours,
+        }

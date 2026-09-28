@@ -43,4 +43,4 @@ def render() -> None:
         markers=True,
         title=f"{metric} by lead time, every real method across tiers 0-3",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
