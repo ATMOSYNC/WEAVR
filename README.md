@@ -266,6 +266,22 @@ rolling verification and drift detection** — done
 (`weavr.drift`/`scripts/run_daily_verification.py`, step 3, and this
 script's own retrospective scoring).
 
+## Phase 7: dashboard scope
+
+Before building issue #9's 4 dashboard views, `docs/phase7-dashboard-scope.md`
+checks each view's real data source directly: the weight-map and skill-trend
+views are fully supported by already-committed CSVs
+(`results/tier1_regional_weights.csv`, the 4 tiers' own baseline CSVs), while
+the blended-map and extreme-probability views need real `(latitude,
+longitude)` arrays that only exist in a local, gitignored Zarr store today —
+the doc decides those two views will read a small, committed example export
+(`dashboard/data/*.npz`, built in later steps) rather than requiring that
+store locally. It also cites IMD's real published rainfall-warning colour
+code (green/yellow/orange/red at 64.5/115.6/204.5mm — which turn out to
+already match this project's own `weavr.verify.IMD_RAIN_THRESHOLDS_MM`
+exactly) for both spatial views' colour scales, and locks the dashboard
+stack as Streamlit + Plotly (`pip install -e ".[dashboard]"`).
+
 ## Development
 
 ```bash

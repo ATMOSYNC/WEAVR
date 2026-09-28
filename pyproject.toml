@@ -33,6 +33,10 @@ dev = [
     "mypy",
     "build",
 ]
+dashboard = [
+    "streamlit",
+    "plotly",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/weavr"]
