@@ -245,6 +245,12 @@ def build_forecast_group(
         "n_init_times": int(ds.sizes.get("time", 0)),
         "n_lead_steps": int(ds.sizes.get("prediction_timedelta", 0)),
         "known_gaps": source.known_gaps,
+        # WeatherBench 2's closest thing to a model-version identifier: this
+        # path changes when WB2 republishes a model under a new date-range
+        # (see docs/baseline-store.md's Phase 6 addition on why this is
+        # recorded -- no store output otherwise distinguishes two different
+        # archive vintages of the same named source).
+        "source_archive_path": source.zarr_path,
     }
     return ds, info
 

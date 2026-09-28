@@ -150,6 +150,14 @@ def main() -> int:
     print(f"Window: {len(timestamps)} timestamps (matching {args.baseline_store}'s own), "
           f"lead hours {args.lead_hours}")
 
+    # WeatherBench 2's closest thing to a model-version identifier, recorded
+    # once at the manifest's top level (this script has one source, unlike
+    # build_baseline_store.py's per-source-group manifest) -- see
+    # build_baseline_store.py's own build_forecast_group for why (Phase 6's
+    # model-version-metadata check).
+    manifest["_source_archive_path"] = IFS_ENS_ZARR_PATH
+    _save_manifest(manifest_path, manifest)
+
     fetch_start = time.time()
     per_timestamp_seconds: dict[str, float] = manifest.get("_per_timestamp_seconds", {})
 

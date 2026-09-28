@@ -273,3 +273,31 @@ hours via `--out`, `--baseline-store`, `--lead-hours`. Idempotent and
 resumable: a failed or interrupted run can simply be re-invoked, and
 already-fetched timestamps (cached in the `.staging` directory next to the
 output store) are skipped, not re-fetched.
+
+## Phase 6 addition: model-version metadata in every manifest
+
+Checked before writing any drift-detection logic (`solving issues/
+07-phase-6-robustness-and-operations/03-implement-rolling-verification-and-drift-detection.md`'s
+own step 1): none of this store's, the lagged-ensemble store's, or the IFS
+ensemble store's manifests recorded which archive vintage was actually
+pulled for a source — two different WeatherBench 2 archive updates of the
+same named source (e.g. `graphcast`) would have looked identical in the
+manifest. WeatherBench 2 has no separate version number; the closest real
+identifier is the archive's own `zarr_path`, which changes when WB2
+republishes a model under a new date-range/path. **Fixed**: every forecast
+source's manifest entry in this store and the lagged-ensemble store now
+also records `source_archive_path` (`build_baseline_store.py`'s
+`build_forecast_group`, `build_lagged_ensemble_store.py`'s own per-source
+build function); `build_ifs_ensemble_store.py`'s manifest (a single source,
+indexed per-timestamp rather than per-source-group) records the same thing
+once at the manifest's top level, `_source_archive_path`. `imd_observed`
+is unchanged — it's ground truth, not a forecast model, so "model version"
+doesn't apply to it.
+
+This alone isn't a live "model upgraded" trigger — these three scripts
+build the frozen 2020 JJAS research stores, which will never see a version
+change again. See [src/weavr/drift.py](../src/weavr/drift.py)'s own module
+docstring for why the live daily pipeline's actual drift-detection hook
+(covering AIFS/IFS/HRES, per `docs/phase6-operational-scope.md`) turned
+out to have no explicit version signal to hook either, and uses a real
+statistical drift check instead.

@@ -197,6 +197,32 @@ CI infra rather than a new always-on machine), publishing small committed
 result files the same way every `run_tierN_*.py` script already does,
 rather than extending the existing one-shot, full-season Zarr stores.
 
+[src/weavr/drift.py](src/weavr/drift.py) implements issue #8's last
+checkbox: rolling verification and drift detection, reusing
+`weavr.verify`'s existing metrics on a trailing window rather than a new
+scoring path. Checked, not assumed, before writing any detection logic:
+no model-version identifier exists anywhere this project can reach — not
+in the three historical store-building scripts' own manifests (fixed, see
+`docs/baseline-store.md`'s Phase 6 addition: they now record
+`source_archive_path`), and not in the live `ecmwf_open_data.py` fetch
+path either (live-tested: a real fetched IFS dataset's own GRIB metadata
+carries no model-cycle field at all). So the practical "model upgraded"
+proxy is a real statistical drift check instead — `TRAILING_WINDOW_SAMPLES
+= 14` reuses Phase 5's own already-established real monsoon-active-spell
+length (`docs/phase5-regime-covariate-scope.md`'s real 14-day 2020 JJAS
+spell), and `DRIFT_THRESHOLD_STD_MULTIPLIER = 2.0` is grounded in this
+project's own real historical per-sample RMSE spread (std/mean ~28-33%
+consistently across leads, measured directly against
+`data/baseline_2020_jjas.zarr`). [scripts/run_daily_verification.py](scripts/run_daily_verification.py)
+demonstrates the mechanism against the only real accumulated history that
+exists today (the baseline store's 18 real weekly JJAS-2020 samples,
+standing in for daily ones) — and states plainly, checked directly with a
+synthetic 500mm late-sample error injection, that the demo's own baseline
+overlaps its trailing window at today's real sample count (`n <= 14`), so
+drift genuinely cannot fire yet no matter how large a real shift is; this
+resolves once step 4's daily pipeline has accumulated more real days than
+`TRAILING_WINDOW_SAMPLES`, with no code change needed here.
+
 ## Development
 
 ```bash

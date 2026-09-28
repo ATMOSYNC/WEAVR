@@ -237,6 +237,9 @@ def build_lagged_group(
         "n_members_by_lead": n_valid_by_lead,
         "n_chunks_fetched": len(combos) * len(list(ds.data_vars)),
         "known_gaps": source.known_gaps,
+        # See build_baseline_store.py's own build_forecast_group for why
+        # this is recorded (Phase 6's model-version-metadata check).
+        "source_archive_path": source.zarr_path,
     }
     return out, info
 
