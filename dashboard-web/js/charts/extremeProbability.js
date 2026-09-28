@@ -34,7 +34,7 @@ const EXTREME_PROBABILITY_CELL_SIZE = 4;
 const EXTREME_PROBABILITY_FALLBACK_RGBA = "rgba(120, 120, 120, 0.75)";
 
 const EXTREME_PROBABILITY_CAPTION =
-  "This map shows EMOS-CSG's real fitted `ifs_ens` combiner (the " +
+  "This map shows EMOS-CSG's real fitted ifs_ens combiner (the " +
   "real 50-member IFS ensemble) -- chosen over BMA because its " +
   "censored-shifted-gamma has a real closed-form exceedance " +
   "probability, unlike BMA's mixture. This diverges from the " +
@@ -202,14 +202,18 @@ const ExtremeProbabilityView = {
 
     container.innerHTML = "";
 
+    const subheader = document.createElement("h2");
+    subheader.className = "view-subheader";
+    subheader.textContent = "Extreme-probability map: P(rain > 204.5mm)";
+    container.appendChild(subheader);
+
     const caption = document.createElement("p");
     caption.className = "view-caption";
     caption.textContent = EXTREME_PROBABILITY_CAPTION;
     container.appendChild(caption);
 
     const title = document.createElement("p");
-    title.style.fontSize = "0.85rem";
-    title.style.color = "var(--color-text-muted)";
+    title.className = "chart-title";
     title.textContent = `P(rain > 204.5mm) at lead ${grid.lead_hours}h (sample: ${grid.sample_time})`;
     container.appendChild(title);
 

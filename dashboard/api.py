@@ -8,9 +8,13 @@ directly and unchanged -- this module only validates query params and
 serializes their real return values to JSON; it does not reimplement any
 loading, reshaping, or rain-bin classification logic a second time.
 
-This is purely additive: `dashboard/app.py` and `dashboard/views/*.py`
-(the existing Streamlit app) are not imported or touched by this module
-and keep working exactly as before.
+The original Streamlit prototype this API's views were ported from
+(`dashboard/app.py`, `dashboard/views/*.py`) has been retired (step 7 of
+`workspace/frontend-prompts/`, after this new frontend reached real,
+checked parity with it) -- see README.md's "Streamlit's status" section
+for the routed decision. `dashboard.data_loading` / `dashboard.colors`
+remain, unchanged, as the single source of truth both the old and new
+frontends read from.
 
 Also serves the static `dashboard-web/` frontend (step 3 of
 `workspace/frontend-prompts/`) from this same process, at `/` -- the

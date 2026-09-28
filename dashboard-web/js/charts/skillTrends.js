@@ -176,6 +176,11 @@ const SkillTrendsView = {
 
     container.innerHTML = "";
 
+    const subheader = document.createElement("h2");
+    subheader.className = "view-subheader";
+    subheader.textContent = "Skill trend charts: RMSE / CRPS across tiers 0-3";
+    container.appendChild(subheader);
+
     const caption = document.createElement("p");
     caption.className = "view-caption";
     caption.textContent = SKILL_TREND_CAPTION;
@@ -195,6 +200,11 @@ const SkillTrendsView = {
       container.appendChild(info);
       return;
     }
+
+    const chartTitle = document.createElement("p");
+    chartTitle.className = "chart-title";
+    chartTitle.textContent = `${metric} by lead time, every real method across tiers 0-3`;
+    container.appendChild(chartTitle);
 
     const chartContainer = document.createElement("div");
     container.appendChild(chartContainer);

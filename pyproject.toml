@@ -33,10 +33,6 @@ dev = [
     "mypy",
     "build",
 ]
-dashboard = [
-    "streamlit",
-    "plotly",
-]
 dashboard-api = [
     "fastapi",
     "uvicorn[standard]",

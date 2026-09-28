@@ -209,6 +209,11 @@ const WeightMapView = {
 
     container.innerHTML = "";
 
+    const subheader = document.createElement("h2");
+    subheader.className = "view-subheader";
+    subheader.textContent = "Weight map: per-region, per-lead source weights";
+    container.appendChild(subheader);
+
     const caption = document.createElement("p");
     caption.className = "view-caption";
     caption.textContent =
@@ -216,8 +221,13 @@ const WeightMapView = {
       "-- a per-region ordinary-least-squares fit over graphcast / hres / " +
       "ifs_ens_mean's own real historical errors, not a softmax or GBM gate. " +
       "Regions shown hatched fell back to an equal split (not enough real " +
-      "training points to fit a weight) -- hover a bar for the real reason.";
+      "training points to fit a weight) -- hover for the real reason.";
     container.appendChild(caption);
+
+    const chartTitle = document.createElement("p");
+    chartTitle.className = "chart-title";
+    chartTitle.textContent = `Regional source weights at lead ${lead}h`;
+    container.appendChild(chartTitle);
 
     const chartContainer = document.createElement("div");
     container.appendChild(chartContainer);
