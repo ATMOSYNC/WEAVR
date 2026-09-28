@@ -465,5 +465,16 @@ mypy src
 pytest --cov=weavr
 ```
 
-CI runs lint, type-check, tests (3.11/3.12), and publishes a build artifact
-on every push/PR to `main`.
+CI (`.github/workflows/ci.yml`) runs lint, type-check and tests (3.11/3.12)
+only when it matters:
+
+- **Pull requests into `main`**, except drafts and PRs that touch only
+  Markdown, `docs/`, `dashboard-web/` or `.gitignore`, since no CI job reads
+  those. Changes to `results/` or `dashboard/data/` still trigger it,
+  because tests read those committed files.
+- **Release tags (`v*`)** and **manual runs** (Actions → CI → Run
+  workflow). These also build the package and upload it as an artifact.
+
+Merging a PR does not re-run CI on `main`: the squash-merged code is exactly
+what the PR's checks already passed. Add `[skip ci]` to a commit message to
+skip a run on a PR by hand.
