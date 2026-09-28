@@ -282,6 +282,21 @@ already match this project's own `weavr.verify.IMD_RAIN_THRESHOLDS_MM`
 exactly) for both spatial views' colour scales, and locks the dashboard
 stack as Streamlit + Plotly (`pip install -e ".[dashboard]"`).
 
+Two of the 4 views are built:
+[`dashboard/views/weight_map.py`](dashboard/views/weight_map.py) renders
+`results/tier1_regional_weights.csv`'s real per-region, per-lead source
+weights (stating plainly that this project's real scheme is Phase 3's OLS
+fit, not a softmax/GBM gate, with fallback regions shown hatched), and
+[`dashboard/views/skill_trends.py`](dashboard/views/skill_trends.py) renders
+real per-lead RMSE/CRPS across all 4 tiers' own results CSVs, checked
+column-by-column (`dashboard/data_loading.py`'s own docstring) rather than
+assumed identical -- including the real, checked finding that tier3's
+`emos_graphcast`/`emos_ifs_ens`/`bma` columns are bit-for-bit duplicates of
+tier2's own numbers, so only tier3's own new `regime_conditioned` method is
+plotted from that file. Both views were run locally with
+`streamlit run` and confirmed to render without error before this was
+written down.
+
 ## Development
 
 ```bash
