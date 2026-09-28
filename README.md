@@ -297,6 +297,28 @@ plotted from that file. Both views were run locally with
 `streamlit run` and confirmed to render without error before this was
 written down.
 
+A third view is built:
+[`dashboard/views/blended_map.py`](dashboard/views/blended_map.py) renders
+Tier 1's real regional blend over India for a selectable lead time, using
+`scripts/run_tier1_regional_baseline.py`'s own `build_region_weight_grid`
+/ `blend_with_region_weights` (the same functions
+`scripts/run_daily_pipeline.py` already reuses) and IMD's real
+rain-intensity colour breakpoints (`dashboard/colors.py`). The map's data
+comes from `dashboard/data/example_blend_grid.npz`, a small (~700KB),
+committed, one-time export built by
+[`scripts/export_dashboard_example_grids.py`](scripts/export_dashboard_example_grids.py)
+from the real local `data/baseline_2020_jjas.zarr` store, reusing
+`results/tier1_regional_weights.csv`'s already-fitted weights rather than
+re-fitting them -- per `docs/phase7-dashboard-scope.md`'s decision, so this
+view renders for anyone who opens the dashboard, not only someone with the
+local Zarr store built. Run locally with `streamlit run` and confirmed to
+actually render (via a browser, not just an HTTP check) for every one of
+the 5 lead times before this was written down; this also caught and fixed
+a real bug -- `streamlit run` inserts the script's own directory into
+`sys.path`, not its parent, so `from dashboard...` imports fail unless the
+repo root is added to `sys.path` first (step 5's assembled app needs the
+same fix).
+
 ## Development
 
 ```bash
