@@ -346,6 +346,49 @@ locally with `streamlit run` and confirmed to actually render for every
 lead, including one (96h) with real fallback cells rendering the grey
 overlay correctly.
 
+### Running the dashboard
+
+```bash
+pip install -e ".[dashboard]"
+streamlit run dashboard/app.py
+```
+
+[`dashboard/app.py`](dashboard/app.py) wires all 4 views into one
+navigable app (a sidebar radio, no 5th view -- steps 2-4 already built
+every real view this app shows) and states each view's own real caveats
+in a summary banner at the top. Actually run locally and confirmed every
+view renders without error by driving a real browser through all 4 (not
+just an HTTP health check): Blended map, Weight map, Skill trends,
+Extreme-probability map.
+
+Issue #9's checkboxes, against what's actually been built:
+**Blended map view** -- done (`dashboard/views/blended_map.py`, step 3;
+Tier 1's real regional blend, IMD's real colour breakpoints).
+**Weight-map per model x lead time** -- done
+(`dashboard/views/weight_map.py`, step 2; this project's real
+weighting scheme is Phase 3's per-region OLS fit, stated plainly in the
+view -- not the softmax/GBM gate this checkbox's own wording references,
+since that was never this project's real method). **Skill trend charts**
+-- done (`dashboard/views/skill_trends.py`, step 2; the real, checked,
+mixed cross-tier outcome, not a smoothed trend). **Extreme-probability
+maps in IMD colour codes** -- done
+(`dashboard/views/extreme_probability.py`, step 4; EMOS-CSG's real fitted
+`ifs_ens` combiner, IMD's real colour identities, fallback cells shown
+distinctly). **Build with Streamlit/Plotly/Leaflet** -- done, as
+Streamlit + Plotly (`docs/phase7-dashboard-scope.md`'s own decision:
+Leaflet's Python binding is for tile-served imagery, which this
+project's fixed-domain grid data doesn't need).
+
+A real, stated gap, not silently glossed over: the blended-map and
+extreme-probability views render from small, committed *example* grids
+(`dashboard/data/*.npz`), not a live re-blend of whatever is in a local
+`data/*.zarr` store -- per `docs/phase7-dashboard-scope.md`'s own
+data-source decision (the real spatial data these two views need only
+exists in a local, gitignored Zarr store, not guaranteed to exist on
+whoever opens this dashboard). Anyone with that store built locally can
+refresh both example grids for real with
+`python scripts/export_dashboard_example_grids.py`.
+
 ## Development
 
 ```bash
