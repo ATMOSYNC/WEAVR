@@ -23,6 +23,11 @@ async function fetchWeightMap(lead) {
   return fetchJson(`/api/weight-map?lead=${encodeURIComponent(lead)}`);
 }
 
+/** GET /api/skill-trends?metric=<rmse_mm|crps_mm> -> real per-method, per-lead rows. */
+async function fetchSkillTrends(metric) {
+  return fetchJson(`/api/skill-trends?metric=${encodeURIComponent(metric)}`);
+}
+
 /** GET /api/colors -> the real IMD colour identities (dashboard/colors.py). */
 async function fetchColors() {
   return fetchJson("/api/colors");
