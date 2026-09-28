@@ -389,6 +389,25 @@ whoever opens this dashboard). Anyone with that store built locally can
 refresh both example grids for real with
 `python scripts/export_dashboard_example_grids.py`.
 
+## Frontend migration scope
+
+A separate, in-progress effort (planned and driven from outside this repo,
+under `workspace/frontendplan.md` and `workspace/frontend-prompts/`) is
+migrating the Streamlit dashboard above to a plain HTML/CSS/vanilla-JS
+frontend behind a small JSON API, so it can be hosted without a Python
+process rendering every page. `docs/frontend-migration-scope.md` locks the
+first real decisions this migration needs: `dashboard/data_loading.py` and
+`dashboard/colors.py` are confirmed (by grepping their own import lines)
+to have zero Streamlit/Plotly coupling, so the new API reuses both
+unchanged; charting is hand-rolled `<canvas>`/SVG (no JS charting
+dependency, chosen over Plotly.js); the API layer is FastAPI + uvicorn (a
+new `dashboard-api` optional-dependency group, matching this project's
+existing `mypy`-gated typing convention); and grid responses stay plain
+nested JSON arrays (both committed example grids are a fixed 129x135, well
+within normal response sizes). The existing Streamlit app above is left
+completely untouched throughout this migration and stays the reference
+implementation until parity with the new frontend is verified.
+
 ## Development
 
 ```bash
