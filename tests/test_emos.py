@@ -8,6 +8,7 @@ from weavr.emos import (
     MIN_TRAIN_DAYS_PER_BIN,
     CensoredShiftedGammaResult,
     csgd_crps,
+    exceedance_probability_csgd,
     fit_emos_csg,
     predict_csgd_params,
     score_csgd,
@@ -334,3 +335,58 @@ class TestPredictCsgdParams:
         )
         assert location[0] > 0.0
         assert np.isfinite(scale[0])
+
+
+class TestExceedanceProbabilityCsgd:
+    def test_matches_monte_carlo_simulation_of_the_real_sampling_process(self):
+        # Real censored-shifted-gamma sampling: draw from Gamma(kappa,
+        # theta), shift, censor at zero -- exactly the process
+        # exceedance_probability_csgd's closed form claims to answer,
+        # verified independently rather than trusted from the algebra.
+        mean, std, shift = 15.0, 10.0, -2.0
+        kappa = mean**2 / std**2
+        theta = std**2 / mean
+        rng = np.random.default_rng(0)
+        draws = rng.gamma(kappa, theta, size=2_000_000)
+        censored = np.clip(draws + shift, 0.0, None)
+
+        for threshold in (0.0, 5.0, 20.0, 50.0, 204.5):
+            mc_probability = float(np.mean(censored > threshold))
+            closed_form = exceedance_probability_csgd(mean, std, shift, threshold)
+            assert closed_form == pytest.approx(mc_probability, abs=0.003)
+
+    def test_probability_decreases_as_threshold_increases(self):
+        thresholds = (0.0, 50.0, 150.0, 204.5, 500.0)
+        probs = [exceedance_probability_csgd(20.0, 15.0, -1.0, t) for t in thresholds]
+        assert probs == sorted(probs, reverse=True)
+        assert all(0.0 <= p <= 1.0 for p in probs)
+
+    def test_fallback_point_mass_at_zero_gives_near_zero_probability(self):
+        # predict_csgd_params's own fallback output (mean=0, shift=0, a
+        # tiny positive std) -- must not blow up or return a nonsensical
+        # value through this formula; no special-cased branch exists for
+        # is_fallback, so this is a real check that none is needed.
+        result = CensoredShiftedGammaResult(
+            bin_label="extremely_heavy", source="synthetic", shift=0.0,
+            climatological_mean=0.0, climatological_std=1e-6, is_fallback=True,
+            reason="only 0 train day(s) with usable data in this bin (need >= 5)",
+        )
+        mean, std, shift = predict_csgd_params(result, np.array([0.0]), np.array([0.0]))
+        probability = exceedance_probability_csgd(mean, std, shift, 204.5)
+        assert probability[0] == pytest.approx(0.0, abs=1e-6)
+
+    def test_negative_threshold_raises(self):
+        with pytest.raises(ValueError, match="threshold must be >= 0"):
+            exceedance_probability_csgd(10.0, 5.0, -1.0, -1.0)
+
+    def test_vectorized_over_arrays(self):
+        mean = np.array([10.0, 20.0, 5.0])
+        std = np.array([5.0, 10.0, 3.0])
+        shift = np.array([-1.0, -2.0, 0.0])
+        result = exceedance_probability_csgd(mean, std, shift, 204.5)
+        assert result.shape == (3,)
+        scalar_results = [
+            exceedance_probability_csgd(m, s, sh, 204.5)
+            for m, s, sh in zip(mean, std, shift, strict=True)
+        ]
+        np.testing.assert_allclose(result, scalar_results)

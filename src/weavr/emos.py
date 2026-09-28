@@ -491,3 +491,56 @@ def score_csgd(
     mean, std, shift = predict_csgd_params(result, ensemble_mean.values, ensemble_spread.values)
     scores = csgd_crps(mean, std, shift, obs.values)
     return xr.DataArray(scores, dims=obs.dims, coords=obs.coords, name="csgd_crps")
+
+
+def exceedance_probability_csgd(
+    mean: np.ndarray | float,
+    std: np.ndarray | float,
+    shift: np.ndarray | float,
+    threshold: float,
+) -> np.ndarray | float:
+    """P(Y > `threshold`) for the fitted (or fallback) CSGD, for any
+    `threshold >= 0` (Phase 7's dashboard, issue #9's extreme-probability
+    map, needs this at `threshold=204.5`, IMD's own "extremely heavy rain"
+    boundary).
+
+    `mean`/`std`/`shift` are `predict_csgd_params`'s own output -- the
+    underlying (unshifted, uncensored) gamma's mean/std and the fixed
+    shift, the same parametrization `csgd_crps` already uses.
+
+    Unlike `csgd_crps`, this needs no from-scratch numerical derivation:
+    for any `threshold >= 0` (at or above the censoring point), `Y`'s
+    censoring at zero is irrelevant to the exceedance event (`Y > 0` iff
+    the underlying gamma variable exceeds the shift, and any positive
+    threshold only asks about that same uncensored tail) -- this is a
+    direct call to the gamma distribution's own survival function, reusing
+    `_gamma_cdf` (the same numerically-safe, already-used-elsewhere helper
+    `csgd_crps` itself calls) rather than reimplementing it. A fallback
+    result's degenerate point-mass-at-zero CSGD (from `predict_csgd_params`:
+    mean=0, shift=0, std=_TINY) correctly returns ~0 exceedance probability
+    for any threshold > 0 through this same formula, no special case
+    needed.
+
+    Verified in `tests/test_emos.py` against a Monte Carlo simulation of
+    the real censored-shifted-gamma sampling process (draw from the gamma,
+    shift, censor at zero, count the exceedance fraction), not just
+    trusted from the formula.
+    """
+    if threshold < 0:
+        raise ValueError(f"threshold must be >= 0 (the censoring point), got {threshold}")
+
+    mean_arr = np.asarray(mean, dtype=float)
+    std_arr = np.asarray(std, dtype=float)
+    shift_arr = np.asarray(shift, dtype=float)
+
+    broadcast_shape = np.broadcast_shapes(mean_arr.shape, std_arr.shape, shift_arr.shape)
+    mean_b = np.clip(np.broadcast_to(mean_arr, broadcast_shape).astype(float), _TINY, None)
+    std_b = np.broadcast_to(std_arr, broadcast_shape).astype(float)
+    shift_b = np.broadcast_to(shift_arr, broadcast_shape).astype(float)
+
+    theta = np.clip(std_b**2, _TINY, None) / mean_b
+    kappa = mean_b**2 / np.clip(std_b**2, _TINY, None)
+
+    standardized = (threshold - shift_b) / theta
+    result = 1.0 - _gamma_cdf(standardized, kappa)
+    return result if broadcast_shape != () else float(result)
