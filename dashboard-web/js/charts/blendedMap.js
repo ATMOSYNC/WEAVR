@@ -122,14 +122,18 @@ const BlendedMapView = {
 
     container.innerHTML = "";
 
+    const subheader = document.createElement("h2");
+    subheader.className = "view-subheader";
+    subheader.textContent = "Blended map: Tier 1's real regional blend over India";
+    container.appendChild(subheader);
+
     const caption = document.createElement("p");
     caption.className = "view-caption";
     caption.textContent = BLENDED_MAP_CAPTION;
     container.appendChild(caption);
 
     const title = document.createElement("p");
-    title.style.fontSize = "0.85rem";
-    title.style.color = "var(--color-text-muted)";
+    title.className = "chart-title";
     title.textContent = `Blended precipitation at lead ${grid.lead_hours}h (sample: ${grid.sample_time})`;
     container.appendChild(title);
 

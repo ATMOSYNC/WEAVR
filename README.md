@@ -283,11 +283,11 @@ exactly) for both spatial views' colour scales, and locks the dashboard
 stack as Streamlit + Plotly (`pip install -e ".[dashboard]"`).
 
 Two of the 4 views are built:
-[`dashboard/views/weight_map.py`](dashboard/views/weight_map.py) renders
+`dashboard/views/weight_map.py` renders
 `results/tier1_regional_weights.csv`'s real per-region, per-lead source
 weights (stating plainly that this project's real scheme is Phase 3's OLS
 fit, not a softmax/GBM gate, with fallback regions shown hatched), and
-[`dashboard/views/skill_trends.py`](dashboard/views/skill_trends.py) renders
+`dashboard/views/skill_trends.py` renders
 real per-lead RMSE/CRPS across all 4 tiers' own results CSVs, checked
 column-by-column (`dashboard/data_loading.py`'s own docstring) rather than
 assumed identical -- including the real, checked finding that tier3's
@@ -298,7 +298,7 @@ plotted from that file. Both views were run locally with
 written down.
 
 A third view is built:
-[`dashboard/views/blended_map.py`](dashboard/views/blended_map.py) renders
+`dashboard/views/blended_map.py` renders
 Tier 1's real regional blend over India for a selectable lead time, using
 `scripts/run_tier1_regional_baseline.py`'s own `build_region_weight_grid`
 / `blend_with_region_weights` (the same functions
@@ -320,7 +320,7 @@ repo root is added to `sys.path` first (step 5's assembled app needs the
 same fix).
 
 All 4 of issue #9's views are now built. The 4th,
-[`dashboard/views/extreme_probability.py`](dashboard/views/extreme_probability.py),
+`dashboard/views/extreme_probability.py`,
 renders P(rain > 204.5mm) -- IMD's own real "extremely heavy rain"
 boundary -- from EMOS-CSG's real fitted `ifs_ens` combiner (the real
 50-member IFS ensemble), a choice routed to the user via `AskUserQuestion`:
@@ -346,67 +346,115 @@ locally with `streamlit run` and confirmed to actually render for every
 lead, including one (96h) with real fallback cells rendering the grey
 overlay correctly.
 
-### Running the dashboard
+### Original Streamlit prototype (retired)
 
-```bash
-pip install -e ".[dashboard]"
-streamlit run dashboard/app.py
-```
+Issue #9's dashboard was originally built as a Streamlit app
+(`dashboard/app.py`, `dashboard/views/*.py`) -- all 4 real views verified
+by driving a real browser through it, no HTTP-only health check. Once the
+HTML/CSS/vanilla-JS frontend migration (below) reached full, real,
+side-by-side parity with it, the Streamlit app was **retired** (removed,
+not just left unused) per a real, routed decision -- see "Streamlit's
+status" below. It is no longer present in this repo; this section is kept
+as the historical record of what issue #9's checkboxes were actually
+verified against before retirement.
 
-[`dashboard/app.py`](dashboard/app.py) wires all 4 views into one
-navigable app (a sidebar radio, no 5th view -- steps 2-4 already built
-every real view this app shows) and states each view's own real caveats
-in a summary banner at the top. Actually run locally and confirmed every
-view renders without error by driving a real browser through all 4 (not
-just an HTTP health check): Blended map, Weight map, Skill trends,
-Extreme-probability map.
+Issue #9's checkboxes, against what was actually built and verified:
+**Blended map view** -- done (Tier 1's real regional blend, IMD's real
+colour breakpoints). **Weight-map per model x lead time** -- done (this
+project's real weighting scheme is Phase 3's per-region OLS fit, stated
+plainly in the view -- not the softmax/GBM gate this checkbox's own
+wording references, since that was never this project's real method).
+**Skill trend charts** -- done (the real, checked, mixed cross-tier
+outcome, not a smoothed trend). **Extreme-probability maps in IMD colour
+codes** -- done (EMOS-CSG's real fitted `ifs_ens` combiner, IMD's real
+colour identities, fallback cells shown distinctly). **Build with
+Streamlit/Plotly/Leaflet** -- done at the time, as Streamlit + Plotly
+(`docs/phase7-dashboard-scope.md`'s own decision: Leaflet's Python
+binding is for tile-served imagery, which this project's fixed-domain
+grid data doesn't need); superseded by the HTML/CSS/vanilla-JS frontend
+below once that reached parity.
 
-Issue #9's checkboxes, against what's actually been built:
-**Blended map view** -- done (`dashboard/views/blended_map.py`, step 3;
-Tier 1's real regional blend, IMD's real colour breakpoints).
-**Weight-map per model x lead time** -- done
-(`dashboard/views/weight_map.py`, step 2; this project's real
-weighting scheme is Phase 3's per-region OLS fit, stated plainly in the
-view -- not the softmax/GBM gate this checkbox's own wording references,
-since that was never this project's real method). **Skill trend charts**
--- done (`dashboard/views/skill_trends.py`, step 2; the real, checked,
-mixed cross-tier outcome, not a smoothed trend). **Extreme-probability
-maps in IMD colour codes** -- done
-(`dashboard/views/extreme_probability.py`, step 4; EMOS-CSG's real fitted
-`ifs_ens` combiner, IMD's real colour identities, fallback cells shown
-distinctly). **Build with Streamlit/Plotly/Leaflet** -- done, as
-Streamlit + Plotly (`docs/phase7-dashboard-scope.md`'s own decision:
-Leaflet's Python binding is for tile-served imagery, which this
-project's fixed-domain grid data doesn't need).
+A real, stated gap that still applies to the current frontend, not
+silently glossed over: the blended-map and extreme-probability views
+render from small, committed *example* grids (`dashboard/data/*.npz`),
+not a live re-blend of whatever is in a local `data/*.zarr` store -- per
+`docs/phase7-dashboard-scope.md`'s own data-source decision (the real
+spatial data these two views need only exists in a local, gitignored
+Zarr store, not guaranteed to exist on whoever opens this dashboard).
+Anyone with that store built locally can refresh both example grids for
+real with `python scripts/export_dashboard_example_grids.py`.
 
-A real, stated gap, not silently glossed over: the blended-map and
-extreme-probability views render from small, committed *example* grids
-(`dashboard/data/*.npz`), not a live re-blend of whatever is in a local
-`data/*.zarr` store -- per `docs/phase7-dashboard-scope.md`'s own
-data-source decision (the real spatial data these two views need only
-exists in a local, gitignored Zarr store, not guaranteed to exist on
-whoever opens this dashboard). Anyone with that store built locally can
-refresh both example grids for real with
-`python scripts/export_dashboard_example_grids.py`.
+## Frontend migration
 
-## Frontend migration scope
-
-A separate, in-progress effort (planned and driven from outside this repo,
-under `workspace/frontendplan.md` and `workspace/frontend-prompts/`) is
-migrating the Streamlit dashboard above to a plain HTML/CSS/vanilla-JS
-frontend behind a small JSON API, so it can be hosted without a Python
-process rendering every page. `docs/frontend-migration-scope.md` locks the
-first real decisions this migration needs: `dashboard/data_loading.py` and
+A separate effort (planned and driven from outside this repo, under
+`workspace/frontendplan.md` and `workspace/frontend-prompts/`) migrated
+the Streamlit dashboard above to a plain HTML/CSS/vanilla-JS frontend
+behind a small JSON API, so it can be hosted without a Python process
+rendering every page. `docs/frontend-migration-scope.md` locks the real
+decisions this migration needed: `dashboard/data_loading.py` and
 `dashboard/colors.py` are confirmed (by grepping their own import lines)
 to have zero Streamlit/Plotly coupling, so the new API reuses both
 unchanged; charting is hand-rolled `<canvas>`/SVG (no JS charting
 dependency, chosen over Plotly.js); the API layer is FastAPI + uvicorn (a
-new `dashboard-api` optional-dependency group, matching this project's
+`dashboard-api` optional-dependency group, matching this project's
 existing `mypy`-gated typing convention); and grid responses stay plain
 nested JSON arrays (both committed example grids are a fixed 129x135, well
-within normal response sizes). The existing Streamlit app above is left
-completely untouched throughout this migration and stays the reference
-implementation until parity with the new frontend is verified.
+within normal response sizes).
+
+### Running the new frontend
+
+```bash
+pip install -e ".[dashboard-api]"
+uvicorn dashboard.api:app --reload
+```
+
+Then open `http://127.0.0.1:8000/` — [`dashboard/api.py`](dashboard/api.py)
+serves both the JSON API (`/api/*`) and the static
+[`dashboard-web/`](dashboard-web/) frontend from this one process, so
+there's nothing else to run and no CORS configuration needed.
+
+### Parity with the Streamlit app
+
+All 4 real views ([`dashboard-web/js/charts/`](dashboard-web/js/charts/):
+`weightMap.js`, `skillTrends.js`, `blendedMap.js`, `extremeProbability.js`)
+are built and were checked side by side against the live Streamlit app
+(`dashboard/app.py`) across all 5 real lead times, both skill-trends
+metrics, and every real caption/subheader/chart-title string -- not just
+that the numbers matched. This real side-by-side check caught two genuine
+text bugs that a read-through alone would have missed: the weight-map
+view's caption had drifted to say "hover **a bar** for the real reason"
+(the extra words aren't in `dashboard/views/weight_map.py`'s real text),
+and the extreme-probability view's caption kept a literal `` `ifs_ens` ``
+backtick pair as plain-text characters instead of the plain word
+`ifs_ens` Streamlit's own markdown renderer actually shows. Both are
+fixed. Each view's `st.subheader()` title and Plotly chart-title text are
+now also reproduced in the new frontend, which an earlier step had missed
+(captions and warnings were reproduced, but not these two).
+
+One real, accepted difference remains, not a defect: Streamlit's Plotly
+legend for the weight map combines colour and hatch pattern into one
+`source, fit_status` legend entry per bar; the new frontend instead shows
+plain colour-swatch legend entries plus a `*` marker on hatched regions'
+axis labels and a separate warning banner -- different presentation, same
+real information (which regions are OLS-fitted vs. fallback), not
+reproduced pixel-for-pixel because a hand-rolled SVG legend has no
+equivalent to Plotly's combined dual-encoding legend without meaningfully
+more code for a cosmetic difference.
+
+### Streamlit's status
+
+Once the parity check above confirmed the new frontend was a genuine
+replacement, the Streamlit-vs-retire tradeoff was routed to the user via
+`AskUserQuestion` rather than assumed (frontendplan.md §6's deliberately
+deferred 4th tradeoff): a second app to keep in sync indefinitely vs.
+losing a fast, pure-Python reference for prototyping future view changes.
+**The decision: retire it.** `dashboard/app.py` and `dashboard/views/*.py`
+are removed from this repo -- `dashboard/data_loading.py` and
+`dashboard/colors.py` stay, unchanged, as the single source of truth the
+API (`dashboard/api.py`) still imports directly. The `dashboard` optional
+dependency group (`streamlit`, `plotly`) is removed from `pyproject.toml`;
+`dashboard-api` (`fastapi`, `uvicorn`) is the only one needed to run the
+dashboard now.
 
 ## Development
 

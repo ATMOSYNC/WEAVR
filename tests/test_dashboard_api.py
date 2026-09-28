@@ -8,11 +8,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # CI's base install (`pip install -e ".[dev]"`) never installs the
 # `dashboard-api` group -- same real situation the existing
-# tests/test_dashboard_*.py files are already in with the `dashboard`
-# group (streamlit/plotly): nothing under tests/ imports them at module
-# level today, so CI never needed them installed. Skip this whole file
-# cleanly rather than failing collection when fastapi isn't present,
-# instead of adding a new required CI dependency for an optional layer.
+# tests/test_dashboard_*.py files were already in with the old `dashboard`
+# group (streamlit/plotly, removed once Streamlit was retired -- see
+# README.md's "Streamlit's status"): nothing under tests/ imports these
+# optional groups at module level, so CI never needed them installed.
+# Skip this whole file cleanly rather than failing collection when
+# fastapi isn't present, instead of adding a new required CI dependency
+# for an optional layer.
 fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -122,15 +124,23 @@ class TestExtremeProbability:
         assert response.status_code == 422
 
 
-class TestExistingStreamlitViewsUntouched:
-    def test_dashboard_views_module_does_not_import_the_new_api(self):
-        """The API layer is purely additive -- dashboard/app.py and
-        dashboard/views/*.py must not need to import dashboard.api for
-        anything, confirming this step didn't require touching them."""
-        pytest.importorskip("streamlit")
-        import dashboard.app as streamlit_app
+class TestStreamlitPrototypeRetired:
+    def test_streamlit_app_and_views_were_intentionally_removed(self):
+        """dashboard/app.py and dashboard/views/*.py (the original
+        Streamlit prototype) were removed once this API + dashboard-web/
+        frontend reached real, checked parity with them (step 7 of
+        workspace/frontend-prompts/, a decision routed to and made by the
+        user via AskUserQuestion -- see README.md's "Streamlit's status").
+        This asserts the retirement stayed intentional, not an accidental
+        partial deletion: the views directory is gone, but
+        dashboard.data_loading / dashboard.colors (this API's own real
+        dependencies) must still be present and importable."""
+        repo_root = Path(__file__).resolve().parents[1]
+        assert not (repo_root / "dashboard" / "app.py").exists()
+        assert not (repo_root / "dashboard" / "views").exists()
 
-        assert not hasattr(streamlit_app, "api")
+        import dashboard.colors  # noqa: F401
+        import dashboard.data_loading  # noqa: F401
 
 
 if __name__ == "__main__":

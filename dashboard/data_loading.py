@@ -2,8 +2,10 @@
 
 No Streamlit or Plotly imports here: these are plain pandas/pathlib
 functions, tested directly against real and fixture CSVs (this project's
-own established convention -- test pure logic, not rendered UI). The view
-modules under dashboard/views/ import from here and add only rendering.
+own established convention -- test pure logic, not rendered UI). Originally
+imported by the Streamlit view modules under dashboard/views/ (retired --
+see README.md's "Streamlit's status"); now imported directly by
+dashboard/api.py, which adds only JSON serialization.
 
 Named `data_loading.py`, not `data.py`, to leave `dashboard/data/` free for
 step 3/4's small committed example export grids
@@ -206,7 +208,7 @@ def load_probability_grid(
 
     Built by `scripts/export_dashboard_example_grids.py` from EMOS-CSG's
     real fitted `ifs_ens` combiner (step 4's own decision, routed via
-    `AskUserQuestion` -- see `dashboard/views/extreme_probability.py`'s
+    `AskUserQuestion` -- see `dashboard-web/js/charts/extremeProbability.js`'s
     docstring) -- this function only reads the already-exported `.npz`, it
     does not compute anything.
 

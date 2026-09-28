@@ -97,6 +97,18 @@ body {
   overflow-x: auto;
 }
 
+.view-subheader {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+}
+
+.chart-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin: 4px 0;
+}
+
 .view-caption {
   max-width: 900px;
   font-size: 0.9rem;
