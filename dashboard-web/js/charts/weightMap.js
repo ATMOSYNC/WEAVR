@@ -20,6 +20,14 @@
  * project never defined per-source display colours in Python (the
  * Streamlit view let Plotly's own default categorical palette pick
  * them), so there is no dashboard.colors constant to reuse for this one.
+ *
+ * SVG helpers below are named with a `weightMap`/`WEIGHT_MAP` prefix
+ * rather than generic names (`el`, `SVG_NS`) -- this file and
+ * skillTrends.js both load as plain <script> tags sharing one global
+ * scope, and generic names collided across the two files (step 4's real
+ * bug, caught driving the page in a browser), breaking the whole page's
+ * script load. Each chart module stays self-contained instead of
+ * depending on another module's load order.
  */
 
 const WEIGHT_SOURCE_COLORS = {
@@ -29,10 +37,10 @@ const WEIGHT_SOURCE_COLORS = {
 };
 const WEIGHT_SOURCE_FALLBACK_COLOR = "#999999";
 const FALLBACK_PATTERN_ID = "weight-map-fallback-hatch";
-const SVG_NS = "http://www.w3.org/2000/svg";
+const WEIGHT_MAP_SVG_NS = "http://www.w3.org/2000/svg";
 
-function el(tag, attrs) {
-  const node = document.createElementNS(SVG_NS, tag);
+function weightMapEl(tag, attrs) {
+  const node = document.createElementNS(WEIGHT_MAP_SVG_NS, tag);
   for (const [key, value] of Object.entries(attrs || {})) {
     node.setAttribute(key, value);
   }
@@ -40,15 +48,15 @@ function el(tag, attrs) {
 }
 
 function buildFallbackHatchDefs() {
-  const defs = el("defs", {});
-  const pattern = el("pattern", {
+  const defs = weightMapEl("defs", {});
+  const pattern = weightMapEl("pattern", {
     id: FALLBACK_PATTERN_ID,
     width: 6,
     height: 6,
     patternTransform: "rotate(45)",
     patternUnits: "userSpaceOnUse",
   });
-  pattern.appendChild(el("rect", { width: 3, height: 6, fill: "rgba(0,0,0,0.35)" }));
+  pattern.appendChild(weightMapEl("rect", { width: 3, height: 6, fill: "rgba(0,0,0,0.35)" }));
   defs.appendChild(pattern);
   return defs;
 }
@@ -78,7 +86,7 @@ function renderWeightMapChart(container, rows) {
   const groupPadding = regionBandWidth * 0.15;
   const barWidth = (regionBandWidth - groupPadding * 2) / sources.length;
 
-  const svg = el("svg", {
+  const svg = weightMapEl("svg", {
     viewBox: `0 0 ${width} ${height}`,
     role: "img",
     "aria-label": "Regional per-source weight bar chart",
@@ -87,7 +95,7 @@ function renderWeightMapChart(container, rows) {
   svg.style.height = "auto";
   svg.appendChild(buildFallbackHatchDefs());
 
-  const plot = el("g", { transform: `translate(${margin.left},${margin.top})` });
+  const plot = weightMapEl("g", { transform: `translate(${margin.left},${margin.top})` });
   svg.appendChild(plot);
 
   const yTicks = 4;
@@ -95,9 +103,9 @@ function renderWeightMapChart(container, rows) {
     const value = (maxWeight / yTicks) * i;
     const y = yFor(value);
     plot.appendChild(
-      el("line", { x1: 0, x2: plotWidth, y1: y, y2: y, stroke: "#e5e8ec" })
+      weightMapEl("line", { x1: 0, x2: plotWidth, y1: y, y2: y, stroke: "#e5e8ec" })
     );
-    const label = el("text", {
+    const label = weightMapEl("text", {
       x: -8,
       y: y + 4,
       "text-anchor": "end",
@@ -123,14 +131,14 @@ function renderWeightMapChart(container, rows) {
       const barHeight = Math.max(plotHeight - barY, 0);
       const barX = regionX + groupPadding + sourceIndex * barWidth;
 
-      const rect = el("rect", {
+      const rect = weightMapEl("rect", {
         x: barX,
         y: barY,
         width: Math.max(barWidth - 2, 1),
         height: barHeight,
         fill: WEIGHT_SOURCE_COLORS[source] || WEIGHT_SOURCE_FALLBACK_COLOR,
       });
-      const title = document.createElementNS(SVG_NS, "title");
+      const title = document.createElementNS(WEIGHT_MAP_SVG_NS, "title");
       const fallbackNote =
         row && row.is_fallback
           ? ` (fallback: ${row.reason}, n_train_points=${row.n_train_points})`
@@ -141,7 +149,7 @@ function renderWeightMapChart(container, rows) {
 
       if (row && row.is_fallback) {
         plot.appendChild(
-          el("rect", {
+          weightMapEl("rect", {
             x: barX,
             y: barY,
             width: Math.max(barWidth - 2, 1),
@@ -152,7 +160,7 @@ function renderWeightMapChart(container, rows) {
       }
     });
 
-    const regionLabel = el("text", {
+    const regionLabel = weightMapEl("text", {
       x: regionX + regionBandWidth / 2,
       y: plotHeight + 20,
       "text-anchor": "middle",
