@@ -28,6 +28,11 @@ async function fetchSkillTrends(metric) {
   return fetchJson(`/api/skill-trends?metric=${encodeURIComponent(metric)}`);
 }
 
+/** GET /api/blended-map?lead=<int> -> the real 129x135 blended-forecast grid. */
+async function fetchBlendedMap(lead) {
+  return fetchJson(`/api/blended-map?lead=${encodeURIComponent(lead)}`);
+}
+
 /** GET /api/colors -> the real IMD colour identities (dashboard/colors.py). */
 async function fetchColors() {
   return fetchJson("/api/colors");
