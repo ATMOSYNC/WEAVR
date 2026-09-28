@@ -1,9 +1,10 @@
 /**
  * Nav wiring + lead-time selector for the dashboard-web frontend.
- * Only "Weight map" is functional as of step 3 -- the other 3 nav items
- * are real, clickable, and show an explicit "not yet built" state rather
- * than a broken/no-op click (frontendplan.md §2.7's interaction model:
- * switching views never reloads the page).
+ * All 4 views are functional as of step 6 (weight map, skill trends,
+ * blended map, extreme-probability map) -- `renderNotBuilt` below is kept
+ * as the real fallback path for `VIEWS` entries whose `render` is unset,
+ * matching frontendplan.md §2.7's interaction model: switching views
+ * never reloads the page, and no click is ever a broken no-op.
  */
 
 const SKILL_METRICS = ["rmse_mm", "crps_mm"];
@@ -27,7 +28,7 @@ const VIEWS = {
   "extreme-probability": {
     title: "Extreme-probability map",
     needsLead: true,
-    render: null,
+    render: (container, lead) => ExtremeProbabilityView.render(container, lead),
   },
 };
 

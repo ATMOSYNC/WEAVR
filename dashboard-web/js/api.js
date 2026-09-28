@@ -33,6 +33,11 @@ async function fetchBlendedMap(lead) {
   return fetchJson(`/api/blended-map?lead=${encodeURIComponent(lead)}`);
 }
 
+/** GET /api/extreme-probability?lead=<int> -> the real 129x135 P(rain > 204.5mm) grid. */
+async function fetchExtremeProbability(lead) {
+  return fetchJson(`/api/extreme-probability?lead=${encodeURIComponent(lead)}`);
+}
+
 /** GET /api/colors -> the real IMD colour identities (dashboard/colors.py). */
 async function fetchColors() {
   return fetchJson("/api/colors");
