@@ -157,6 +157,21 @@ from being a deterministic point-forecast blend rather than a fitted
 predictive distribution like EMOS-CSG/BMA). Phase 5's regime-conditioned
 model is not adopted.
 
+See [docs/phase6-operational-scope.md](docs/phase6-operational-scope.md) for
+Phase 6's two operational decisions, checked against what this project can
+actually reach rather than assumed: NWP (IFS/HRES) already has a working
+published route via `src/weavr/data/ecmwf_open_data.py`, settled with no
+tradeoff; the AI-model side does not — WeatherBench 2's GraphCast/Pangu
+archives are fixed historical eval windows, not a live feed, so **AIFS
+(ECMWF's own AI model, reachable via the same client with
+`model="aifs-single"`) is substituted for GraphCast/Pangu** as the daily
+pipeline's AI-model input, a real, checked, user-confirmed divergence from
+the models Phases 2-5 were actually evaluated against. The daily job itself
+runs on a GitHub Actions `schedule:` trigger (reusing this repo's existing
+CI infra rather than a new always-on machine), publishing small committed
+result files the same way every `run_tierN_*.py` script already does,
+rather than extending the existing one-shot, full-season Zarr stores.
+
 ## Development
 
 ```bash
