@@ -223,6 +223,49 @@ drift genuinely cannot fire yet no matter how large a real shift is; this
 resolves once step 4's daily pipeline has accumulated more real days than
 `TRAILING_WINDOW_SAMPLES`, with no code change needed here.
 
+[scripts/run_daily_pipeline.py](scripts/run_daily_pipeline.py) is issue #8's
+actual operational deliverable, wiring steps 1-3 into one real job: fetch
+each source per `docs/phase6-operational-scope.md`'s decision (AIFS/IFS/
+HRES), renormalize over whatever sources actually arrived
+(`weavr.renormalize`), blend, and retrospectively verify/drift-check once a
+forecast's valid day's IMD obs becomes available (`weavr.drift`). **Which
+combiner, checked and routed to the user rather than assumed**: not
+EMOS-CSG/BMA — their fitted parameters are per-source statistical fits
+(CSGD regression coefficients, spread-variance regressions) tied to
+GraphCast/HRES/`ifs_ens_mean`'s own real historical error characteristics,
+which the live AIFS/deterministic-IFS substitutions don't match; reusing
+them would apply one model's bias-correction to a different model's output.
+**Uses Phase 3's `weavr.weighting.fit_region_weights` instead**
+(`results/tier1_regional_weights.csv`, already fit and committed) — its
+flat linear OLS weights are a much lighter, explicitly flagged
+approximation under the same substitution. Two more real substitutions
+stated plainly: AIFS (`model="aifs-single"`) fills the `graphcast` weight
+slot, and a single deterministic IFS pull fills the `ifs_ens_mean` slot (the
+real ensemble mean it was fit against isn't published near-real-time).
+**Ground truth checked live, not assumed**: IMD's real gridded product has
+no valid current-year data through this project's client (live-tested,
+`imdlib` fails to parse a current-year request) — `fetch_today_obs` returns
+`None` as an expected case, and verification is necessarily retrospective
+(a forecast issued `lead_hours` ago validates today), scored against a
+small per-day `.npy` archive (`results/daily_pipeline_forecasts/`) kept
+specifically to make that retrospective scoring possible. A known,
+unfixed operational risk is flagged in the module's own docstring: ECMWF's
+client retries a rate-limited response up to 500 times internally, which
+can make a real run hang far longer than expected.
+
+Issue #8's checkboxes, against what's actually been built: **renormalize
+weights for a missing/late source** — done (`weavr.renormalize`, step 2).
+**Run-ourselves vs. consume-published-forecasts** — decided
+(`docs/phase6-operational-scope.md`, step 1). **Storage/pipeline-runner** —
+decided (step 1: GitHub Actions `schedule:` trigger, small committed
+artifacts); the `schedule:` workflow entry itself is not added in this
+step — wiring the trigger is a one-line addition once whoever runs this
+operationally is ready for it to fetch real data on a real cadence, left
+for a follow-up rather than turned on silently here. **Daily-refreshed
+rolling verification and drift detection** — done
+(`weavr.drift`/`scripts/run_daily_verification.py`, step 3, and this
+script's own retrospective scoring).
+
 ## Development
 
 ```bash
