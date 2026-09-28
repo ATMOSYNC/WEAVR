@@ -4,8 +4,11 @@ import xarray as xr
 
 from weavr.bma import (
     MIN_TRAIN_DAYS_PER_BIN,
+    BmaComponentFit,
     BmaFitResult,
     fit_hierarchical_bma,
+    renormalize_bma_for_present_sources,
+    sample_bma_mixture,
     score_bma,
 )
 
@@ -230,3 +233,98 @@ class TestScoreBma:
         )
 
         assert float(fitted_scores.mean()) < float(fallback_scores.mean())
+
+
+def _component(source):
+    return BmaComponentFit(
+        source=source,
+        route="kernel_dressing",
+        zero_intercept=0.0,
+        zero_slope=0.0,
+        gamma_mean_intercept=1.0,
+        gamma_mean_slope=0.5,
+        gamma_variance_intercept=1.0,
+        gamma_variance_slope=0.0,
+    )
+
+
+class TestRenormalizeBmaForPresentSources:
+    def _fitted_result(self):
+        return BmaFitResult(
+            bin_label="light",
+            region="R1",
+            weights={"graphcast": 0.5, "hres": 0.3, "ifs_ens": 0.2},
+            components={
+                "graphcast": _component("graphcast"),
+                "hres": _component("hres"),
+                "ifs_ens": _component("ifs_ens"),
+            },
+            is_fallback=False,
+            n_train_days=10,
+        )
+
+    def test_missing_source_drops_its_weight_and_component_then_renormalizes(self):
+        result = self._fitted_result()
+
+        renormalized = renormalize_bma_for_present_sources(result, ["graphcast", "ifs_ens"])
+
+        assert set(renormalized.weights) == {"graphcast", "ifs_ens"}
+        assert sum(renormalized.weights.values()) == pytest.approx(1.0)
+        assert renormalized.weights["graphcast"] == pytest.approx(5 / 7)
+        assert set(renormalized.components) == {"graphcast", "ifs_ens"}
+        assert not renormalized.is_fallback
+
+    def test_only_one_source_present_is_flagged_but_keeps_its_real_component(self):
+        result = self._fitted_result()
+
+        renormalized = renormalize_bma_for_present_sources(result, ["hres"])
+
+        assert renormalized.weights == {"hres": 1.0}
+        assert set(renormalized.components) == {"hres"}
+        assert renormalized.is_fallback
+        assert renormalized.reason is not None
+
+    def test_single_surviving_source_still_samples_from_its_real_component_not_zero(self):
+        result = self._fitted_result()
+        renormalized = renormalize_bma_for_present_sources(result, ["hres"])
+
+        forecast_mean = {"hres": np.array([2.0, 4.0])}
+        forecast_spread = {"hres": None}
+        samples = sample_bma_mixture(
+            renormalized, forecast_mean, forecast_spread, np.random.default_rng(0), n_samples=200
+        )
+
+        # A real, non-degenerate mixture draws a spread of positive values,
+        # not the fit-time fallback's point mass at exactly zero.
+        assert samples.mean() > 0.0
+
+    def test_fit_time_fallback_cell_is_returned_unchanged(self):
+        fallback_result = BmaFitResult(
+            bin_label="extreme",
+            region="R1",
+            weights={"graphcast": 0.5, "hres": 0.5},
+            components={},
+            is_fallback=True,
+            reason="too few train days",
+            n_train_days=1,
+        )
+
+        renormalized = renormalize_bma_for_present_sources(fallback_result, ["graphcast"])
+
+        assert renormalized is fallback_result
+
+    def test_present_sources_original_weights_sum_to_zero_still_keeps_components(self):
+        result = BmaFitResult(
+            bin_label="light",
+            region="R1",
+            weights={"a": 0.0, "b": 0.0, "c": 1.0},
+            components={"a": _component("a"), "b": _component("b"), "c": _component("c")},
+            is_fallback=False,
+            n_train_days=10,
+        )
+
+        renormalized = renormalize_bma_for_present_sources(result, ["a", "b"])
+
+        assert renormalized.weights == pytest.approx({"a": 0.5, "b": 0.5})
+        assert set(renormalized.components) == {"a", "b"}
+        assert renormalized.is_fallback

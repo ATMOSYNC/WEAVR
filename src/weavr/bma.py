@@ -88,6 +88,7 @@ from scipy import optimize
 from scipy.stats import gamma as gamma_dist
 
 from weavr.rain_bins import RAIN_BIN_LABELS
+from weavr.renormalize import renormalize_weights
 from weavr.verify import crps as ensemble_crps
 
 # Same threshold, same reasoning, as weavr.emos.MIN_TRAIN_DAYS_PER_BIN --
@@ -141,7 +142,13 @@ class BmaFitResult:
     `is_fallback=True` means too few train days contributed to this cell;
     `weights` is then an equal split across every source and `components`
     is empty, visible via `is_fallback`/`reason` rather than a silently
-    meaningless EM result.
+    meaningless EM result. `renormalize_bma_for_present_sources` also sets
+    `is_fallback=True` for a *different* reason -- only one source survived
+    at prediction time -- but leaves that one source's real fitted
+    component in place; `components` (empty vs. non-empty) is what actually
+    distinguishes "no real fit exists" from "a real fit exists but
+    degenerated to one source for this day", not `is_fallback` alone (see
+    `sample_bma_mixture`).
     """
 
     bin_label: str
@@ -422,6 +429,45 @@ def fit_hierarchical_bma(
     return results
 
 
+def renormalize_bma_for_present_sources(
+    result: BmaFitResult, present_sources: tuple[str, ...] | list[str]
+) -> BmaFitResult:
+    """Adapts a fitted BMA mixture to a prediction day where one or more of
+    its fit-time sources didn't arrive -- BMA's weights are already the
+    flat `{source: mixture_weight}` shape `weavr.renormalize.
+    renormalize_weights` operates on, but unlike `weavr.weighting`/
+    `weavr.regime_weighting` (a plain weighted sum with no other per-source
+    state), a missing source's fitted `BmaComponentFit` -- its own
+    predictive distribution -- has to be dropped too, not just its mixture
+    share: `sample_bma_mixture`/`score_bma` both iterate `result.weights`
+    and index `result.components` by the same source names, so leaving a
+    missing source's component behind after renormalizing its weight away
+    would still try to sample from a distribution with no real data behind
+    it for that day.
+
+    A cell already `is_fallback` at fit time is returned unchanged --
+    prediction-time renormalization only has meaning for a mixture that
+    was actually fit; an equal-weight-mixture-of-point-masses-at-zero
+    fallback has no real per-source components to drop from in the first
+    place.
+    """
+    if result.is_fallback:
+        return result
+
+    renormalized = renormalize_weights(result.weights, present_sources)
+    components = {s: result.components[s] for s in renormalized.present_sources}
+
+    return BmaFitResult(
+        bin_label=result.bin_label,
+        region=result.region,
+        weights=renormalized.weights,
+        components=components,
+        is_fallback=renormalized.is_fallback,
+        reason=renormalized.reason,
+        n_train_days=result.n_train_days,
+    )
+
+
 def sample_bma_mixture(
     result: BmaFitResult,
     forecast_mean: dict[str, np.ndarray],
@@ -434,13 +480,18 @@ def sample_bma_mixture(
     estimate (see this module's docstring for why no closed form exists).
 
     Returns an array shaped `forecast's own shape + (n_samples,)`. A
-    fallback result draws from a point mass at zero (matching
-    `weavr.emos.predict_csgd_params`'s own fallback behavior).
+    result with no fitted components at all draws from a point mass at zero
+    (matching `weavr.emos.predict_csgd_params`'s own fallback behavior) --
+    checked via `not result.components` rather than `result.is_fallback`
+    directly, since `renormalize_bma_for_present_sources` can flag
+    `is_fallback=True` for a real, non-empty single-component mixture (only
+    one source survived a missing/late source at prediction time) that must
+    still be sampled from, not zeroed out.
     """
     any_mean = next(iter(forecast_mean.values()))
     shape = np.asarray(any_mean).shape
 
-    if result.is_fallback:
+    if not result.components:
         return np.zeros(shape + (n_samples,))
 
     sources = list(result.weights.keys())

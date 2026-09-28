@@ -157,6 +157,31 @@ from being a deterministic point-forecast blend rather than a fitted
 predictive distribution like EMOS-CSG/BMA). Phase 5's regime-conditioned
 model is not adopted.
 
+[src/weavr/renormalize.py](src/weavr/renormalize.py) fills issue #8's real
+operational gap: every combiner above fits/blends assuming all of its
+sources are present, but a real GraphCast/IFS/HRES pull can fail or arrive
+late. `renormalize_weights` redistributes an already-fit flat `{source:
+weight}` dict (`weavr.weighting`/`weavr.regime_weighting`'s own shape)
+proportionally over whichever sources are actually present for a given day
+-- no re-fitting -- falling back to passing a single surviving source
+through with weight 1.0 (flagged `is_fallback`/`reason`, mirroring every
+other combiner's own convention) when too few sources survive.
+`weavr.bma.renormalize_bma_for_present_sources` adapts the same idea to
+BMA's mixture shape (dropping a missing source's fitted predictive
+component, not just its weight, before renormalizing); `weavr.emos` needs
+no adaptation at all, checked rather than assumed -- it fits one source at
+a time and has no cross-source weight for a missing source to redistribute
+onto. Detecting "missing" itself is two distinct, real shapes in this
+project's own stores (`renormalize.py`'s own docstring): a source that
+never got pulled at all is simply absent as a dict key (`build_baseline_
+store.py`/`build_lagged_ensemble_store.py`/`build_ifs_ensemble_store.py`
+each write one independent, independently-failable Zarr group per source),
+while a source present overall but missing one particular day is NaN-filled
+by the existing `xr.align(..., join="outer")` step
+(`run_tier1_regional_baseline.py`/`run_tier2_hierarchical_baseline.py`
+already use this to detect a missing day for `obs`; `missing_for_sample`
+applies the identical check to a forecast source).
+
 See [docs/phase6-operational-scope.md](docs/phase6-operational-scope.md) for
 Phase 6's two operational decisions, checked against what this project can
 actually reach rather than assumed: NWP (IFS/HRES) already has a working

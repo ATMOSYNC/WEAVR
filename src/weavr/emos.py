@@ -88,6 +88,18 @@ finds essentially no wet days at all (probability of precipitation below
 0.005, the same threshold Scheuerer & Hamill use for their own "extremely
 dry grid point" fallback), falls back to a plain point-mass-at-zero
 predictive distribution instead.
+
+No `weavr.renormalize` adaptation applies to this module, checked rather
+than assumed: `fit_emos_csg` fits one source's own `CensoredShiftedGammaResult`
+at a time (see this module's docstring on why sources are never pooled) and
+produces no cross-source weight of any kind -- there is nothing here for a
+missing source to redistribute onto another source, unlike
+`weavr.weighting`/`weavr.regime_weighting`'s flat weight dict or
+`weavr.bma`'s mixture weights. A missing/late source at prediction time
+just means the caller (`scripts/run_tier2_hierarchical_baseline.py`'s
+`score_emos_source`, one call per source) skips that source's own call for
+the day it's missing; the other source's independently-fit EMOS-CSG result
+is entirely unaffected.
 """
 
 from __future__ import annotations
