@@ -37,6 +37,10 @@ dashboard = [
     "streamlit",
     "plotly",
 ]
+dashboard-api = [
+    "fastapi",
+    "uvicorn[standard]",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/weavr"]
