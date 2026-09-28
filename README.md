@@ -319,6 +319,33 @@ a real bug -- `streamlit run` inserts the script's own directory into
 repo root is added to `sys.path` first (step 5's assembled app needs the
 same fix).
 
+All 4 of issue #9's views are now built. The 4th,
+[`dashboard/views/extreme_probability.py`](dashboard/views/extreme_probability.py),
+renders P(rain > 204.5mm) -- IMD's own real "extremely heavy rain"
+boundary -- from EMOS-CSG's real fitted `ifs_ens` combiner (the real
+50-member IFS ensemble), a choice routed to the user via `AskUserQuestion`:
+EMOS-CSG's censored-shifted-gamma has a real closed-form survival function
+(`weavr.emos.exceedance_probability_csgd`, verified in `tests/test_emos.py`
+against a Monte Carlo simulation of the real censored-shifted-gamma
+sampling process), while BMA's mixture has no closed form
+(`weavr.bma`'s own docstring) and would need a slower, approximate
+per-gridpoint Monte Carlo estimate. This diverges from the blended map's
+own Tier 1 combiner (stated plainly in the view), since Tier 1's
+deterministic blend has no predictive distribution to compute an
+exceedance probability from at all. Cells whose own forecast fell in a
+rain-intensity bin EMOS-CSG could not fit for real (checked directly,
+again, while building this view: the `extremely_heavy` bin has 0 real
+train days at every one of the 5 leads, confirming
+`docs/phase4-data-and-combiner-scope.md`'s own finding) render with a
+visible grey overlay, not a confident-looking probability number. The
+grid is `dashboard/data/example_probability_grid.npz`, built by the same
+`scripts/export_dashboard_example_grids.py` (extended in this step),
+reusing `run_tier2_hierarchical_baseline.py`'s own real data-loading
+functions rather than reimplementing EMOS-CSG fitting a second time. Run
+locally with `streamlit run` and confirmed to actually render for every
+lead, including one (96h) with real fallback cells rendering the grey
+overlay correctly.
+
 ## Development
 
 ```bash

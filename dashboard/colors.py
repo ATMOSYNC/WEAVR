@@ -60,3 +60,29 @@ def build_discrete_colorscale(colors: list[str]) -> list[list[object]]:
         scale.append([i / n, color])
         scale.append([(i + 1) / n, color])
     return scale
+
+
+# A probability (dimensionless, 0-1) has no real IMD-published breakpoint
+# of its own -- only the mm-based rain-intensity categories above are
+# IMD's real, cited scheme. Rather than inventing new, unstated probability
+# breakpoints, this reuses the exact same 4 real IMD colour identities
+# (white/green/yellow/orange/red) as a smooth gradient spread evenly across
+# [0, 1], so the extreme-probability view stays visually consistent with
+# the blended map's own colours without fabricating a second palette.
+PROBABILITY_COLORSCALE: list[list[object]] = [
+    [0.00, RAIN_BIN_COLORS["dry"]],
+    [0.25, RAIN_BIN_COLORS["light"]],
+    [0.50, RAIN_BIN_COLORS["heavy"]],
+    [0.75, RAIN_BIN_COLORS["very_heavy"]],
+    [1.00, RAIN_BIN_COLORS["extremely_heavy"]],
+]
+
+
+def fallback_overlay(is_fallback: np.ndarray) -> np.ndarray:
+    """A same-shaped array of `1.0` where `is_fallback` is True and `NaN`
+    everywhere else -- for layering a distinct, visible overlay on top of a
+    probability heatmap (a second Plotly trace with NaN cells left
+    transparent) rather than letting a fallback cell's real ~0 probability
+    look identical to a genuinely low-risk, real fitted one.
+    """
+    return np.where(is_fallback, 1.0, np.nan)

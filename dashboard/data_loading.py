@@ -27,6 +27,7 @@ DEFAULT_TIER1_CSV = RESULTS_DIR / "tier1_regional_baseline.csv"
 DEFAULT_TIER2_CSV = RESULTS_DIR / "tier2_hierarchical_baseline.csv"
 DEFAULT_BLEND_GRID_NPZ = DASHBOARD_DATA_DIR / "example_blend_grid.npz"
 DEFAULT_TIER3_CSV = RESULTS_DIR / "tier3_regime_conditioned_baseline.csv"
+DEFAULT_PROBABILITY_GRID_NPZ = DASHBOARD_DATA_DIR / "example_probability_grid.npz"
 
 
 def load_weight_map_data(csv_path: str | Path = DEFAULT_WEIGHTS_CSV) -> pd.DataFrame:
@@ -185,6 +186,43 @@ def load_blend_grid(lead_hours: int, npz_path: str | Path = DEFAULT_BLEND_GRID_N
             "latitude": data["latitude"],
             "longitude": data["longitude"],
             "values": data[f"blend_lead_{lead_hours}"],
+            "sample_time": str(data[f"sample_time_lead_{lead_hours}"]),
+            "lead_hours": lead_hours,
+        }
+
+
+def available_probability_grid_leads(
+    npz_path: str | Path = DEFAULT_PROBABILITY_GRID_NPZ,
+) -> list[int]:
+    """Lead times (hours) present in the committed example probability-grid export."""
+    with np.load(npz_path) as data:
+        return [int(lh) for lh in data["lead_hours"]]
+
+
+def load_probability_grid(
+    lead_hours: int, npz_path: str | Path = DEFAULT_PROBABILITY_GRID_NPZ
+) -> dict:
+    """Load one lead time's real example P(rain > 204.5mm) grid.
+
+    Built by `scripts/export_dashboard_example_grids.py` from EMOS-CSG's
+    real fitted `ifs_ens` combiner (step 4's own decision, routed via
+    `AskUserQuestion` -- see `dashboard/views/extreme_probability.py`'s
+    docstring) -- this function only reads the already-exported `.npz`, it
+    does not compute anything.
+
+    Returns `{"latitude": ndarray, "longitude": ndarray, "probability":
+    ndarray (lat, lon), "is_fallback": bool ndarray (lat, lon),
+    "sample_time": str, "lead_hours": int}`.
+    """
+    with np.load(npz_path) as data:
+        available = [int(lh) for lh in data["lead_hours"]]
+        if lead_hours not in available:
+            raise ValueError(f"lead_hours={lead_hours} not in this export's leads {available}")
+        return {
+            "latitude": data["latitude"],
+            "longitude": data["longitude"],
+            "probability": data[f"probability_lead_{lead_hours}"],
+            "is_fallback": data[f"is_fallback_lead_{lead_hours}"],
             "sample_time": str(data[f"sample_time_lead_{lead_hours}"]),
             "lead_hours": lead_hours,
         }
