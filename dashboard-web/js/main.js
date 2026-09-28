@@ -19,7 +19,11 @@ const VIEWS = {
     needsMetric: true,
     render: (container, metric) => SkillTrendsView.render(container, metric),
   },
-  "blended-map": { title: "Blended map", needsLead: true, render: null },
+  "blended-map": {
+    title: "Blended map",
+    needsLead: true,
+    render: (container, lead) => BlendedMapView.render(container, lead),
+  },
   "extreme-probability": {
     title: "Extreme-probability map",
     needsLead: true,
