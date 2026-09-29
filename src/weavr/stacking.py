@@ -335,10 +335,10 @@ def crps_from_quantiles(
     # with boundary points tau=0 (q=0 or q(0)) and tau=1 (q(1))
     # Standard practice with equispaced or general levels: np.trapezoid along the last axis
     # Note: 2 * trapezoid(pinball, levels_arr, axis=-1)
-    if hasattr(np, "trapezoid"):
-        crps = 2.0 * np.trapezoid(pinball, x=levels_arr, axis=-1)
-    else:
-        crps = 2.0 * np.trapz(pinball, x=levels_arr, axis=-1)
+    trapezoid_fn = getattr(np, "trapezoid", getattr(np, "trapz", None))
+    if trapezoid_fn is None:
+        raise RuntimeError("Neither np.trapezoid nor np.trapz is available")
+    crps = 2.0 * trapezoid_fn(pinball, x=levels_arr, axis=-1)
 
     # Return float if obs was scalar
     if obs_arr.shape == ():
