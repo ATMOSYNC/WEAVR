@@ -103,8 +103,13 @@ flowchart LR
 
 Every stage is a small, tested module in `src/weavr/`: `grid`, `ensemble`,
 `weighting`, `emos`, `bma`, `regions`, `verify`, `significance`,
-`climatology`, `independence`, `drift` and `renormalize`, with the runnable
-pipelines in `scripts/`.
+`climatology`, `independence`, `drift`, `renormalize` and `stacking`,
+with the runnable pipelines in `scripts/`.
+
+### Tier 2b: Combiner meta-blend (`weavr.stacking`)
+
+WEAVR meta-blends distributional combiners (EMOS-CSG and BMA) through three stacking strategies (`weavr.stacking`): per-bin selection (applying each method where its training density is well-supported), linear density pooling with weights $\alpha \cdot f_{\text{EMOS}} + (1-\alpha) \cdot f_{\text{BMA}}$, and quantile averaging across the predictive distributions with exact root-finding quantile inversion for the censored shifted gamma distribution (CSGD).
+
 
 ## The dashboard
 
@@ -208,7 +213,7 @@ changes skip it). Split data with `weavr.splits` only, never a random split.
 |---|---|
 | Plan and history | [Phase plan](docs/phase-plan.md) · [Development log](docs/development-log.md) · [Improvement plan](Improvements/WEAVR-SIH-improvement-plan.md) · [Execution plan](Improvements/EXECUTION-PLAN.md) |
 | Data | [Data sources](docs/data-sources.md) · [Grid and time convention](docs/grid-and-time-convention.md) · [Baseline store](docs/baseline-store.md) |
-| Methods and results | [Tier 0](docs/tier0-baseline-results.md) · [Tier 1](docs/tier1-regional-weights-results.md) · [Tier 2](docs/tier2-hierarchical-baseline-results.md) · [Regime conditioning](docs/phase5-regime-conditioned-results.md) |
+| Methods and results | [Tier 0](docs/tier0-baseline-results.md) · [Tier 1](docs/tier1-regional-weights-results.md) · [Tier 2](docs/tier2-hierarchical-baseline-results.md) · [Tier 2b combined](docs/tier2b-combined-results.md) · [Regime conditioning](docs/phase5-regime-conditioned-results.md) |
 | Dashboard | [Dashboard scope](docs/phase7-dashboard-scope.md) · [Basemap](docs/basemap-scope.md) |
 
 ## Acknowledgements and data
