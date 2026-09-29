@@ -154,3 +154,51 @@ the real tile file rendered the Kerala coast at zoom 7 (land, sea, roads,
 "© OpenStreetMap contributors" attribution) with no map errors, and every
 network request went to `127.0.0.1` only. `curl -r 0-99` on the tile route
 returns `206` with `Content-Range: bytes 0-99/147968833`.
+
+## The map component and the blended map (step 04)
+
+`dashboard-web/js/charts/basemapMap.js` is one reusable module
+(`BasemapMap.isAvailable()`, `BasemapMap.create(container)`,
+`handle.setCells({latitude, longitude, colorAt})`, `handle.destroy()`).
+The blended-map view (`blendedMap.js`) gets a **Show geography** checkbox,
+off by default, that swaps its canvas for this map.
+
+**How cells are placed.** Each cell is a GeoJSON polygon in a MapLibre fill
+layer, not a picture stretched over a bounding box (Web Mercator is not
+linear in latitude, so an image would misplace cells by kilometres). Grid
+coordinates are cell centres, so each polygon spans half a grid step either
+side; the step is read from the data and checked to be regular. Dry cells
+(bin 0) are left out so the basemap shows through; the rest use the same
+discrete IMD colours as the canvas.
+
+**Fallback.** The toggle only takes effect if the libraries loaded, WebGL is
+available and `/api/basemap/status` says the tile file exists; any failure
+while creating the map (including a 10 s load timeout) unchecks the box,
+shows the plain canvas and the caption "Basemap unavailable -- showing the
+plain grid." The map creation *promise* is cached, so changing the lead while
+the first map is still loading joins that creation instead of starting a
+second one; a single map is reused across lead changes and view switches.
+
+**Also changed:** below 720 px width the navigation now sits above the view
+instead of beside it (`style.css`). Before that the sidebar took half a phone
+screen and the map was 91 px wide; this helps every view.
+
+### Verification (real browser, fresh port, 2026-09-29)
+
+| Check | Result |
+|---|---|
+| Half-cell offset | polygon for lat 6.5, lon 66.5 spans 6.375–6.625 and 66.375–66.625; whole-grid bounds 66.375–100.125 E, 6.375–38.625 N |
+| Cells vs data | 40 of 40 sampled cells in 8–13 N, 74–79 E: querying the rendered map at each cell's projected centre returns the colour the API's bin gives (dry cells return nothing) |
+| Coast | Kochi (9.98 N, 76.3 E) is on the land layer; 1.3° west of it (75.0 E) is sea |
+| Every lead (24, 48, 72, 96, 120) | renders; lead change with the map already open takes 50–160 ms |
+| Changing lead during the first load | one map instance, correct final lead |
+| Toggling, and view switch and back | 1 map instance, 1 WebGL canvas, choice remembered; no errors |
+| Tile file missing | canvas plus the caption, no errors |
+| WebGL unavailable | same fallback |
+| 375 px width | map 343 px wide, no horizontal scroll on any of the four views |
+
+Notes: first map creation takes about a second (style, tiles). The browser
+pane used for these checks was hidden, and browsers pause
+`requestAnimationFrame` in hidden tabs, so the checks replaced it with a
+timer; in a visible tab MapLibre runs normally. In a hidden tab the 10 s load
+timeout can trigger the fallback.

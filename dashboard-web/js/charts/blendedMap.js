@@ -30,6 +30,21 @@
 
 const BLENDED_MAP_CELL_SIZE = 4;
 
+// Remembered across lead changes so the choice survives a re-render.
+let blendedMapGeographyOn = false;
+
+// One live map is kept and re-attached on every re-render (a lead change
+// rebuilds the view's DOM). Creating a map costs about a second; reusing it
+// makes a lead change only a data update.
+let blendedMapGeographyCache = null; // { element, destroyed, handlePromise }
+
+const BLENDED_MAP_GEOGRAPHY_NOTE =
+  "Cells are drawn on an OpenStreetMap-derived basemap served from this " +
+  "machine. Dry cells are transparent so the geography shows through; " +
+  "the basemap draws no national boundaries.";
+const BLENDED_MAP_GEOGRAPHY_UNAVAILABLE =
+  "Basemap unavailable -- showing the plain grid.";
+
 const BLENDED_MAP_CAPTION =
   "This map shows Tier 1's real fitted regional blend " +
   "(weavr.weighting.fit_region_weights) -- the combiner " +
@@ -141,9 +156,102 @@ const BlendedMapView = {
       (label) => colors.rain_bin_colors[label]
     );
 
+    const toggleLabel = document.createElement("label");
+    toggleLabel.className = "map-mode-toggle";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.id = "blended-map-geography";
+    toggle.checked = blendedMapGeographyOn;
+    toggleLabel.appendChild(toggle);
+    toggleLabel.appendChild(document.createTextNode("Show geography"));
+    container.appendChild(toggleLabel);
+
+    const geographyNote = document.createElement("p");
+    geographyNote.className = "view-caption";
+    geographyNote.id = "blended-map-geography-note";
+    container.appendChild(geographyNote);
+
     const canvasContainer = document.createElement("div");
     container.appendChild(canvasContainer);
     renderBlendedMapCanvas(canvasContainer, grid, binColors);
+
+    const mapContainer = blendedMapGeographyCache
+      ? blendedMapGeographyCache.element
+      : document.createElement("div");
+    mapContainer.id = "blended-map-geography-map";
+    mapContainer.hidden = true;
+    container.appendChild(mapContainer);
+
+    // Bin 0 ("dry") is left transparent on the map: a solid white fill would
+    // hide the very geography the toggle is for.
+    const colorAt = (i, j) => {
+      const bin = grid.bin_index[i][j];
+      return bin === 0 ? null : binColors[bin] || "#000000";
+    };
+
+    const showCanvas = (message) => {
+      mapContainer.hidden = true;
+      canvasContainer.hidden = false;
+      geographyNote.textContent = message || "";
+    };
+
+    const showGeography = async () => {
+      if (!(await BasemapMap.isAvailable())) {
+        throw new Error("basemap unavailable");
+      }
+      // The creation PROMISE is cached, not the finished handle: a lead
+      // change while the first map is still loading must join that creation
+      // rather than start a second map.
+      if (blendedMapGeographyCache && blendedMapGeographyCache.destroyed) {
+        blendedMapGeographyCache = null; // another view pruned it
+      }
+      if (!blendedMapGeographyCache) {
+        const entry = { element: mapContainer, destroyed: false, handlePromise: null };
+        entry.handlePromise = BasemapMap.create(mapContainer).then((created) => {
+          const destroy = created.destroy;
+          created.destroy = () => {
+            entry.destroyed = true;
+            destroy();
+          };
+          return created;
+        });
+        blendedMapGeographyCache = entry;
+      }
+      const entry = blendedMapGeographyCache;
+      let handle;
+      try {
+        handle = await entry.handlePromise;
+      } catch (err) {
+        if (blendedMapGeographyCache === entry) blendedMapGeographyCache = null;
+        throw err;
+      }
+      handle.setCells({ latitude: grid.latitude, longitude: grid.longitude, colorAt });
+      canvasContainer.hidden = true;
+      mapContainer.hidden = false;
+      handle.resize();
+      geographyNote.textContent = BLENDED_MAP_GEOGRAPHY_NOTE;
+    };
+
+    const applyMode = async () => {
+      blendedMapGeographyOn = toggle.checked;
+      if (!toggle.checked) {
+        showCanvas("");
+        return;
+      }
+      try {
+        await showGeography();
+      } catch (err) {
+        // Any failure -- no tile file, no WebGL, bad tiles -- leaves the
+        // plain grid in place, with the reason stated, never a blank map.
+        toggle.checked = false;
+        blendedMapGeographyOn = false;
+        blendedMapGeographyCache = null;
+        mapContainer.innerHTML = "";
+        showCanvas(BLENDED_MAP_GEOGRAPHY_UNAVAILABLE);
+      }
+    };
+    toggle.addEventListener("change", applyMode);
+    if (blendedMapGeographyOn) applyMode();
 
     renderBlendedMapLegend(container, colors.rain_bin_labels, colors.rain_bin_colors);
 
