@@ -33,10 +33,6 @@ const BLENDED_MAP_CELL_SIZE = 4;
 // Remembered across lead changes so the choice survives a re-render.
 let blendedMapGeographyOn = false;
 
-// One live map is kept and re-attached on every re-render (a lead change
-// rebuilds the view's DOM). Creating a map costs about a second; reusing it
-// makes a lead change only a data update.
-let blendedMapGeographyCache = null; // { element, destroyed, handlePromise }
 
 const BLENDED_MAP_GEOGRAPHY_NOTE =
   "Cells are drawn on an OpenStreetMap-derived basemap served from this " +
@@ -175,9 +171,8 @@ const BlendedMapView = {
     container.appendChild(canvasContainer);
     renderBlendedMapCanvas(canvasContainer, grid, binColors);
 
-    const mapContainer = blendedMapGeographyCache
-      ? blendedMapGeographyCache.element
-      : document.createElement("div");
+    const mapEntry = BasemapMap.shared("blended");
+    const mapContainer = mapEntry.element;
     mapContainer.id = "blended-map-geography-map";
     mapContainer.hidden = true;
     container.appendChild(mapContainer);
@@ -199,32 +194,7 @@ const BlendedMapView = {
       if (!(await BasemapMap.isAvailable())) {
         throw new Error("basemap unavailable");
       }
-      // The creation PROMISE is cached, not the finished handle: a lead
-      // change while the first map is still loading must join that creation
-      // rather than start a second map.
-      if (blendedMapGeographyCache && blendedMapGeographyCache.destroyed) {
-        blendedMapGeographyCache = null; // another view pruned it
-      }
-      if (!blendedMapGeographyCache) {
-        const entry = { element: mapContainer, destroyed: false, handlePromise: null };
-        entry.handlePromise = BasemapMap.create(mapContainer).then((created) => {
-          const destroy = created.destroy;
-          created.destroy = () => {
-            entry.destroyed = true;
-            destroy();
-          };
-          return created;
-        });
-        blendedMapGeographyCache = entry;
-      }
-      const entry = blendedMapGeographyCache;
-      let handle;
-      try {
-        handle = await entry.handlePromise;
-      } catch (err) {
-        if (blendedMapGeographyCache === entry) blendedMapGeographyCache = null;
-        throw err;
-      }
+      const handle = await mapEntry.handle();
       handle.setCells({ latitude: grid.latitude, longitude: grid.longitude, colorAt });
       canvasContainer.hidden = true;
       mapContainer.hidden = false;
@@ -245,7 +215,6 @@ const BlendedMapView = {
         // plain grid in place, with the reason stated, never a blank map.
         toggle.checked = false;
         blendedMapGeographyOn = false;
-        blendedMapGeographyCache = null;
         mapContainer.innerHTML = "";
         showCanvas(BLENDED_MAP_GEOGRAPHY_UNAVAILABLE);
       }
