@@ -369,12 +369,12 @@ of 1,691 method comparisons had a computable confidence interval**
 | Store | Status |
 |---|---|
 | `data/baseline_2020_jjas_daily.zarr` | **built**, 122 inits, validated |
-| `data/lagged_ensemble_inputs_2020_jjas_daily.zarr` | builder ready and deduplicating; the fetch itself is long-running and was not completed in this pass |
+| `data/lagged_ensemble_inputs_2020_jjas_daily.zarr` | **built**, 122 nominal inits, validated |
 | `data/ifs_ens_2020_jjas_daily.zarr` | **not built** -- see below |
 
 All three builders are parametrised, deduplicated and tested here; the data
-itself is gitignored, so the remaining two stores can be produced at any time
-by running the commands below without further code changes.
+itself is gitignored, so the IFS-ENS store can be produced at any time by
+running the command below without further code changes.
 
 ### Measured fetch costs
 
@@ -439,8 +439,11 @@ is undefined below 24 h:
 `scripts/validate_daily_stores.py` checks exactly this against the built
 store, and fails if it does not hold.
 
-Measured cost, from a real run: **57 s per 50-pair batch**, 35 batches per
-source, two sources -- about **70 minutes** end to end. Build it with:
+Measured cost, from the real run that produced this store: **57 s per 50-pair
+batch**, 35 batches per source, two sources -- about **70 minutes** end to
+end. Validated: 122 nominal inits over 2020-06-01..2020-09-30 with zero gaps,
+no all-NaN samples, and member counts matching the documented pattern exactly
+at every lead. Rebuild it with:
 
 ```bash
 python scripts/build_lagged_ensemble_store.py \
