@@ -92,6 +92,7 @@ from run_tier0_baseline import PRECIP_M_TO_MM, _align_to_imd_day  # noqa: E402
 
 from weavr import verify as V  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
+from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
 from weavr.splits import InsufficientTimeBlocksError, seasonal_block_split  # noqa: E402
 from weavr.weighting import RegionWeightResult, fit_region_weights  # noqa: E402
 
@@ -230,6 +231,7 @@ def main() -> int:
     parser.add_argument("--store", default="data/baseline_2020_jjas.zarr")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
     parser.add_argument("--out-csv", default="results/tier1_regional_baseline.csv")
+    parser.add_argument("--results-dir", default="results")
     parser.add_argument("--region-out-csv", default="results/tier1_regional_baseline_by_region.csv")
     parser.add_argument("--weights-out-csv", default="results/tier1_regional_weights.csv")
     parser.add_argument("--test-fraction", type=float, default=0.2)
@@ -278,6 +280,18 @@ def main() -> int:
         test_tier1 = tier1_blend.isel(sample=test_mask)
         test_equal = equal_blend.isel(sample=test_mask)
         test_obs = obs_aligned.isel(sample=test_mask)
+
+        # Step 04 (additive): per-day scores on this same test split. The
+        # equal-weight blend is Tier 0's, already written by
+        # run_tier0_baseline.py, so only the Tier 1 blend is written here --
+        # two files under one method name would let the scorecard silently
+        # use whichever script ran last.
+        write_per_day_scores(
+            "tier1_regional",
+            lead_hours,
+            per_day_scores(test_tier1, test_obs, fold="test"),
+            out_dir=args.results_dir,
+        )
 
         tier1_result = score_blend(
             test_tier1, test_obs, climatology, V.IMD_RAIN_THRESHOLDS_MM, args.neighborhood_size

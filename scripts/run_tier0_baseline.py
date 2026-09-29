@@ -66,6 +66,7 @@ from build_seeps_climatology import load_climatology  # noqa: E402
 
 from weavr import verify as V  # noqa: E402
 from weavr.grid import IMD_DAY_START_HOUR_UTC  # noqa: E402
+from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
 from weavr.splits import (  # noqa: E402
     InsufficientTimeBlocksError,
     leave_one_year_out,
@@ -198,6 +199,7 @@ def main() -> int:
     parser.add_argument("--store", default="data/baseline_2020_jjas.zarr")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
     parser.add_argument("--out-csv", default="results/tier0_baseline.csv")
+    parser.add_argument("--results-dir", default="results")
     parser.add_argument("--test-fraction", type=float, default=0.2)
     parser.add_argument("--neighborhood-size", type=int, default=NEIGHBORHOOD_SIZE)
     args = parser.parse_args()
@@ -231,6 +233,23 @@ def main() -> int:
         result["sources"] = "+".join(contributing)
         rows.append(result)
         print(f"[lead {lead_hours:>3}h] {result}")
+
+        # Additive, step 04: the same test split, recorded day by day so the
+        # scorecard can bootstrap a confidence interval around any
+        # comparison involving Tier 0. The aggregated CSV above is
+        # untouched.
+        sample_times = pd.DatetimeIndex(mean_forecast["sample"].values)
+        _, _, test_mask = train_test_masks(sample_times, args.test_fraction)
+        write_per_day_scores(
+            "tier0",
+            lead_hours,
+            per_day_scores(
+                mean_forecast.isel(sample=test_mask),
+                obs_aligned.isel(sample=test_mask),
+                fold="test",
+            ),
+            out_dir=args.results_dir,
+        )
 
     out_path = Path(args.out_csv)
     out_path.parent.mkdir(parents=True, exist_ok=True)
