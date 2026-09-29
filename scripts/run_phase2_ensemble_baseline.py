@@ -71,9 +71,13 @@ from weavr.ensemble import NoLaggedMembersError, build_lagged_ensemble  # noqa: 
 from weavr.grid import IMD_DAY_START_HOUR_UTC  # noqa: E402
 from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
 from weavr.splits import (  # noqa: E402,E501
-    InsufficientTimeBlocksError,
-    leave_one_year_out,
-    seasonal_block_split,
+    iter_evaluation_folds,
+)
+from weavr.stores import (  # noqa: E402
+    DEFAULT_BASELINE_DAILY_STORES,
+    DEFAULT_LAGGED_DAILY_STORES,
+    open_multi_season,
+    resolve_store_paths,
 )
 
 PRECIP_VARIABLE = "total_precipitation_24hr"
@@ -205,15 +209,8 @@ def score_precip_lead(
     per_day_method: str | None = None,
     lead_hours: int | None = None,
     results_dir: str | None = None,
-) -> dict:
-    """Score one lagged-ensemble lead; unchanged, plus an optional per-day write.
-
-    When `per_day_method`, `lead_hours` and `results_dir` are all given
-    (step 04, additive), the same test split is also written day by day to
-    `results/per_day/`, carrying `crps_mm`, the threshold-weighted CRPS and
-    the Brier scores this ensemble supports. The returned aggregate dict is
-    identical either way.
-    """
+) -> list[dict]:
+    """Score one lagged-ensemble lead across evaluation folds (LOYO or single-season block)."""
     sample_times = pd.DatetimeIndex(ensemble_mm["sample"].values)
 
     obs_aligned = obs_rain.reindex(time=ensemble_mm["sample"].values).rename(time="sample")
@@ -222,89 +219,163 @@ def score_precip_lead(
     obs_aligned = obs_aligned.isel(sample=has_obs.values)
     sample_times = sample_times[has_obs.values]
 
-    split_kind = "leave_one_year_out"
-    try:
-        train_mask, test_mask = next(iter(leave_one_year_out(sample_times)))
-    except InsufficientTimeBlocksError:
-        split_kind = "seasonal_block_split (single-season store; leave_one_year_out not usable)"
-        train_mask, test_mask = seasonal_block_split(sample_times, test_fraction=test_fraction)
+    folds = list(iter_evaluation_folds(sample_times, test_fraction=test_fraction))
+    rows: list[dict] = []
+    test_ensembles = []
+    test_obs_list = []
 
-    test_ensemble = ensemble_mm.isel(sample=test_mask)
-    test_obs = obs_aligned.isel(sample=test_mask)
+    for train_mask, test_mask, split_label in folds:
+        test_ensemble = ensemble_mm.isel(sample=test_mask)
+        test_obs = obs_aligned.isel(sample=test_mask)
+        test_ensembles.append(test_ensemble)
+        test_obs_list.append(test_obs)
 
-    brier_by_threshold = {
-        t: float(
-            V.brier_score(_exceedance_probability(test_ensemble, t), (test_obs >= t).astype(float))
+        brier_by_threshold = {
+            t: float(
+                V.brier_score(
+                    _exceedance_probability(test_ensemble, t),
+                    (test_obs >= t).astype(float),
+                )
+            )
+            for t in thresholds
+        }
+
+        if per_day_method and lead_hours is not None and results_dir is not None:
+            write_per_day_scores(
+                per_day_method,
+                lead_hours,
+                per_day_scores(
+                    test_ensemble.mean(dim="member", skipna=True),
+                    test_obs,
+                    fold=split_label,
+                    ensemble=test_ensemble,
+                    thresholds=thresholds,
+                    probabilities={
+                        t: _exceedance_probability(test_ensemble, t) for t in thresholds
+                    },
+                ),
+                out_dir=results_dir,
+            )
+
+        n_members = float(test_ensemble.notnull().sum(dim="member").mean())
+        spread_mm = float(V.ensemble_spread(test_ensemble))
+        rmse_of_mean_mm = float(V.rmse(test_ensemble.mean(dim="member", skipna=True), test_obs))
+        ratio = float(V.spread_skill_ratio(test_ensemble, test_obs))
+        calibrated_ratio = V.calibrated_spread_skill_ratio(n_members)
+
+        split_kind = (
+            "leave_one_year_out"
+            if split_label != "seasonal_block_split"
+            else "seasonal_block_split (single-season store; leave_one_year_out not usable)"
         )
-        for t in thresholds
-    }
 
-    if per_day_method and lead_hours is not None and results_dir is not None:
-        write_per_day_scores(
-            per_day_method,
-            lead_hours,
-            per_day_scores(
-                test_ensemble.mean(dim="member", skipna=True),
-                test_obs,
-                fold="test",
-                ensemble=test_ensemble,
-                thresholds=thresholds,
-                probabilities={
-                    t: _exceedance_probability(test_ensemble, t) for t in thresholds
-                },
-            ),
-            out_dir=results_dir,
+        rows.append(
+            {
+                "n_samples": int(ensemble_mm.sizes["sample"]),
+                "n_train": int(train_mask.sum()),
+                "n_test": int(test_mask.sum()),
+                "split": split_kind,
+                "fold": split_label,
+                "crps_mm": float(V.crps(test_ensemble, test_obs)),
+                "brier": brier_by_threshold,
+                "n_members": n_members,
+                "spread_mm": spread_mm,
+                "rmse_of_mean_mm": rmse_of_mean_mm,
+                "spread_skill_ratio": ratio,
+                "calibrated_spread_skill_ratio": calibrated_ratio,
+            }
         )
 
-    n_members = float(test_ensemble.notnull().sum(dim="member").mean())
-    spread_mm = float(V.ensemble_spread(test_ensemble))
-    rmse_of_mean_mm = float(V.rmse(test_ensemble.mean(dim="member", skipna=True), test_obs))
-    ratio = float(V.spread_skill_ratio(test_ensemble, test_obs))
-    calibrated_ratio = V.calibrated_spread_skill_ratio(n_members)
+    if len(folds) > 1:
+        pooled_ensemble = xr.concat(test_ensembles, dim="sample")
+        pooled_obs = xr.concat(test_obs_list, dim="sample")
 
-    return {
-        "n_samples": int(ensemble_mm.sizes["sample"]),
-        "n_train": int(train_mask.sum()),
-        "n_test": int(test_mask.sum()),
-        "split": split_kind,
-        "crps_mm": float(V.crps(test_ensemble, test_obs)),
-        "brier": brier_by_threshold,
-        "n_members": n_members,
-        "spread_mm": spread_mm,
-        "rmse_of_mean_mm": rmse_of_mean_mm,
-        "spread_skill_ratio": ratio,
-        "calibrated_spread_skill_ratio": calibrated_ratio,
-    }
+        brier_pooled = {
+            t: float(
+                V.brier_score(
+                    _exceedance_probability(pooled_ensemble, t),
+                    (pooled_obs >= t).astype(float),
+                )
+            )
+            for t in thresholds
+        }
+        n_members = float(pooled_ensemble.notnull().sum(dim="member").mean())
+        spread_mm = float(V.ensemble_spread(pooled_ensemble))
+        rmse_of_mean_mm = float(V.rmse(pooled_ensemble.mean(dim="member", skipna=True), pooled_obs))
+        ratio = float(V.spread_skill_ratio(pooled_ensemble, pooled_obs))
+        calibrated_ratio = V.calibrated_spread_skill_ratio(n_members)
+
+        rows.append(
+            {
+                "n_samples": int(ensemble_mm.sizes["sample"]),
+                "n_train": int(ensemble_mm.sizes["sample"]),
+                "n_test": int(pooled_ensemble.sizes["sample"]),
+                "split": "leave_one_year_out",
+                "fold": "pooled",
+                "crps_mm": float(V.crps(pooled_ensemble, pooled_obs)),
+                "brier": brier_pooled,
+                "n_members": n_members,
+                "spread_mm": spread_mm,
+                "rmse_of_mean_mm": rmse_of_mean_mm,
+                "spread_skill_ratio": ratio,
+                "calibrated_spread_skill_ratio": calibrated_ratio,
+            }
+        )
+
+    return rows
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--lagged-store", default="data/lagged_ensemble_inputs_2020_jjas.zarr"
+        "--lagged-stores",
+        nargs="+",
+        default=None,
+        help="One or more lagged ensemble store paths (multi-season; default: 2018 + 2020 daily)",
     )
-    parser.add_argument("--baseline-store", default="data/baseline_2020_jjas.zarr")
+    parser.add_argument("--lagged-store", default=None, help="Legacy single lagged store path")
+    parser.add_argument(
+        "--baseline-stores",
+        nargs="+",
+        default=None,
+        help="One or more baseline store paths (multi-season; default: 2018 + 2020 daily)",
+    )
+    parser.add_argument("--baseline-store", default=None, help="Legacy single baseline store path")
     parser.add_argument("--out-csv", default="results/phase2_ensemble_baseline.csv")
     parser.add_argument("--results-dir", default="results")
     parser.add_argument("--test-fraction", type=float, default=0.2)
     args = parser.parse_args()
 
-    obs = xr.open_zarr(args.baseline_store, group="imd_observed", consolidated=True).load()
+    lagged_paths = resolve_store_paths(
+        args.lagged_stores,
+        args.lagged_store,
+        DEFAULT_LAGGED_DAILY_STORES,
+        "data/lagged_ensemble_inputs_2020_jjas.zarr",
+    )
+    baseline_paths = resolve_store_paths(
+        args.baseline_stores,
+        args.baseline_store,
+        DEFAULT_BASELINE_DAILY_STORES,
+        "data/baseline_2020_jjas.zarr",
+    )
+
+    obs = open_multi_season(baseline_paths, group="imd_observed").load()
 
     print("Phase 2 ensemble baseline: lagged GraphCast/Pangu ensembles scored with CRPS/Brier")
-    print(f"Lagged-ensemble store: {args.lagged_store}")
+    print(f"Lagged-ensemble store(s): {lagged_paths}")
     print("Scope: precipitation only scored -- no matching-resolution IMD temperature ground truth")
 
     rows = []
     for lead_hours in LEAD_HOURS:
         for group, var in SCORED_SOURCES:
-            dense = xr.open_zarr(args.lagged_store, group=group, consolidated=True).load()
+            dense = open_multi_season(lagged_paths, group=group).load()
             raw_ds = _reconstruct_raw_source(dense, var)
             ensemble = build_ensembles_for_lead(
                 raw_ds, var, dense["nominal_time"].values, lead_hours
             )
             ensemble_mm = ensemble * PRECIP_M_TO_MM
 
-            result = score_precip_lead(
+            lead_results = score_precip_lead(
                 ensemble_mm,
                 obs["rain"],
                 V.IMD_RAIN_THRESHOLDS_MM,
@@ -313,17 +384,18 @@ def main() -> int:
                 lead_hours=lead_hours,
                 results_dir=args.results_dir,
             )
-            result["lead_hours"] = lead_hours
-            result["source"] = group
-            result["variable"] = var
-            rows.append(result)
-            print(f"[lead {lead_hours:>3}h] {group}/{var}: {result}")
+            for result in lead_results:
+                result["lead_hours"] = lead_hours
+                result["source"] = group
+                result["variable"] = var
+                rows.append(result)
+                print(f"[lead {lead_hours:>3}h | fold {result['fold']}] {group}/{var}: {result}")
 
     print("\nTemperature ensembles (built, not scored -- no matching-resolution IMD ground truth):")
     print("Spread magnitude only below -- descriptive, no error to compare against.")
     temperature_rows = []
     for group, var in UNSCORED_TEMPERATURE_SOURCES:
-        dense = xr.open_zarr(args.lagged_store, group=group, consolidated=True).load()
+        dense = open_multi_season(lagged_paths, group=group).load()
         raw_ds = _reconstruct_raw_source(dense, var)
         for lead_hours in LEAD_HOURS:
             n_built = 0
@@ -361,6 +433,7 @@ def main() -> int:
         "lead_hours",
         "source",
         "variable",
+        "fold",
         "split",
         "n_samples",
         "n_train",

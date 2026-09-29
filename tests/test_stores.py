@@ -46,3 +46,29 @@ def test_open_multi_season_rejects_overlapping_seasons(tmp_path):
 
     with pytest.raises(ValueError, match="overlap"):
         open_multi_season([first, second], "graphcast")
+
+
+def test_resolve_store_paths_precedence(tmp_path):
+    from weavr.stores import resolve_store_paths
+
+    # 1. Explicit legacy path
+    assert resolve_store_paths(legacy_single_path="legacy.zarr") == ["legacy.zarr"]
+
+    # 2. Explicit specified paths
+    assert resolve_store_paths(specified_paths=["a.zarr", "b.zarr"]) == ["a.zarr", "b.zarr"]
+
+    # 3. Existing defaults
+    f1 = tmp_path / "f1.zarr"
+    f1.mkdir()
+    res = resolve_store_paths(default_multi_paths=[f1, tmp_path / "nonexistent.zarr"])
+    assert res == [f1]
+
+    # 4. Fallback legacy
+    leg = tmp_path / "leg.zarr"
+    leg.mkdir()
+    res2 = resolve_store_paths(
+        default_multi_paths=[tmp_path / "missing1.zarr"],
+        legacy_fallback_path=leg,
+    )
+    assert res2 == [leg]
+

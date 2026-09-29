@@ -8,8 +8,48 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+DEFAULT_BASELINE_DAILY_STORES: tuple[str, ...] = (
+    "data/baseline_2018_jjas_daily.zarr",
+    "data/baseline_2020_jjas_daily.zarr",
+)
+DEFAULT_LAGGED_DAILY_STORES: tuple[str, ...] = (
+    "data/lagged_ensemble_inputs_2018_jjas_daily.zarr",
+    "data/lagged_ensemble_inputs_2020_jjas_daily.zarr",
+)
+DEFAULT_IFS_DAILY_STORES: tuple[str, ...] = (
+    "data/ifs_ens_2018_jjas_daily.zarr",
+    "data/ifs_ens_2020_jjas_daily.zarr",
+)
 
-def open_multi_season(paths: Sequence[str | Path], group: str) -> xr.Dataset:
+
+def resolve_store_paths(
+    specified_paths: Sequence[str | Path] | None = None,
+    legacy_single_path: str | Path | None = None,
+    default_multi_paths: Sequence[str | Path] = DEFAULT_BASELINE_DAILY_STORES,
+    legacy_fallback_path: str | Path | None = "data/baseline_2020_jjas.zarr",
+) -> list[str | Path]:
+    """Resolve store paths, falling back to existing files if defaults are partially present.
+
+    Order of precedence:
+    1. If `legacy_single_path` is explicitly provided, return `[legacy_single_path]`.
+    2. If `specified_paths` is provided and non-empty, return list of those paths.
+    3. If default multi-season paths exist on disk, return existing default paths.
+    4. If legacy fallback path exists on disk, return `[legacy_fallback_path]`.
+    5. Return the full `default_multi_paths`.
+    """
+    if legacy_single_path is not None:
+        return [legacy_single_path]
+    if specified_paths is not None and len(specified_paths) > 0:
+        return list(specified_paths)
+    existing_defaults = [p for p in default_multi_paths if Path(p).exists()]
+    if existing_defaults:
+        return existing_defaults
+    if legacy_fallback_path is not None and Path(legacy_fallback_path).exists():
+        return [legacy_fallback_path]
+    return list(default_multi_paths)
+
+
+def open_multi_season(paths: Sequence[str | Path], group: str | None = None) -> xr.Dataset:
     """Open matching source groups and concatenate their disjoint seasons.
 
     Each season remains an independent, resumable store with its own manifest.
@@ -22,7 +62,10 @@ def open_multi_season(paths: Sequence[str | Path], group: str) -> xr.Dataset:
     datasets: list[xr.Dataset] = []
     try:
         for path in paths:
-            datasets.append(xr.open_zarr(path, group=group, consolidated=True))
+            if group is not None:
+                datasets.append(xr.open_zarr(path, group=group, consolidated=True))
+            else:
+                datasets.append(xr.open_zarr(path, consolidated=True))
 
         reference = datasets[0]
         for coord in ("latitude", "longitude"):

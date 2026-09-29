@@ -93,7 +93,14 @@ from run_tier0_baseline import PRECIP_M_TO_MM, _align_to_imd_day  # noqa: E402
 from weavr import verify as V  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
 from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
-from weavr.splits import InsufficientTimeBlocksError, seasonal_block_split  # noqa: E402
+from weavr.splits import (  # noqa: E402
+    iter_evaluation_folds,
+)
+from weavr.stores import (  # noqa: E402
+    DEFAULT_BASELINE_DAILY_STORES,
+    open_multi_season,
+    resolve_store_paths,
+)
 from weavr.weighting import RegionWeightResult, fit_region_weights  # noqa: E402
 
 PRECIP_VARIABLE = "total_precipitation_24hr"
@@ -228,7 +235,14 @@ def score_blend(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", default="data/baseline_2020_jjas.zarr")
+    parser.add_argument(
+        "--baseline-stores",
+        nargs="+",
+        default=None,
+        help="One or more baseline store paths (multi-season; default: 2018 + 2020 daily)",
+    )
+    parser.add_argument("--baseline-store", default=None, help="Legacy single baseline store path")
+    parser.add_argument("--store", default=None, help="Legacy single store path")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
     parser.add_argument("--out-csv", default="results/tier1_regional_baseline.csv")
     parser.add_argument("--results-dir", default="results")
@@ -238,128 +252,239 @@ def main() -> int:
     parser.add_argument("--neighborhood-size", type=int, default=NEIGHBORHOOD_SIZE)
     args = parser.parse_args()
 
+    legacy_path = args.baseline_store if args.baseline_store is not None else args.store
+    baseline_paths = resolve_store_paths(
+        args.baseline_stores,
+        legacy_path,
+        DEFAULT_BASELINE_DAILY_STORES,
+        "data/baseline_2020_jjas.zarr",
+    )
+
     sources = {
-        name: xr.open_zarr(args.store, group=name, consolidated=True)
+        name: open_multi_season(baseline_paths, group=name)
         for name in FORECAST_SOURCE_NAMES
     }
-    obs = xr.open_zarr(args.store, group="imd_observed", consolidated=True).load()
+    obs = open_multi_season(baseline_paths, group="imd_observed").load()
     climatology = load_climatology(args.climatology).load()
     region_labels = assign_regions(obs["latitude"].values, obs["longitude"].values)
 
-    print(f"Tier 1 regional-weights baseline, scored against {args.store}'s imd_observed group")
+    print(f"Tier 1 regional-weights baseline, scored against {baseline_paths}'s imd_observed group")
     print(f"Regions: {sorted(np.unique(region_labels.values).tolist())}")
-    print("CV strategy: seasonal_block_split for every source (docs/phase3-cv-and-regional-scheme)")
 
-    domain_rows = []
-    region_rows = []
-    weight_rows = []
+    domain_rows: list[dict] = []
+    region_rows: list[dict] = []
+    weight_rows: list[dict] = []
+
+    def _flatten(target_dict: dict, prefix: str, result: dict) -> None:
+        for key, value in result.items():
+            if key == "contingency":
+                for t, metrics in value.items():
+                    for metric_name, metric_value in metrics.items():
+                        target_dict[f"{prefix}_{metric_name}_{t}"] = metric_value
+            elif isinstance(value, dict):
+                for t, v in value.items():
+                    target_dict[f"{prefix}_{key}_{t}"] = v
+            else:
+                target_dict[f"{prefix}_{key}"] = value
 
     for lead_hours in LEAD_HOURS:
         forecasts, obs_aligned = load_aligned_forecasts_and_obs(
             sources, obs, PRECIP_VARIABLE, lead_hours
         )
         sample_times = pd.DatetimeIndex(obs_aligned["sample"].values)
-        try:
-            train_mask, test_mask = seasonal_block_split(
-                sample_times, test_fraction=args.test_fraction
+        folds = list(iter_evaluation_folds(sample_times, test_fraction=args.test_fraction))
+
+        test_tier1_list = []
+        test_equal_list = []
+        test_obs_list = []
+
+        for train_mask, test_mask, split_label in folds:
+            weight_results = fit_region_weights(
+                forecasts, obs_aligned, region_labels, train_mask, sample_dim="sample"
             )
-        except InsufficientTimeBlocksError as exc:
-            print(f"[lead {lead_hours:>3}h] skipped -- {exc}")
-            continue
+            weight_grids = build_region_weight_grid(
+                weight_results, region_labels, FORECAST_SOURCE_NAMES
+            )
 
-        weight_results = fit_region_weights(
-            forecasts, obs_aligned, region_labels, train_mask, sample_dim="sample"
-        )
-        weight_grids = build_region_weight_grid(
-            weight_results, region_labels, FORECAST_SOURCE_NAMES
-        )
+            tier1_blend = blend_with_region_weights(forecasts, weight_grids)
+            equal_blend = equal_weight_blend(forecasts)
 
-        tier1_blend = blend_with_region_weights(forecasts, weight_grids)
-        equal_blend = equal_weight_blend(forecasts)
+            test_tier1 = tier1_blend.isel(sample=test_mask)
+            test_equal = equal_blend.isel(sample=test_mask)
+            test_obs = obs_aligned.isel(sample=test_mask)
+            test_tier1_list.append(test_tier1)
+            test_equal_list.append(test_equal)
+            test_obs_list.append(test_obs)
 
-        test_tier1 = tier1_blend.isel(sample=test_mask)
-        test_equal = equal_blend.isel(sample=test_mask)
-        test_obs = obs_aligned.isel(sample=test_mask)
+            write_per_day_scores(
+                "tier1_regional",
+                lead_hours,
+                per_day_scores(test_tier1, test_obs, fold=split_label),
+                out_dir=args.results_dir,
+            )
 
-        # Step 04 (additive): per-day scores on this same test split. The
-        # equal-weight blend is Tier 0's, already written by
-        # run_tier0_baseline.py, so only the Tier 1 blend is written here --
-        # two files under one method name would let the scorecard silently
-        # use whichever script ran last.
-        write_per_day_scores(
-            "tier1_regional",
-            lead_hours,
-            per_day_scores(test_tier1, test_obs, fold="test"),
-            out_dir=args.results_dir,
-        )
-
-        tier1_result = score_blend(
-            test_tier1, test_obs, climatology, V.IMD_RAIN_THRESHOLDS_MM, args.neighborhood_size
-        )
-        equal_result = score_blend(
-            test_equal, test_obs, climatology, V.IMD_RAIN_THRESHOLDS_MM, args.neighborhood_size
-        )
-        domain_row = {
-            "lead_hours": lead_hours,
-            "n_train": int(train_mask.sum()),
-            "n_test": int(test_mask.sum()),
-            "split": "seasonal_block_split",
-        }
-        def _flatten(prefix: str, result: dict) -> None:
-            for key, value in result.items():
-                if key == "contingency":
-                    for t, metrics in value.items():
-                        for metric_name, metric_value in metrics.items():
-                            domain_row[f"{prefix}_{metric_name}_{t}"] = metric_value
-                elif isinstance(value, dict):
-                    for t, v in value.items():
-                        domain_row[f"{prefix}_{key}_{t}"] = v
-                else:
-                    domain_row[f"{prefix}_{key}"] = value
-
-        _flatten("tier1", tier1_result)
-        _flatten("equal", equal_result)
-        domain_rows.append(domain_row)
-        print(f"[lead {lead_hours:>3}h] tier1 rmse={tier1_result['rmse_mm']:.2f}mm "
-              f"equal rmse={equal_result['rmse_mm']:.2f}mm")
-
-        for region, result in weight_results.items():
-            weight_row = {
+            tier1_result = score_blend(
+                test_tier1, test_obs, climatology, V.IMD_RAIN_THRESHOLDS_MM, args.neighborhood_size
+            )
+            equal_result = score_blend(
+                test_equal, test_obs, climatology, V.IMD_RAIN_THRESHOLDS_MM, args.neighborhood_size
+            )
+            split_kind = (
+                "leave_one_year_out"
+                if split_label != "seasonal_block_split"
+                else "seasonal_block_split"
+            )
+            domain_row = {
                 "lead_hours": lead_hours,
-                "region": region,
-                "is_fallback": result.is_fallback,
-                "reason": result.reason or "",
-                "n_train_points": result.n_train_points,
+                "fold": split_label,
+                "n_train": int(train_mask.sum()),
+                "n_test": int(test_mask.sum()),
+                "split": split_kind,
             }
-            for source in FORECAST_SOURCE_NAMES:
-                weight_row[f"weight_{source}"] = result.weights[source]
-            weight_rows.append(weight_row)
+            _flatten(domain_row, "tier1", tier1_result)
+            _flatten(domain_row, "equal", equal_result)
+            domain_rows.append(domain_row)
+            print(
+                f"[lead {lead_hours:>3}h | fold {split_label}] "
+                f"tier1 rmse={tier1_result['rmse_mm']:.2f}mm "
+                f"equal rmse={equal_result['rmse_mm']:.2f}mm"
+            )
 
-            region_mask = (region_labels == region).values
-            region_tier1 = test_tier1.where(region_mask)
-            region_equal = test_equal.where(region_mask)
-            region_obs = test_obs.where(region_mask)
-            tier1_region_result = score_blend(
-                region_tier1, region_obs, climatology, V.IMD_RAIN_THRESHOLDS_MM,
-                args.neighborhood_size, include_spatial_and_categorical=False,
+            for region, result in weight_results.items():
+                weight_row = {
+                    "lead_hours": lead_hours,
+                    "fold": split_label,
+                    "region": region,
+                    "is_fallback": result.is_fallback,
+                    "reason": result.reason or "",
+                    "n_train_points": result.n_train_points,
+                }
+                for source in FORECAST_SOURCE_NAMES:
+                    weight_row[f"weight_{source}"] = result.weights[source]
+                weight_rows.append(weight_row)
+
+                region_mask = (region_labels == region).values
+                region_tier1 = test_tier1.where(region_mask)
+                region_equal = test_equal.where(region_mask)
+                region_obs = test_obs.where(region_mask)
+                tier1_region_result = score_blend(
+                    region_tier1,
+                    region_obs,
+                    climatology,
+                    V.IMD_RAIN_THRESHOLDS_MM,
+                    args.neighborhood_size,
+                    include_spatial_and_categorical=False,
+                )
+                equal_region_result = score_blend(
+                    region_equal,
+                    region_obs,
+                    climatology,
+                    V.IMD_RAIN_THRESHOLDS_MM,
+                    args.neighborhood_size,
+                    include_spatial_and_categorical=False,
+                )
+                region_rows.append(
+                    {
+                        "lead_hours": lead_hours,
+                        "fold": split_label,
+                        "region": region,
+                        "is_fallback": result.is_fallback,
+                        "tier1_rmse_mm": tier1_region_result["rmse_mm"],
+                        "tier1_bias_mm": tier1_region_result["bias_mm"],
+                        "tier1_acc": tier1_region_result["acc"],
+                        "tier1_seeps": tier1_region_result["seeps"],
+                        "equal_rmse_mm": equal_region_result["rmse_mm"],
+                        "equal_bias_mm": equal_region_result["bias_mm"],
+                        "equal_acc": equal_region_result["acc"],
+                        "equal_seeps": equal_region_result["seeps"],
+                    }
+                )
+
+        if len(folds) > 1:
+            all_train_mask = np.ones(obs_aligned.sizes["sample"], dtype=bool)
+            op_weight_results = fit_region_weights(
+                forecasts, obs_aligned, region_labels, all_train_mask, sample_dim="sample"
             )
-            equal_region_result = score_blend(
-                region_equal, region_obs, climatology, V.IMD_RAIN_THRESHOLDS_MM,
-                args.neighborhood_size, include_spatial_and_categorical=False,
+            for region, result in op_weight_results.items():
+                op_weight_row = {
+                    "lead_hours": lead_hours,
+                    "fold": "operational",
+                    "region": region,
+                    "is_fallback": result.is_fallback,
+                    "reason": result.reason or "",
+                    "n_train_points": result.n_train_points,
+                }
+                for source in FORECAST_SOURCE_NAMES:
+                    op_weight_row[f"weight_{source}"] = result.weights[source]
+                weight_rows.append(op_weight_row)
+
+            pooled_tier1 = xr.concat(test_tier1_list, dim="sample")
+            pooled_equal = xr.concat(test_equal_list, dim="sample")
+            pooled_obs = xr.concat(test_obs_list, dim="sample")
+
+            tier1_pooled = score_blend(
+                pooled_tier1,
+                pooled_obs,
+                climatology,
+                V.IMD_RAIN_THRESHOLDS_MM,
+                args.neighborhood_size,
             )
-            region_rows.append({
+            equal_pooled = score_blend(
+                pooled_equal,
+                pooled_obs,
+                climatology,
+                V.IMD_RAIN_THRESHOLDS_MM,
+                args.neighborhood_size,
+            )
+
+            pooled_domain_row = {
                 "lead_hours": lead_hours,
-                "region": region,
-                "is_fallback": result.is_fallback,
-                "tier1_rmse_mm": tier1_region_result["rmse_mm"],
-                "tier1_bias_mm": tier1_region_result["bias_mm"],
-                "tier1_acc": tier1_region_result["acc"],
-                "tier1_seeps": tier1_region_result["seeps"],
-                "equal_rmse_mm": equal_region_result["rmse_mm"],
-                "equal_bias_mm": equal_region_result["bias_mm"],
-                "equal_acc": equal_region_result["acc"],
-                "equal_seeps": equal_region_result["seeps"],
-            })
+                "fold": "pooled",
+                "n_train": int(obs_aligned.sizes["sample"]),
+                "n_test": int(pooled_obs.sizes["sample"]),
+                "split": "leave_one_year_out",
+            }
+            _flatten(pooled_domain_row, "tier1", tier1_pooled)
+            _flatten(pooled_domain_row, "equal", equal_pooled)
+            domain_rows.append(pooled_domain_row)
+
+            for region in sorted(np.unique(region_labels.values).tolist()):
+                region_mask = (region_labels == region).values
+                region_tier1 = pooled_tier1.where(region_mask)
+                region_equal = pooled_equal.where(region_mask)
+                region_obs = pooled_obs.where(region_mask)
+                tier1_region_result = score_blend(
+                    region_tier1,
+                    region_obs,
+                    climatology,
+                    V.IMD_RAIN_THRESHOLDS_MM,
+                    args.neighborhood_size,
+                    include_spatial_and_categorical=False,
+                )
+                equal_region_result = score_blend(
+                    region_equal,
+                    region_obs,
+                    climatology,
+                    V.IMD_RAIN_THRESHOLDS_MM,
+                    args.neighborhood_size,
+                    include_spatial_and_categorical=False,
+                )
+                region_rows.append(
+                    {
+                        "lead_hours": lead_hours,
+                        "fold": "pooled",
+                        "region": region,
+                        "is_fallback": False,
+                        "tier1_rmse_mm": tier1_region_result["rmse_mm"],
+                        "tier1_bias_mm": tier1_region_result["bias_mm"],
+                        "tier1_acc": tier1_region_result["acc"],
+                        "tier1_seeps": tier1_region_result["seeps"],
+                        "equal_rmse_mm": equal_region_result["rmse_mm"],
+                        "equal_bias_mm": equal_region_result["bias_mm"],
+                        "equal_acc": equal_region_result["acc"],
+                        "equal_seeps": equal_region_result["seeps"],
+                    }
+                )
 
     def _write_csv(path_str: str, rows: list[dict]) -> None:
         out_path = Path(path_str)

@@ -64,6 +64,7 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -88,7 +89,16 @@ from weavr.emos import csgd_crps, fit_emos_csg, predict_csgd_params  # noqa: E40
 from weavr.rain_bins import classify_rain_bin  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
 from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
-from weavr.splits import InsufficientTimeBlocksError, seasonal_block_split  # noqa: E402
+from weavr.splits import (  # noqa: E402
+    iter_evaluation_folds,
+)
+from weavr.stores import (  # noqa: E402
+    DEFAULT_BASELINE_DAILY_STORES,
+    DEFAULT_IFS_DAILY_STORES,
+    DEFAULT_LAGGED_DAILY_STORES,
+    open_multi_season,
+    resolve_store_paths,
+)
 from weavr.weighting import fit_region_weights  # noqa: E402
 
 PRECIP_VARIABLE = "total_precipitation_24hr"
@@ -102,36 +112,20 @@ _TINY = 1e-6
 
 
 def _clip_negative_precip(da: xr.DataArray) -> xr.DataArray:
-    """Floors tiny negative precipitation values to exactly zero.
-
-    A real, checked finding running this script: ~1% of GraphCast's own
-    real forecast cells (in `data/lagged_ensemble_inputs_2020_jjas.zarr`
-    and `data/baseline_2020_jjas.zarr`) carry small negative numerical-
-    noise artifacts (down to about -0.9mm after unit conversion) -- a
-    known ML-weather-model output characteristic, not a bug in this
-    project's own pipeline (the real IFS ensemble has none). Every prior
-    tier's scoring (RMSE, bias, ACC, SEEPS, FSS, contingency, ensemble
-    CRPS) is insensitive to a value this small being slightly negative
-    rather than zero, so it went unnoticed until now. EMOS-CSG's gamma-
-    based model is not: a negative *ensemble-mean* forecast feeding a
-    fitted regression's `location = a1 + a2*ensemble_mean` can produce a
-    near-zero-shape, huge-scale predictive gamma that overflows CRPS to a
-    physically nonsensical value (checked directly against this exact
-    real case: an uncorrected CRPS of ~1165mm for an observation of zero).
-    Precipitation cannot be physically negative, so flooring it here --
-    before any combiner ever sees it -- is the root-cause fix, not a
-    numerical patch inside the combiner itself.
-    """
+    """Floors tiny negative precipitation values to exactly zero."""
     return da.clip(min=0.0)
 
 
-def load_graphcast_ensemble(lagged_store: str, lead_hours: int) -> xr.DataArray:
+def load_graphcast_ensemble(
+    lagged_store: Sequence[str | Path] | str | Path, lead_hours: int
+) -> xr.DataArray:
     """GraphCast's Phase 2 lagged pseudo-ensemble at one lead, in mm, aligned
     to the IMD day each forecast validates on -- reuses
     scripts/run_phase2_ensemble_baseline.py's own construction rather than
     reimplementing it (see that module for why this doesn't re-fetch from GCS).
     """
-    dense = xr.open_zarr(lagged_store, group="graphcast", consolidated=True).load()
+    paths = [lagged_store] if isinstance(lagged_store, (str, Path)) else list(lagged_store)
+    dense = open_multi_season(paths, group="graphcast").load()
     raw_ds = _reconstruct_raw_source(dense, PRECIP_VARIABLE)
     ensemble = build_ensembles_for_lead(
         raw_ds, PRECIP_VARIABLE, dense["nominal_time"].values, lead_hours
@@ -139,24 +133,22 @@ def load_graphcast_ensemble(lagged_store: str, lead_hours: int) -> xr.DataArray:
     return _clip_negative_precip(ensemble * PRECIP_M_TO_MM)
 
 
-def load_ifs_ensemble(ifs_store: str, lead_hours: int) -> xr.DataArray:
-    """The real IFS 50-member ensemble (scripts/build_ifs_ensemble_store.py's
-    output) at one lead, in mm, aligned to the IMD day each forecast
-    validates on -- the same meters-to-millimeters conversion and IMD-day
-    alignment every other baseline-store source uses. This source has no
-    negative-precipitation artifacts (checked directly), but is clipped
-    too for uniformity and as a defensive floor.
-    """
-    ds = xr.open_zarr(ifs_store, consolidated=True)
+def load_ifs_ensemble(
+    ifs_store: Sequence[str | Path] | str | Path, lead_hours: int
+) -> xr.DataArray:
+    """The real IFS 50-member ensemble at one lead, in mm, aligned to the IMD day."""
+    paths = [ifs_store] if isinstance(ifs_store, (str, Path)) else list(ifs_store)
+    ds = open_multi_season(paths)
     da = ds[PRECIP_VARIABLE].sel(prediction_timedelta=lead_hours).load() * PRECIP_M_TO_MM
     return _clip_negative_precip(_align_to_imd_day(da, lead_hours))
 
 
-def load_hres_forecast(baseline_store: str, lead_hours: int) -> xr.DataArray:
-    """HRES's deterministic forecast at one lead, in mm, aligned to the IMD
-    day -- no member dimension, per this module's docstring (HRES uses
-    BMA's own "kernel dressing" route, never EMOS-CSG)."""
-    ds = xr.open_zarr(baseline_store, group="hres", consolidated=True)
+def load_hres_forecast(
+    baseline_store: Sequence[str | Path] | str | Path, lead_hours: int
+) -> xr.DataArray:
+    """HRES's deterministic forecast at one lead, in mm, aligned to the IMD day."""
+    paths = [baseline_store] if isinstance(baseline_store, (str, Path)) else list(baseline_store)
+    ds = open_multi_season(paths, group="hres")
     da = ds[PRECIP_VARIABLE].sel(prediction_timedelta=lead_hours).load() * PRECIP_M_TO_MM
     return _clip_negative_precip(_align_to_imd_day(da, lead_hours))
 
@@ -444,9 +436,27 @@ def _domain_summary(per_group: dict, prefix: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline-store", default="data/baseline_2020_jjas.zarr")
-    parser.add_argument("--lagged-store", default="data/lagged_ensemble_inputs_2020_jjas.zarr")
-    parser.add_argument("--ifs-ensemble-store", default="data/ifs_ens_2020_jjas.zarr")
+    parser.add_argument(
+        "--baseline-stores",
+        nargs="+",
+        default=None,
+        help="One or more baseline store paths (multi-season; default: 2018 + 2020 daily)",
+    )
+    parser.add_argument("--baseline-store", default=None, help="Legacy single baseline store path")
+    parser.add_argument(
+        "--lagged-stores",
+        nargs="+",
+        default=None,
+        help="One or more lagged ensemble store paths (multi-season; default: 2018 + 2020 daily)",
+    )
+    parser.add_argument("--lagged-store", default=None, help="Legacy single lagged store path")
+    parser.add_argument(
+        "--ifs-ensemble-stores",
+        nargs="+",
+        default=None,
+        help="One or more IFS ensemble store paths (multi-season; default: 2018 + 2020 daily)",
+    )
+    parser.add_argument("--ifs-ensemble-store", default=None, help="Legacy single IFS store path")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
     parser.add_argument("--out-csv", default="results/tier2_hierarchical_baseline.csv")
     parser.add_argument("--results-dir", default="results")
@@ -459,158 +469,301 @@ def main() -> int:
     args = parser.parse_args()
     n_samples = args.n_monte_carlo
 
-    obs = xr.open_zarr(args.baseline_store, group="imd_observed", consolidated=True).load()
+    baseline_paths = resolve_store_paths(
+        args.baseline_stores,
+        args.baseline_store,
+        DEFAULT_BASELINE_DAILY_STORES,
+        "data/baseline_2020_jjas.zarr",
+    )
+    lagged_paths = resolve_store_paths(
+        args.lagged_stores,
+        args.lagged_store,
+        DEFAULT_LAGGED_DAILY_STORES,
+        "data/lagged_ensemble_inputs_2020_jjas.zarr",
+    )
+    ifs_paths = resolve_store_paths(
+        args.ifs_ensemble_stores,
+        args.ifs_ensemble_store,
+        DEFAULT_IFS_DAILY_STORES,
+        "data/ifs_ens_2020_jjas.zarr",
+    )
+
+    obs = open_multi_season(baseline_paths, group="imd_observed").load()
     region_labels = assign_regions(obs["latitude"].values, obs["longitude"].values)
     rng = np.random.default_rng(0)
 
     print("Tier 2 hierarchical baseline: EMOS-CSG and BMA scored against real stores")
-    print("EMOS-CSG sources: graphcast (lagged pseudo-ensemble), ifs_ens (real 50-member)")
-    print("BMA sources: graphcast + ifs_ens (ensemble dressing), hres (kernel dressing)")
+    print(f"Baseline store(s): {baseline_paths}")
+    print(f"Lagged store(s): {lagged_paths}")
+    print(f"IFS ensemble store(s): {ifs_paths}")
 
-    domain_rows = []
-    bin_rows = []
-    region_rows = []
+    domain_rows: list[dict] = []
+    bin_rows: list[dict] = []
+    region_rows: list[dict] = []
 
     for lead_hours in LEAD_HOURS:
-        graphcast_ensemble = load_graphcast_ensemble(args.lagged_store, lead_hours)
-        ifs_ensemble = load_ifs_ensemble(args.ifs_ensemble_store, lead_hours)
-        hres_forecast = load_hres_forecast(args.baseline_store, lead_hours)
+        graphcast_ensemble = load_graphcast_ensemble(lagged_paths, lead_hours)
+        ifs_ensemble = load_ifs_ensemble(ifs_paths, lead_hours)
+        hres_forecast = load_hres_forecast(baseline_paths, lead_hours)
         forecasts, obs_aligned = align_all_sources(
             graphcast_ensemble, ifs_ensemble, hres_forecast, obs
         )
 
         sample_times = pd.DatetimeIndex(obs_aligned["sample"].values)
-        try:
-            train_mask, test_mask = seasonal_block_split(
-                sample_times, test_fraction=args.test_fraction
+        folds = list(iter_evaluation_folds(sample_times, test_fraction=args.test_fraction))
+
+        test_tier0_list = []
+        test_tier1_list = []
+        test_obs_list = []
+        fold_emos_per_bin: dict[str, list[dict]] = {"graphcast": [], "ifs_ens": []}
+        fold_bma_cells: list[dict] = []
+
+        for train_mask, test_mask, split_label in folds:
+            rain_bin_labels = classify_rain_bin(
+                forecasts["graphcast"].mean(dim="member", skipna=True)
             )
-        except InsufficientTimeBlocksError as exc:
-            print(f"[lead {lead_hours:>3}h] skipped -- {exc}")
-            continue
 
-        rain_bin_labels = classify_rain_bin(
-            forecasts["graphcast"].mean(dim="member", skipna=True)
-        )
-
-        emos_results = {
-            "graphcast": fit_emos_csg(
-                forecasts["graphcast"], obs_aligned, rain_bin_labels, train_mask, source="graphcast"
-            ),
-            "ifs_ens": fit_emos_csg(
-                forecasts["ifs_ens"], obs_aligned, rain_bin_labels, train_mask, source="ifs_ens"
-            ),
-        }
-        bma_results = fit_hierarchical_bma(
-            forecasts, obs_aligned, rain_bin_labels, region_labels, train_mask
-        )
-
-        tier01_sources = {
-            "graphcast": forecasts["graphcast"].mean(dim="member", skipna=True),
-            "hres": forecasts["hres"],
-            "ifs_ens_mean": forecasts["ifs_ens"].mean(dim="member", skipna=True),
-        }
-        weight_results = fit_region_weights(
-            tier01_sources, obs_aligned, region_labels, train_mask, sample_dim="sample"
-        )
-        weight_grids = build_region_weight_grid(
-            weight_results, region_labels, TIER0_TIER1_SOURCE_NAMES
-        )
-        tier1_blend = blend_with_region_weights(tier01_sources, weight_grids)
-        tier0_blend = equal_weight_blend(tier01_sources)
-
-        test_tier0 = tier0_blend.isel(sample=test_mask)
-        test_tier1 = tier1_blend.isel(sample=test_mask)
-        test_obs = obs_aligned.isel(sample=test_mask)
-
-        domain_row = {
-            "lead_hours": lead_hours,
-            "n_train": int(train_mask.sum()),
-            "n_test": int(test_mask.sum()),
-            "split": "seasonal_block_split",
-            "tier0_rmse_mm": float(V.rmse(test_tier0, test_obs)),
-            "tier0_bias_mm": float(V.bias(test_tier0, test_obs)),
-            "tier1_rmse_mm": float(V.rmse(test_tier1, test_obs)),
-            "tier1_bias_mm": float(V.bias(test_tier1, test_obs)),
-        }
-
-        # Step 04 (additive): per-day scores on this same test split, for
-        # every method scored here, so the scorecard can bootstrap them.
-        # The aggregated CSVs below are untouched.
-        def _write_per_day(method: str, grids: dict[str, np.ndarray]) -> None:
-            template = obs_aligned.transpose("sample", "latitude", "longitude")
-            predictive_mean = xr.DataArray(
-                grids["predictive_mean"], coords=template.coords, dims=template.dims
-            ).isel(sample=test_mask)
-            crps_grid = xr.DataArray(
-                grids["crps"], coords=template.coords, dims=template.dims
-            ).isel(sample=test_mask)
-            write_per_day_scores(
-                method,
-                lead_hours,
-                per_day_scores(
-                    predictive_mean,
-                    test_obs,
-                    fold="test",
-                    per_cell_scores={"crps_mm": crps_grid},
+            emos_results = {
+                "graphcast": fit_emos_csg(
+                    forecasts["graphcast"],
+                    obs_aligned,
+                    rain_bin_labels,
+                    train_mask,
+                    source="graphcast",
                 ),
-                out_dir=args.results_dir,
+                "ifs_ens": fit_emos_csg(
+                    forecasts["ifs_ens"],
+                    obs_aligned,
+                    rain_bin_labels,
+                    train_mask,
+                    source="ifs_ens",
+                ),
+            }
+            bma_results = fit_hierarchical_bma(
+                forecasts, obs_aligned, rain_bin_labels, region_labels, train_mask
             )
 
-        # Only the Tier 2 combiners are written here. This script also
-        # recomputes Tier 0 and Tier 1 (to score them on identical samples),
-        # but those belong to run_tier0_baseline.py and
-        # run_tier1_regional_baseline.py; writing them again would put the
-        # same method name in results/per_day/ from two scripts, and the
-        # scorecard would use whichever ran last.
-        emos_per_bin = {}
-        for source_key, results in emos_results.items():
-            emos_grids: dict[str, np.ndarray] = {}
-            per_bin = score_emos_source(
-                results, forecasts[source_key], obs_aligned, rain_bin_labels, test_mask, rng,
-                n_samples=n_samples, per_cell_out=emos_grids,
+            tier01_sources = {
+                "graphcast": forecasts["graphcast"].mean(dim="member", skipna=True),
+                "hres": forecasts["hres"],
+                "ifs_ens_mean": forecasts["ifs_ens"].mean(dim="member", skipna=True),
+            }
+            weight_results = fit_region_weights(
+                tier01_sources, obs_aligned, region_labels, train_mask, sample_dim="sample"
             )
-            _write_per_day(f"tier2_emos_{source_key}", emos_grids)
-            emos_per_bin[source_key] = per_bin
-            domain_row.update(_domain_summary(per_bin, f"emos_{source_key}"))
-            for bin_label, stats in per_bin.items():
-                bin_rows.append({
-                    "lead_hours": lead_hours,
-                    "combiner": f"emos_{source_key}",
-                    "bin": bin_label,
-                    "region": "",
-                    **stats,
-                })
+            weight_grids = build_region_weight_grid(
+                weight_results, region_labels, TIER0_TIER1_SOURCE_NAMES
+            )
+            tier1_blend = blend_with_region_weights(tier01_sources, weight_grids)
+            tier0_blend = equal_weight_blend(tier01_sources)
 
-        bma_grids: dict[str, np.ndarray] = {}
-        bma_per_cell = score_bma_cells(
-            bma_results, forecasts, obs_aligned, rain_bin_labels, region_labels, test_mask, rng,
-            n_samples=n_samples, per_cell_out=bma_grids,
-        )
-        _write_per_day("tier2_bma", bma_grids)
-        domain_row.update(_domain_summary(bma_per_cell, "bma"))
-        for (bin_label, region), stats in bma_per_cell.items():
-            bin_rows.append({
-                "lead_hours": lead_hours,
-                "combiner": "bma",
-                "bin": bin_label,
-                "region": region,
-                **stats,
-            })
-            region_rows.append({
-                "lead_hours": lead_hours,
-                "region": region,
-                "bin": bin_label,
-                **stats,
-            })
+            test_tier0 = tier0_blend.isel(sample=test_mask)
+            test_tier1 = tier1_blend.isel(sample=test_mask)
+            test_obs = obs_aligned.isel(sample=test_mask)
+            test_tier0_list.append(test_tier0)
+            test_tier1_list.append(test_tier1)
+            test_obs_list.append(test_obs)
 
-        domain_rows.append(domain_row)
-        print(
-            f"[lead {lead_hours:>3}h] tier0 rmse={domain_row['tier0_rmse_mm']:.2f}mm "
-            f"tier1 rmse={domain_row['tier1_rmse_mm']:.2f}mm "
-            f"emos_graphcast crps={domain_row.get('emos_graphcast_crps_mm', float('nan')):.2f}mm "
-            f"emos_ifs_ens crps={domain_row.get('emos_ifs_ens_crps_mm', float('nan')):.2f}mm "
-            f"bma crps={domain_row.get('bma_crps_mm', float('nan')):.2f}mm"
-        )
+            split_kind = (
+                "leave_one_year_out"
+                if split_label != "seasonal_block_split"
+                else "seasonal_block_split"
+            )
+            domain_row = {
+                "lead_hours": lead_hours,
+                "fold": split_label,
+                "n_train": int(train_mask.sum()),
+                "n_test": int(test_mask.sum()),
+                "split": split_kind,
+                "tier0_rmse_mm": float(V.rmse(test_tier0, test_obs)),
+                "tier0_bias_mm": float(V.bias(test_tier0, test_obs)),
+                "tier1_rmse_mm": float(V.rmse(test_tier1, test_obs)),
+                "tier1_bias_mm": float(V.bias(test_tier1, test_obs)),
+            }
+
+            def _write_per_day(method: str, grids: dict[str, np.ndarray], fold_lbl: str) -> None:
+                template = obs_aligned.transpose("sample", "latitude", "longitude")
+                predictive_mean = xr.DataArray(
+                    grids["predictive_mean"], coords=template.coords, dims=template.dims
+                ).isel(sample=test_mask)
+                crps_grid = xr.DataArray(
+                    grids["crps"], coords=template.coords, dims=template.dims
+                ).isel(sample=test_mask)
+                write_per_day_scores(
+                    method,
+                    lead_hours,
+                    per_day_scores(
+                        predictive_mean,
+                        test_obs,
+                        fold=fold_lbl,
+                        per_cell_scores={"crps_mm": crps_grid},
+                    ),
+                    out_dir=args.results_dir,
+                )
+
+            for source_key, results in emos_results.items():
+                emos_grids: dict[str, np.ndarray] = {}
+                per_bin = score_emos_source(
+                    results,
+                    forecasts[source_key],
+                    obs_aligned,
+                    rain_bin_labels,
+                    test_mask,
+                    rng,
+                    n_samples=n_samples,
+                    per_cell_out=emos_grids,
+                )
+                _write_per_day(f"tier2_emos_{source_key}", emos_grids, split_label)
+                fold_emos_per_bin[source_key].append(per_bin)
+                domain_row.update(_domain_summary(per_bin, f"emos_{source_key}"))
+                for bin_label, stats in per_bin.items():
+                    bin_rows.append(
+                        {
+                            "lead_hours": lead_hours,
+                            "fold": split_label,
+                            "combiner": f"emos_{source_key}",
+                            "bin": bin_label,
+                            "region": "",
+                            **stats,
+                        }
+                    )
+
+            bma_grids: dict[str, np.ndarray] = {}
+            bma_per_cell = score_bma_cells(
+                bma_results,
+                forecasts,
+                obs_aligned,
+                rain_bin_labels,
+                region_labels,
+                test_mask,
+                rng,
+                n_samples=n_samples,
+                per_cell_out=bma_grids,
+            )
+            _write_per_day("tier2_bma", bma_grids, split_label)
+            fold_bma_cells.append(bma_per_cell)
+            domain_row.update(_domain_summary(bma_per_cell, "bma"))
+            for (bin_label, region), stats in bma_per_cell.items():
+                bin_rows.append(
+                    {
+                        "lead_hours": lead_hours,
+                        "fold": split_label,
+                        "combiner": "bma",
+                        "bin": bin_label,
+                        "region": region,
+                        **stats,
+                    }
+                )
+                region_rows.append(
+                    {
+                        "lead_hours": lead_hours,
+                        "fold": split_label,
+                        "region": region,
+                        "bin": bin_label,
+                        **stats,
+                    }
+                )
+
+            domain_rows.append(domain_row)
+            eg_crps = domain_row.get("emos_graphcast_crps_mm", float("nan"))
+            ei_crps = domain_row.get("emos_ifs_ens_crps_mm", float("nan"))
+            bma_crps = domain_row.get("bma_crps_mm", float("nan"))
+            print(
+                f"[lead {lead_hours:>3}h | fold {split_label}] "
+                f"tier0 rmse={domain_row['tier0_rmse_mm']:.2f}mm "
+                f"tier1 rmse={domain_row['tier1_rmse_mm']:.2f}mm "
+                f"emos_graphcast crps={eg_crps:.2f}mm "
+                f"emos_ifs_ens crps={ei_crps:.2f}mm "
+                f"bma crps={bma_crps:.2f}mm"
+            )
+
+        if len(folds) > 1:
+            pooled_tier0 = xr.concat(test_tier0_list, dim="sample")
+            pooled_tier1 = xr.concat(test_tier1_list, dim="sample")
+            pooled_obs = xr.concat(test_obs_list, dim="sample")
+
+            pooled_domain_row = {
+                "lead_hours": lead_hours,
+                "fold": "pooled",
+                "n_train": int(obs_aligned.sizes["sample"]),
+                "n_test": int(pooled_obs.sizes["sample"]),
+                "split": "leave_one_year_out",
+                "tier0_rmse_mm": float(V.rmse(pooled_tier0, pooled_obs)),
+                "tier0_bias_mm": float(V.bias(pooled_tier0, pooled_obs)),
+                "tier1_rmse_mm": float(V.rmse(pooled_tier1, pooled_obs)),
+                "tier1_bias_mm": float(V.bias(pooled_tier1, pooled_obs)),
+            }
+
+            for source_key in ("graphcast", "ifs_ens"):
+                pooled_per_bin = {}
+                all_bins = {b for p in fold_emos_per_bin[source_key] for b in p}
+                for b in all_bins:
+                    b_stats = [p[b] for p in fold_emos_per_bin[source_key] if b in p]
+                    n = np.array([s["n_test_cells"] for s in b_stats], dtype=float)
+                    crps = np.array([s["crps_mm"] for s in b_stats])
+                    mse = np.array([s["mse_mm2"] for s in b_stats])
+                    bias = np.array([s["bias_mm"] for s in b_stats])
+                    pooled_per_bin[b] = {
+                        "n_test_cells": int(n.sum()),
+                        "crps_mm": _pool_weighted_mean(crps, n),
+                        "rmse_mm": _pool_rmse_from_mse(mse, n),
+                        "bias_mm": _pool_weighted_mean(bias, n),
+                        "mse_mm2": _pool_weighted_mean(mse, n),
+                        "is_fallback": any(s.get("is_fallback", False) for s in b_stats),
+                    }
+                    bin_rows.append(
+                        {
+                            "lead_hours": lead_hours,
+                            "fold": "pooled",
+                            "combiner": f"emos_{source_key}",
+                            "bin": b,
+                            "region": "",
+                            **pooled_per_bin[b],
+                        }
+                    )
+                pooled_domain_row.update(_domain_summary(pooled_per_bin, f"emos_{source_key}"))
+
+            pooled_bma_per_cell = {}
+            all_bma_keys = {k for p in fold_bma_cells for k in p}
+            for (bin_label, region) in all_bma_keys:
+                cell_stats = [
+                    p[(bin_label, region)]
+                    for p in fold_bma_cells
+                    if (bin_label, region) in p
+                ]
+                n = np.array([s["n_test_cells"] for s in cell_stats], dtype=float)
+                crps = np.array([s["crps_mm"] for s in cell_stats])
+                mse = np.array([s["mse_mm2"] for s in cell_stats])
+                bias = np.array([s["bias_mm"] for s in cell_stats])
+                pooled_bma_per_cell[(bin_label, region)] = {
+                    "n_test_cells": int(n.sum()),
+                    "crps_mm": _pool_weighted_mean(crps, n),
+                    "rmse_mm": _pool_rmse_from_mse(mse, n),
+                    "bias_mm": _pool_weighted_mean(bias, n),
+                    "mse_mm2": _pool_weighted_mean(mse, n),
+                    "is_fallback": any(s.get("is_fallback", False) for s in cell_stats),
+                }
+                bin_rows.append(
+                    {
+                        "lead_hours": lead_hours,
+                        "fold": "pooled",
+                        "combiner": "bma",
+                        "bin": bin_label,
+                        "region": region,
+                        **pooled_bma_per_cell[(bin_label, region)],
+                    }
+                )
+                region_rows.append(
+                    {
+                        "lead_hours": lead_hours,
+                        "fold": "pooled",
+                        "region": region,
+                        "bin": bin_label,
+                        **pooled_bma_per_cell[(bin_label, region)],
+                    }
+                )
+            pooled_domain_row.update(_domain_summary(pooled_bma_per_cell, "bma"))
+            domain_rows.append(pooled_domain_row)
 
     def _write_csv(path_str: str, rows: list[dict]) -> None:
         out_path = Path(path_str)

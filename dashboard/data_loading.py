@@ -45,15 +45,34 @@ def load_weight_map_data(csv_path: str | Path = DEFAULT_WEIGHTS_CSV) -> pd.DataF
     n_train_points, source, weight.
     """
     df = pd.read_csv(csv_path)
+    if "fold" in df.columns:
+        if "operational" in df["fold"].values:
+            df = df[df["fold"] == "operational"]
+        elif "seasonal_block_split" in df["fold"].values:
+            df = df[df["fold"] == "seasonal_block_split"]
+        else:
+            df = df.drop_duplicates(subset=["lead_hours", "region"])
     weight_cols = [c for c in df.columns if c.startswith("weight_")]
+    candidate_id_vars = ["lead_hours", "region", "is_fallback", "reason", "n_train_points"]
+    id_vars = [c for c in candidate_id_vars if c in df.columns]
     tidy = df.melt(
-        id_vars=["lead_hours", "region", "is_fallback", "reason", "n_train_points"],
+        id_vars=id_vars,
         value_vars=weight_cols,
         var_name="source",
         value_name="weight",
     )
     tidy["source"] = tidy["source"].str.removeprefix("weight_")
     return tidy
+
+
+def _filter_primary_fold(df: pd.DataFrame) -> pd.DataFrame:
+    if "fold" not in df.columns:
+        return df
+    if "pooled" in df["fold"].values:
+        return df[df["fold"] == "pooled"]
+    if "seasonal_block_split" in df["fold"].values:
+        return df[df["fold"] == "seasonal_block_split"]
+    return df.drop_duplicates(subset=["lead_hours"])
 
 
 def load_skill_trends_data(
@@ -95,7 +114,7 @@ def load_skill_trends_data(
     """
     rows: list[dict[str, object]] = []
 
-    tier0 = pd.read_csv(tier0_csv)
+    tier0 = _filter_primary_fold(pd.read_csv(tier0_csv))
     for _, row in tier0.iterrows():
         rows.append(
             {
@@ -107,7 +126,7 @@ def load_skill_trends_data(
             }
         )
 
-    tier1 = pd.read_csv(tier1_csv)
+    tier1 = _filter_primary_fold(pd.read_csv(tier1_csv))
     for _, row in tier1.iterrows():
         rows.append(
             {
@@ -133,7 +152,7 @@ def load_skill_trends_data(
         ("tier2_emos_ifs_ens", "emos_ifs_ens"),
         ("tier2_bma", "bma"),
     ]
-    tier2 = pd.read_csv(tier2_csv)
+    tier2 = _filter_primary_fold(pd.read_csv(tier2_csv))
     for _, row in tier2.iterrows():
         for method, prefix in tier2_methods:
             for metric in ("rmse_mm", "crps_mm"):
@@ -147,7 +166,7 @@ def load_skill_trends_data(
                     }
                 )
 
-    tier3 = pd.read_csv(tier3_csv)
+    tier3 = _filter_primary_fold(pd.read_csv(tier3_csv))
     for _, row in tier3.iterrows():
         for metric in ("rmse_mm", "crps_mm"):
             rows.append(

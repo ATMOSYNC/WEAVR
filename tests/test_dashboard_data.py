@@ -173,6 +173,93 @@ class TestLoadSkillTrendsData:
                 "load_skill_trends_data's no-duplicate assumption no longer holds"
             )
 
+    def test_multiseason_csv_with_fold_column_picks_pooled_without_duplicates(self, tmp_path):
+        tier0 = self._write(
+            tmp_path,
+            "tier0.csv",
+            [
+                {"lead_hours": 24, "fold": "2018", "rmse_mm": 11.2},
+                {"lead_hours": 24, "fold": "2020", "rmse_mm": 10.8},
+                {"lead_hours": 24, "fold": "pooled", "rmse_mm": 11.0},
+            ],
+        )
+        tier1 = self._write(
+            tmp_path,
+            "tier1.csv",
+            [
+                {"lead_hours": 24, "fold": "2018", "tier1_rmse_mm": 10.2, "equal_rmse_mm": 10.6},
+                {"lead_hours": 24, "fold": "2020", "tier1_rmse_mm": 9.8, "equal_rmse_mm": 10.4},
+                {"lead_hours": 24, "fold": "pooled", "tier1_rmse_mm": 10.0, "equal_rmse_mm": 10.5},
+            ],
+        )
+        tier2 = self._write(
+            tmp_path,
+            "tier2.csv",
+            [
+                {
+                    "lead_hours": 24,
+                    "fold": "pooled",
+                    "emos_graphcast_rmse_mm": 9.0,
+                    "emos_graphcast_crps_mm": 3.0,
+                    "emos_ifs_ens_rmse_mm": 9.5,
+                    "emos_ifs_ens_crps_mm": 3.1,
+                    "bma_rmse_mm": 9.2,
+                    "bma_crps_mm": 3.2,
+                }
+            ],
+        )
+        tier3 = self._write(
+            tmp_path,
+            "tier3.csv",
+            [
+                {
+                    "lead_hours": 24,
+                    "fold": "pooled",
+                    "regime_rmse_mm": 9.9,
+                    "regime_crps_mm": 3.5,
+                }
+            ],
+        )
+
+        tidy = load_skill_trends_data(tier0, tier1, tier2, tier3)
+        tier0_rows = tidy[(tidy["tier"] == "tier0") & (tidy["lead_hours"] == 24)]
+        assert len(tier0_rows) == 1
+        assert tier0_rows["value"].iloc[0] == pytest.approx(11.0)
+
+    def test_multiseason_weights_picks_operational(self, tmp_path):
+        csv_path = tmp_path / "weights.csv"
+        pd.DataFrame(
+            [
+                {
+                    "lead_hours": 24,
+                    "fold": "2018",
+                    "region": "CI",
+                    "is_fallback": False,
+                    "reason": "",
+                    "n_train_points": 50,
+                    "weight_graphcast": 0.2,
+                    "weight_hres": 0.2,
+                    "weight_ifs_ens_mean": 0.6,
+                },
+                {
+                    "lead_hours": 24,
+                    "fold": "operational",
+                    "region": "CI",
+                    "is_fallback": False,
+                    "reason": "",
+                    "n_train_points": 100,
+                    "weight_graphcast": 0.3,
+                    "weight_hres": 0.1,
+                    "weight_ifs_ens_mean": 0.6,
+                },
+            ]
+        ).to_csv(csv_path, index=False)
+
+        tidy = load_weight_map_data(csv_path)
+        ci_graphcast = tidy[(tidy["region"] == "CI") & (tidy["source"] == "graphcast")]
+        assert len(ci_graphcast) == 1
+        assert ci_graphcast["weight"].iloc[0] == pytest.approx(0.3)
+
 
 class TestLoadProbabilityGrid:
     def test_committed_grid_loads_default_threshold_204_5(self):

@@ -22,18 +22,10 @@ LAT = np.array([10.0, 11.0, 12.0])
 LON = np.array([75.0, 76.0, 77.0])
 
 
-def _synthetic_store(tmp_path: Path, n_init: int = 10) -> Path:
-    """A tiny store with the same group layout as data/baseline_2020_jjas.zarr.
-
-    Each source is the observation plus a fixed per-source offset, so the
-    RMSE ranking is known in advance: graphcast is closest, hres worst.
-    Forecast precipitation is written in METRES (WeatherBench 2's
-    convention), so the test also exercises the mm conversion the real
-    pipeline depends on -- a store written in mm would let a missing
-    conversion pass.
-    """
-    store = tmp_path / "tiny.zarr"
-    init_times = pd.date_range("2020-06-01", periods=n_init, freq="D")
+def _synthetic_store(tmp_path: Path, n_init: int = 10, year: int = 2020) -> Path:
+    """A tiny store with the same group layout as data/baseline_2020_jjas.zarr."""
+    store = tmp_path / f"tiny_{year}.zarr"
+    init_times = pd.date_range(f"{year}-06-01", periods=n_init, freq="D")
     leads = np.array([24, 48], dtype="int64")
     rng = np.random.default_rng(0)
     obs_values = rng.uniform(0.0, 20.0, size=(n_init, LAT.size, LON.size))
@@ -186,3 +178,29 @@ class TestScoreLeadAllSources:
 
         graphcast = next(row for row in rows if row["source"] == "graphcast")
         assert graphcast["rmse_mm"] == pytest.approx(1.0, abs=1e-6)
+
+    def test_score_lead_all_sources_multi_season(self, tmp_path):
+        from weavr.stores import open_multi_season
+
+        s1 = _synthetic_store(tmp_path / "y1", year=2018)
+        s2 = _synthetic_store(tmp_path / "y2", year=2020)
+        sources = {
+            name: open_multi_season([s1, s2], group=name)
+            for name in FORECAST_SOURCE_NAMES
+        }
+        obs = open_multi_season([s1, s2], group="imd_observed").load()
+
+        rows = score_lead_all_sources(
+            sources,
+            obs,
+            _synthetic_climatology(),
+            lead_hours=24,
+            test_fraction=0.2,
+            thresholds=V.IMD_RAIN_THRESHOLDS_MM,
+            neighborhood_size=3,
+        )
+        assert len(rows) == 12
+        folds = {r["fold"] for r in rows}
+        assert folds == {"2018", "2020", "pooled"}
+        sources_present = {r["source"] for r in rows}
+        assert sources_present == {*FORECAST_SOURCE_NAMES, "best_single_member_on_train"}
