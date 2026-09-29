@@ -39,6 +39,20 @@ step at a time, in one flat folder.
 
 Dependencies come from each prompt's own header, which is authoritative.
 
+## Local companion folders (not in this repo)
+
+Some prompts refer to three folders that sit **next to** the repository
+checkout, not inside it:
+
+| Folder | Holds | Why it is not committed |
+|---|---|---|
+| `../ppt/` | pitch deck sources (`content/slide*.md`), QR codes | presentation material, not part of the package |
+| `../research/` | reference papers | third-party publications |
+| `../HEPPI/` | HEPPI reference dataset and MATLAB/R code | licence unconfirmed — never commit it or grids derived from it |
+
+A prompt that says "outside the repo" means one of these. If you don't have
+them locally, skip the parts that need them and say so in the PR.
+
 ## Carry-forward from 01–05
 
 Step 07 must state the **mixed cadence** wherever it reports a Tier 2
