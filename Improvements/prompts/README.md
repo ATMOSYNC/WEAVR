@@ -61,6 +61,30 @@ EMOS-on-IFS-ENS and BMA stay on the weekly 18-init IFS-ENS store (the daily
 IFS-ENS pull was skipped). Details and the other measured findings are in
 [`completed/DONE.md`](completed/DONE.md).
 
+## Carry-forward from the OpenStreetMap basemap
+
+The blended-map and extreme-probability views now draw over an offline
+OpenStreetMap basemap (details: `docs/basemap-scope.md`). Later steps build
+on it:
+
+- **Map views reuse `BasemapMap`** (`dashboard-web/js/charts/basemapMap.js`:
+  `create`, `shared`, `setCells`, boundary layer, fallback). Don't add a
+  second projection or a second map library. Affects steps 16, 17, 19.
+- **The basemap draws no national or disputed boundaries.** The national
+  outline is a user-supplied official-depiction file at
+  `data/basemap/india-boundary.geojson` (gitignored, may not exist). Step
+  14's district polygons must sit under it and agree with it.
+- **Never hot-link a public tile server.** Tiles come from the local
+  `data/basemap/india.pmtiles`, served with Range support. Every map view
+  needs a working plain-grid or list fallback.
+- **Step 20 must handle the tile file** (148 MB, over git's 100 MB limit,
+  and it still holds an undrawn `boundaries` layer) and the OSM/Protomaps/
+  Natural Earth attributions. Step 26 packs it into the offline bundle.
+- **Front-end PRs run no CI** (the workflow ignores Markdown and
+  `dashboard-web/`). Steps 16, 17 and 19 must run their own browser checks
+  and the basemap tests (`tests/test_dashboard_basemap.py`,
+  `tests/test_check_basemap_boundaries.py`) locally.
+
 ## Conventions
 
 Apply to every step.
@@ -91,6 +115,8 @@ Apply to every step.
    - Exercise every lead and option.
    - Check for errors with direct JS checks, not just the console log.
    - Never report "works" without driving it.
+   - Map views build on `BasemapMap`; see "Carry-forward from the
+     OpenStreetMap basemap".
    - New chart modules use module-prefixed globals. This avoids the
      `el`/`SVG_NS` collision from frontend step 4.
 7. **Data hygiene.**

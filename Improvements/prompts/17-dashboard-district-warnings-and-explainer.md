@@ -11,9 +11,13 @@ verification.
 The view a forecaster or disaster manager would actually use:
 
 1. **District warnings map.** An India district choropleth in IMD colours
-   for the selected lead, drawn as hand-rolled SVG paths from
-   `/api/districts`. It shows the boundary attribution from
-   `DISTRICTS_LICENSE.md`.
+   for the selected lead, drawn as a GeoJSON fill layer on the existing
+   OpenStreetMap basemap (`BasemapMap`, from `/api/districts`), with the
+   official national outline on top when it is configured. It shows the
+   boundary attribution from `DISTRICTS_LICENSE.md` next to the OSM one.
+   A sortable district list beside it gives keyboard and screen-reader
+   access, and is also the fallback when the basemap or WebGL is
+   unavailable.
 2. **District card on click:**
    - `P(≥64.5 / ≥115.6 / ≥204.5)` and the colour
    - IMD-style wording (e.g. "Heavy rain likely at scattered places")
@@ -57,14 +61,19 @@ Follow Improvements/prompts/README.md's conventions. In WEAVR/:
 
 2. Frontend: add dashboard-web/js/charts/districtWarnings.js
    (module-prefixed globals, e.g. districtWarningsEl):
-   - Projection: equirectangular with cos(mean latitude) x-scaling, fit to
-     the container; paths built from the GeoJSON coordinates. Handle
-     MultiPolygons and holes (fill-rule evenodd).
+   - Map: reuse `BasemapMap.create` (Web Mercator, correct alignment,
+     attribution, offline tiles); add the districts as a GeoJSON source
+     with a fill layer coloured from the warning colour and a thin
+     outline layer, both below the boundary layer. MultiPolygons and holes
+     come free. Don't write a separate projection. Geography is on by
+     default here (unlike the two grid views), since districts without
+     context are hard to read.
    - Fill: IMD colours from /api/colors (reuse getColors(); never hard-code
      the palette).
-   - Accessible: each path gets a <title> with the district name, colour
-     and probabilities; keyboard focus opens the card (tabindex +
-     Enter).
+   - Accessible: the map canvas can't take per-district focus, so the
+     district list is the keyboard path (each row: name, colour,
+     probabilities; Enter opens the card and highlights the district on
+     the map). Map click opens the same card.
    - District card panel (a side panel on desktop, below the map at mobile
      width) with the contents in "Goal". The confidence badge shows "not
      informative at this lead" when is_informative is false.
@@ -76,7 +85,8 @@ Follow Improvements/prompts/README.md's conventions. In WEAVR/:
 
 3. Blended map: add a "Model disagreement" toggle, rendering the
    inter-model standard deviation (mm) as a separate canvas layer with its
-   own sequential legend. Extend the blended-map export and API to include
+   own sequential legend. It draws on the same `BasemapMap` (`setCells`)
+   and honours the existing "Show geography" toggle. Extend the blended-map export and API to include
    it (422-validated, tested).
 
 4. Browser verification on a fresh port:
@@ -86,6 +96,10 @@ Follow Improvements/prompts/README.md's conventions. In WEAVR/:
    - keyboard focus works
    - the disagreement toggle renders and its legend is correct
    - no console errors
+   - district fills line up with the basemap coastline and the official
+     outline (spot-check 4 coastal districts; report any offset)
+   - the district list and card work with the basemap absent (rename the
+     tile file temporarily) and with WebGL unavailable
    - mobile width (375 px): map fits, card stacks, no horizontal scroll
    - map render time for all districts (target under 1 s on a laptop;
      report the real time)
@@ -97,6 +111,8 @@ Follow Improvements/prompts/README.md's conventions. In WEAVR/:
 
 ## Done when
 
+- The district map is built on the OpenStreetMap basemap, with a list
+  fallback.
 - The district warnings view, with click and keyboard-accessible cards,
   is live and verified in a real browser.
 - The confidence rating is calibrated from history (or honestly marked

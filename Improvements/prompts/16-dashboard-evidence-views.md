@@ -25,6 +25,10 @@ dashboard, next to the existing 4 views:
 4. **Value & trust scale.** Economic value curves with the illustrative
    user bands, and the useful-scale-by-lead chart.
 
+Any view here that draws the 0.25° grid (weight or contribution maps)
+should use `BasemapMap.create` and `setCells`, with the same "Show
+geography" toggle as the blended map. Charts are not maps and stay plain.
+
 Also update the existing **skill-trends** view to plot the raw single
 sources as dashed reference lines. That is F2's honesty, made visible.
 
