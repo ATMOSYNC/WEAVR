@@ -20,7 +20,7 @@ Key considerations:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, overload
 
 import numpy as np
 import xarray as xr
@@ -43,6 +43,101 @@ class QuantileMap:
     region: str | None = None
     lead: int | None = None
     metadata: dict[str, float | str] = field(default_factory=dict)
+
+
+@overload
+def apply_quantile_map(qm: QuantileMap, forecast: xr.DataArray) -> xr.DataArray: ...
+
+
+@overload
+def apply_quantile_map(qm: QuantileMap, forecast: float) -> float: ...
+
+
+@overload
+def apply_quantile_map(qm: QuantileMap, forecast: np.ndarray) -> np.ndarray: ...
+
+
+def apply_quantile_map(
+    qm: QuantileMap,
+    forecast: np.ndarray | xr.DataArray | float,
+) -> np.ndarray | xr.DataArray | float:
+    """Apply a fitted quantile map to a forecast array or xarray DataArray.
+
+    Corrects intensity distribution while preserving rank order and preventing
+    drizzle inflation. Strictly non-negative.
+    """
+    is_scalar = np.isscalar(forecast) or (isinstance(forecast, np.ndarray) and forecast.ndim == 0)
+
+    if isinstance(forecast, xr.DataArray):
+        fcst_arr = forecast.values
+        orig_dims = forecast.dims
+        orig_coords = forecast.coords
+        orig_attrs = forecast.attrs
+        orig_name = forecast.name
+        is_xarray = True
+    else:
+        fcst_arr = np.asarray(forecast, dtype=float)
+        orig_dims = None
+        orig_coords = None
+        orig_attrs = None
+        orig_name = None
+        is_xarray = False
+
+    orig_shape = fcst_arr.shape
+    flat = fcst_arr.ravel()
+
+    # Threshold below which forecast is mapped to zero to match observed dry fraction
+    if qm.obs_dry_fraction > 0.0:
+        drizzle_cutoff = float(np.interp(qm.obs_dry_fraction, qm.quantiles, qm.forecast_quantiles))
+    else:
+        drizzle_cutoff = qm.wet_threshold
+
+    # Piecewise interpolation for values within the empirical range
+    f_q_max = qm.forecast_quantiles[-1]
+    o_q_max = qm.obs_quantiles[-1]
+
+    # Standard interpolation
+    unique_f_q, indices = np.unique(qm.forecast_quantiles, return_index=True)
+    unique_o_q = qm.obs_quantiles[indices]
+
+    if len(unique_f_q) >= 2:
+        interp_vals = np.interp(flat, unique_f_q, unique_o_q)
+    elif len(unique_f_q) == 1:
+        # Constant forecast maps directly to reference observation quantile
+        offset = unique_o_q[0] - unique_f_q[0]
+        interp_vals = flat + offset
+    else:
+        interp_vals = flat
+
+    # Handle upper extrapolation beyond maximum training forecast quantile
+    above_max = flat > f_q_max
+    if np.any(above_max):
+        if qm.extrapolation_rule == "ratio" and f_q_max > 0.0:
+            ratio = o_q_max / f_q_max
+            interp_vals[above_max] = flat[above_max] * ratio
+        else:
+            # Constant additive correction
+            interp_vals[above_max] = flat[above_max] + (o_q_max - f_q_max)
+
+    # Handle lower boundary (below dry cutoff)
+    below_cutoff = flat <= drizzle_cutoff
+    interp_vals[below_cutoff] = 0.0
+
+    # Ensure strictly non-negative
+    corrected = np.clip(interp_vals, 0.0, None)
+    corrected_reshaped = corrected.reshape(orig_shape)
+
+    if is_scalar:
+        return float(corrected.item()) if corrected.size == 1 else corrected_reshaped
+    if is_xarray:
+        return xr.DataArray(
+            corrected_reshaped,
+            dims=orig_dims,
+            coords=orig_coords,
+            attrs=orig_attrs,
+            name=orig_name,
+        )
+    return corrected_reshaped
 
 
 def fit_quantile_map(
@@ -124,77 +219,6 @@ def fit_quantile_map(
         region=region,
         lead=lead,
     )
-
-
-def apply_quantile_map(
-    qm: QuantileMap,
-    forecast: np.ndarray | xr.DataArray,
-) -> np.ndarray | xr.DataArray:
-    """Apply a fitted quantile map to a forecast array or xarray DataArray.
-
-    Corrects intensity distribution while preserving rank order and preventing
-    drizzle inflation. Strictly non-negative.
-    """
-    is_scalar = np.isscalar(forecast) or (isinstance(forecast, np.ndarray) and forecast.ndim == 0)
-    is_xarray = isinstance(forecast, xr.DataArray)
-    fcst_arr = forecast.values if is_xarray else np.asarray(forecast, dtype=float)
-    orig_shape = fcst_arr.shape
-
-    flat = fcst_arr.ravel()
-    corrected = np.empty_like(flat)
-
-    # Threshold below which forecast is mapped to zero to match observed dry fraction
-    if qm.obs_dry_fraction > 0.0:
-        drizzle_cutoff = float(np.interp(qm.obs_dry_fraction, qm.quantiles, qm.forecast_quantiles))
-    else:
-        drizzle_cutoff = qm.wet_threshold
-
-    # Piecewise interpolation for values within the empirical range
-    f_q_max = qm.forecast_quantiles[-1]
-    o_q_max = qm.obs_quantiles[-1]
-
-    # Standard interpolation
-    unique_f_q, indices = np.unique(qm.forecast_quantiles, return_index=True)
-    unique_o_q = qm.obs_quantiles[indices]
-
-    if len(unique_f_q) >= 2:
-        interp_vals = np.interp(flat, unique_f_q, unique_o_q)
-    elif len(unique_f_q) == 1:
-        # Constant forecast maps directly to reference observation quantile
-        offset = unique_o_q[0] - unique_f_q[0]
-        interp_vals = flat + offset
-    else:
-        interp_vals = flat
-
-    # Handle upper extrapolation beyond maximum training forecast quantile
-    above_max = flat > f_q_max
-    if np.any(above_max):
-        if qm.extrapolation_rule == "ratio" and f_q_max > 0.0:
-            ratio = o_q_max / f_q_max
-            interp_vals[above_max] = flat[above_max] * ratio
-        else:
-            # Constant additive correction
-            interp_vals[above_max] = flat[above_max] + (o_q_max - f_q_max)
-
-    # Handle lower boundary (below dry cutoff)
-    below_cutoff = flat <= drizzle_cutoff
-    interp_vals[below_cutoff] = 0.0
-
-    # Ensure strictly non-negative
-    corrected = np.clip(interp_vals, 0.0, None)
-    corrected_reshaped = corrected.reshape(orig_shape)
-
-    if is_scalar:
-        return float(corrected.item()) if corrected.size == 1 else corrected_reshaped
-    if is_xarray:
-        return xr.DataArray(
-            corrected_reshaped,
-            dims=forecast.dims,
-            coords=forecast.coords,
-            attrs=forecast.attrs,
-            name=forecast.name,
-        )
-    return corrected_reshaped
 
 
 def fit_regional_quantile_maps(
