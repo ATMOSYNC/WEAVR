@@ -11,9 +11,55 @@ The step-5 prompt suggested "the most recent complete year, e.g. 2024 or
 the WeatherBench 2 bucket: GraphCast's public archive there only has **two**
 evaluation windows — `2017-11-16..2019-02-01` and `2019-11-16..2021-02-01` —
 confirmed by listing `gs://weatherbench2/datasets/graphcast/` directly
-rather than assuming recency. Only the second window overlaps a full
-monsoon season. **2020 JJAS (June-September) is therefore the only year**
-where GraphCast, Pangu, HRES, and IFS ENS all have data simultaneously.
+rather than assuming recency. 2020 JJAS (June-September) is the season this
+store was built for.
+
+### Correction, 2026-09-29: 2020 is not the only usable season
+
+This section previously said "Only the second window overlaps a full monsoon
+season" and concluded that 2020 JJAS was "**the only year** where GraphCast,
+Pangu, HRES, and IFS ENS all have data simultaneously." **Both statements
+are wrong**, and they were wrong in a way that cost the project a second
+season of training data — the whole reason Phase 3 could never use
+`leave_one_year_out`.
+
+Re-checked live against the bucket, not inferred from the window's start
+date:
+
+```
+gs://weatherbench2/datasets/graphcast/2018/
+  date_range_2017-11-16_2019-02-01_12_hours_derived.zarr
+```
+
+- `total_precipitation_24hr` **is present**, with dims
+  `(time, prediction_timedelta, lat, lon)`.
+- It covers **243 initialisations from 2018-06-01 to 2018-09-30** at a
+  12-hourly cadence — the whole of JJAS 2018, not a fragment of it.
+- The values are real: 2018-08-15 00Z + 24 h over the India domain is
+  100% finite, with a maximum of 168.9 mm (the Kerala floods week).
+- Lead times run from 6 h in 6-hourly steps.
+
+One difference matters when building from it: this store names its spatial
+dimensions **`lat`/`lon`**, not `latitude`/`longitude` as the 2020 store
+does. Code that assumes the 2020 names will fail here, so any 2018 builder
+must rename them.
+
+The other three sources cover JJAS 2018 as well — checked the same way, all
+with **243 initialisations** over 2018-06-01..2018-09-30:
+
+| Source | Archive | JJAS 2018 |
+|---|---|---|
+| `graphcast` | `graphcast/2018/date_range_2017-11-16_2019-02-01_12_hours_derived.zarr` | 243 inits, has `total_precipitation_24hr` |
+| `pangu` | `pangu/2018-2022_0012_0p25.zarr` | 243 inits, temperature only (no precipitation anywhere in this archive, as in 2020) |
+| `hres` | `hres/2016-2022-0012-240x121_equiangular_with_poles_conservative.zarr` | 243 inits, has `total_precipitation_24hr` |
+| `ifs_ens` | `ifs_ens/2018-2022-1440x721.zarr` | 243 inits, has `total_precipitation_24hr` |
+
+So a 2018 JJAS store is buildable with exactly the same source set as 2020,
+and a two-season store would make `leave_one_year_out` usable for the first
+time.
+
+Nothing is built for 2018 here; this note only corrects the record so the
+2018 season isn't ruled out a second time on the strength of a sentence.
 
 ## What's in the store
 

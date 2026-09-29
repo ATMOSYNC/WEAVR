@@ -57,6 +57,7 @@ import csv
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 
@@ -125,17 +126,19 @@ def equal_weight_mean_and_obs(
     )
 
 
-def score_lead(
-    mean_forecast: xr.DataArray,
-    obs: xr.DataArray,
-    climatology: xr.Dataset,
-    test_fraction: float,
-    thresholds: tuple[float, ...],
-    neighborhood_size: int,
-) -> dict:
-    n_samples = mean_forecast.sizes["sample"]
-    sample_times = pd.DatetimeIndex(mean_forecast["sample"].values)
+def train_test_masks(
+    sample_times: pd.DatetimeIndex, test_fraction: float
+) -> tuple[str, np.ndarray, np.ndarray]:
+    """The one split rule every Tier-0-comparable script uses.
 
+    Extracted out of `score_lead` so scripts that need the *train* side too
+    (e.g. scripts/run_single_source_baseline.py picking its best single
+    member on train, scripts/run_independence_diagnostic.py computing error
+    correlations on train only) get literally the same masks rather than
+    re-deriving the rule and hoping it still matches.
+
+    Returns `(split_kind, train_mask, test_mask)`.
+    """
     split_kind = "leave_one_year_out"
     try:
         # Only meaningful with 2+ distinct years -- checked, not assumed:
@@ -147,6 +150,21 @@ def score_lead(
     except InsufficientTimeBlocksError:
         split_kind = "seasonal_block_split (single-season store; leave_one_year_out not usable)"
         train_mask, test_mask = seasonal_block_split(sample_times, test_fraction=test_fraction)
+    return split_kind, train_mask, test_mask
+
+
+def score_lead(
+    mean_forecast: xr.DataArray,
+    obs: xr.DataArray,
+    climatology: xr.Dataset,
+    test_fraction: float,
+    thresholds: tuple[float, ...],
+    neighborhood_size: int,
+) -> dict:
+    n_samples = mean_forecast.sizes["sample"]
+    sample_times = pd.DatetimeIndex(mean_forecast["sample"].values)
+
+    split_kind, train_mask, test_mask = train_test_masks(sample_times, test_fraction)
 
     test_forecast = mean_forecast.isel(sample=test_mask)
     test_obs = obs.isel(sample=test_mask)

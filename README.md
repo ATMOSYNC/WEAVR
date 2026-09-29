@@ -111,6 +111,27 @@ also caught and fixed a real numerical bug in `weavr.emos.csgd_crps`
 (tiny negative-precipitation numerical-noise artifacts in GraphCast's own
 real forecast data could produce a physically nonsensical CRPS), documented
 in that results doc.
+See [docs/single-source-and-independence-results.md](docs/single-source-and-independence-results.md)
+for the baseline every tier should have been measured against from the
+start, and for why the tiers look the way they do.
+`scripts/run_single_source_baseline.py` scores each raw source **alone** on
+exactly the tier scripts' own split (reusing their alignment, scoring and
+split code, not a second path), and finds that **raw GraphCast is not beaten
+by Tier 0 or Tier 1 at any lead from 24 h to 96 h** -- the only blends that
+beat it, Tier 2's EMOS runs, are themselves single-source calibrations, so
+what is helping is calibration rather than combination. It also records
+`best_single_member_on_train`, the defensible baseline picked on train
+rather than on test, whose ranking disagrees with the test ranking at 2 of
+5 leads on these 3-4 day test sets. `scripts/run_independence_diagnostic.py`
+and `weavr.independence` explain the mechanism: the three sources' errors
+correlate at 0.62-0.90, giving an effective number of models of **about 1.1
+out of 3**, so averaging them cancels almost nothing -- and HRES's zero
+Tier 1 weight in 25 of 30 cells is its 0.77-0.93 correlation with IFS-ENS
+(both are ECMWF's own system), not evidence that HRES is useless. The
+opposite, in fact: HRES is the only source in the store that detects **any**
+115.6 mm event, while GraphCast, the RMSE winner, detects none at any lead.
+That is the research brief's section 1.3 caveat -- RMSE rewards smooth,
+MSE-trained output -- showing up as a measurement rather than a worry.
 See [docs/phase5-regime-covariate-scope.md](docs/phase5-regime-covariate-scope.md)
 for Phase 5's scoping: which regime covariates issue #7 names are real and
 actually obtainable for this project's 2020 JJAS-only data -- monsoon
