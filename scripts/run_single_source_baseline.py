@@ -63,6 +63,8 @@ from run_tier0_baseline import score_lead, train_test_masks  # noqa: E402
 from run_tier1_regional_baseline import load_aligned_forecasts_and_obs  # noqa: E402
 
 from weavr import verify as V  # noqa: E402
+from weavr.climatology import climatological_ensemble  # noqa: E402
+from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
 
 PRECIP_VARIABLE = "total_precipitation_24hr"
 LEAD_HOURS = [24, 48, 72, 96, 120]
@@ -101,6 +103,67 @@ def best_single_member_on_train(train_rmse: dict[str, float]) -> str:
     return min(sorted(train_rmse), key=lambda name: train_rmse[name])
 
 
+def write_climatology_per_day(
+    obs_aligned: xr.DataArray,
+    climatology: xr.Dataset,
+    test_mask,
+    lead_hours: int,
+    thresholds: tuple[float, ...],
+    results_dir: str,
+) -> None:
+    """Score the climatological reference on the same test days, as a method.
+
+    Every skill score in `docs/preregistration.md` is stated against
+    climatology (H3's Brier skill score explicitly), so climatology has to
+    appear in `results/per_day/` like any other method for the scorecard to
+    pair against it. The test year is excluded from the reference, which is
+    the whole point -- see `weavr.climatology`.
+
+    It is written here, in the single-source script, because this is where
+    the "what would you have said knowing nothing" baselines belong; it does
+    not depend on the lead time at all, but is written per lead so every
+    comparison has a same-shaped partner file.
+    """
+    test_obs = obs_aligned.isel(sample=test_mask)
+    test_dates = pd.DatetimeIndex(test_obs["sample"].values)
+    test_years = sorted(set(test_dates.year))
+
+    # Built one day at a time, deliberately. A 15-day window over a 14-year
+    # archive gives 434 members, so a single day's ensemble on the full
+    # 129x135 grid is already ~60 MB; materialising every test day at once
+    # exhausted memory on the first attempt here, and step 07's daily,
+    # two-season split has ~30x more test days. Looping keeps the footprint
+    # flat regardless of how many days are scored.
+    frames = []
+    for position, date in enumerate(test_dates):
+        ensemble = climatological_ensemble(
+            climatology, pd.DatetimeIndex([date]), exclude_years=test_years
+        ).transpose("sample", "member", "latitude", "longitude")
+        # The climatological point forecast is the ensemble mean -- the
+        # honest deterministic answer from climate alone. Probabilities come
+        # from this same ensemble rather than from a second call per
+        # threshold, which would rebuild it once per IMD category.
+        frames.append(
+            per_day_scores(
+                ensemble.mean(dim="member", skipna=True),
+                test_obs.isel(sample=[position]),
+                fold="test",
+                ensemble=ensemble,
+                thresholds=thresholds,
+                probabilities={
+                    t: (ensemble >= t).mean(dim="member", skipna=True) for t in thresholds
+                },
+            )
+        )
+
+    write_per_day_scores(
+        "climatology",
+        lead_hours,
+        pd.concat(frames, ignore_index=True),
+        out_dir=results_dir,
+    )
+
+
 def score_lead_all_sources(
     sources: dict[str, xr.Dataset],
     obs: xr.Dataset,
@@ -109,17 +172,50 @@ def score_lead_all_sources(
     test_fraction: float,
     thresholds: tuple[float, ...],
     neighborhood_size: int,
+    results_dir: str | None = None,
 ) -> list[dict]:
     """One row per raw source at one lead, plus a `best_single_member_on_train`
     row repeating the winning source's test scores under a stable label.
+
+    When `results_dir` is given, also writes per-day test scores for each
+    source and for the climatological reference (step 04, additive).
     """
     forecasts, obs_aligned = load_aligned_forecasts_and_obs(
         sources, obs, PRECIP_VARIABLE, lead_hours
     )
     sample_times = pd.DatetimeIndex(obs_aligned["sample"].values)
-    _, train_mask, _ = train_test_masks(sample_times, test_fraction)
+    _, train_mask, test_mask = train_test_masks(sample_times, test_fraction)
     train_rmse = train_rmse_by_source(forecasts, obs_aligned, train_mask)
     winner = best_single_member_on_train(train_rmse)
+
+    if results_dir is not None:
+        test_obs = obs_aligned.isel(sample=test_mask)
+        for name, da in forecasts.items():
+            write_per_day_scores(
+                name,
+                lead_hours,
+                per_day_scores(
+                    da.isel(sample=test_mask), test_obs, fold="test", thresholds=thresholds
+                ),
+                out_dir=results_dir,
+            )
+        # The train-chosen baseline is a method in its own right: it is what
+        # docs/preregistration.md's H1 compares against, and it is not always
+        # the same source at every lead.
+        write_per_day_scores(
+            "best_single_member_on_train",
+            lead_hours,
+            per_day_scores(
+                forecasts[winner].isel(sample=test_mask),
+                test_obs,
+                fold="test",
+                thresholds=thresholds,
+            ),
+            out_dir=results_dir,
+        )
+        write_climatology_per_day(
+            obs_aligned, climatology, test_mask, lead_hours, thresholds, results_dir
+        )
 
     rows = []
     scored: dict[str, dict] = {}
@@ -150,6 +246,7 @@ def main() -> int:
     parser.add_argument("--store", default="data/baseline_2020_jjas.zarr")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
     parser.add_argument("--out-csv", default="results/single_source_baseline.csv")
+    parser.add_argument("--results-dir", default="results")
     parser.add_argument("--test-fraction", type=float, default=0.2)
     parser.add_argument("--neighborhood-size", type=int, default=NEIGHBORHOOD_SIZE)
     args = parser.parse_args()
@@ -178,6 +275,7 @@ def main() -> int:
             args.test_fraction,
             V.IMD_RAIN_THRESHOLDS_MM,
             args.neighborhood_size,
+            results_dir=args.results_dir,
         )
         rows.extend(lead_rows)
         for row in lead_rows:

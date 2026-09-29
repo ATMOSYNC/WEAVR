@@ -69,6 +69,7 @@ from run_tier0_baseline import PRECIP_M_TO_MM  # noqa: E402
 from weavr import verify as V  # noqa: E402
 from weavr.ensemble import NoLaggedMembersError, build_lagged_ensemble  # noqa: E402
 from weavr.grid import IMD_DAY_START_HOUR_UTC  # noqa: E402
+from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
 from weavr.splits import (  # noqa: E402,E501
     InsufficientTimeBlocksError,
     leave_one_year_out,
@@ -201,7 +202,18 @@ def score_precip_lead(
     obs_rain: xr.DataArray,
     thresholds: tuple[float, ...],
     test_fraction: float,
+    per_day_method: str | None = None,
+    lead_hours: int | None = None,
+    results_dir: str | None = None,
 ) -> dict:
+    """Score one lagged-ensemble lead; unchanged, plus an optional per-day write.
+
+    When `per_day_method`, `lead_hours` and `results_dir` are all given
+    (step 04, additive), the same test split is also written day by day to
+    `results/per_day/`, carrying `crps_mm`, the threshold-weighted CRPS and
+    the Brier scores this ensemble supports. The returned aggregate dict is
+    identical either way.
+    """
     sample_times = pd.DatetimeIndex(ensemble_mm["sample"].values)
 
     obs_aligned = obs_rain.reindex(time=ensemble_mm["sample"].values).rename(time="sample")
@@ -226,6 +238,23 @@ def score_precip_lead(
         )
         for t in thresholds
     }
+
+    if per_day_method and lead_hours is not None and results_dir is not None:
+        write_per_day_scores(
+            per_day_method,
+            lead_hours,
+            per_day_scores(
+                test_ensemble.mean(dim="member", skipna=True),
+                test_obs,
+                fold="test",
+                ensemble=test_ensemble,
+                thresholds=thresholds,
+                probabilities={
+                    t: _exceedance_probability(test_ensemble, t) for t in thresholds
+                },
+            ),
+            out_dir=results_dir,
+        )
 
     n_members = float(test_ensemble.notnull().sum(dim="member").mean())
     spread_mm = float(V.ensemble_spread(test_ensemble))
@@ -255,6 +284,7 @@ def main() -> int:
     )
     parser.add_argument("--baseline-store", default="data/baseline_2020_jjas.zarr")
     parser.add_argument("--out-csv", default="results/phase2_ensemble_baseline.csv")
+    parser.add_argument("--results-dir", default="results")
     parser.add_argument("--test-fraction", type=float, default=0.2)
     args = parser.parse_args()
 
@@ -275,7 +305,13 @@ def main() -> int:
             ensemble_mm = ensemble * PRECIP_M_TO_MM
 
             result = score_precip_lead(
-                ensemble_mm, obs["rain"], V.IMD_RAIN_THRESHOLDS_MM, args.test_fraction
+                ensemble_mm,
+                obs["rain"],
+                V.IMD_RAIN_THRESHOLDS_MM,
+                args.test_fraction,
+                per_day_method=f"phase2_lagged_{group}",
+                lead_hours=lead_hours,
+                results_dir=args.results_dir,
             )
             result["lead_hours"] = lead_hours
             result["source"] = group

@@ -89,6 +89,7 @@ from weavr.regime_weighting import (  # noqa: E402
 )
 from weavr.regimes import classify_monsoon_active_break  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
+from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
 from weavr.splits import InsufficientTimeBlocksError, seasonal_block_split  # noqa: E402
 
 LEAD_HOURS = [24, 48, 72, 96, 120]
@@ -173,6 +174,7 @@ def main() -> int:
     parser.add_argument("--ifs-ensemble-store", default="data/ifs_ens_2020_jjas.zarr")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
     parser.add_argument("--out-csv", default="results/tier3_regime_conditioned_baseline.csv")
+    parser.add_argument("--results-dir", default="results")
     parser.add_argument(
         "--bin-out-csv", default="results/tier3_regime_conditioned_baseline_by_bin.csv"
     )
@@ -252,6 +254,20 @@ def main() -> int:
 
         regime_stats = score_point_forecast(test_regime_blend, test_obs)
         regime_bin_stats = score_point_forecast_by_bin(test_regime_blend, test_obs, test_bins)
+
+        # Step 04 (additive): per-day scores for the regime-conditioned
+        # model only. This script also recomputes Phase 4's EMOS and BMA (to
+        # score them on identical samples -- see the module docstring), but
+        # those are written by run_tier2_hierarchical_baseline.py. Writing
+        # them here too would put two files with the same method name and
+        # possibly different numbers into results/per_day/, and the
+        # scorecard would silently use whichever ran last.
+        write_per_day_scores(
+            "tier3_regime_conditioned",
+            lead_hours,
+            per_day_scores(test_regime_blend, test_obs, fold="test"),
+            out_dir=args.results_dir,
+        )
 
         domain_row = {
             "lead_hours": lead_hours,

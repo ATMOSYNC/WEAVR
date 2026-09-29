@@ -160,6 +160,31 @@ at offset 0 (r = 0.5946), confirming index i validates against observation i.
 `weavr.data.heppi_reference` now attaches a real `time` coordinate and drops
 unconfirmed non-monsoon days by default, unlocking India's operational 23-member
 NEPS-G ensemble for multi-model blending.
+
+See [docs/scorecard-and-significance.md](docs/scorecard-and-significance.md)
+for the machinery that turns those numbers into claims with error bars, and
+for what it says about the evidence base that existed before it.
+`weavr.significance` adds a moving-block bootstrap, paired-difference
+confidence intervals and a Diebold-Mariano test; `weavr.verify` gains SEDI,
+threshold-weighted CRPS, PIT, reliability tables and skill scores;
+`weavr.climatology` builds the climatological reference every skill score is
+measured against, **excluding the test year**; and every scoring script now
+also writes per-day domain-wide scores to `results/per_day/` so differences
+can be bootstrapped over days (existing aggregated CSVs are byte-for-byte
+unchanged -- this is purely additive). `scripts/run_scorecard.py` turns
+those into `results/scorecard.csv` and
+`results/preregistration_verdicts.csv`. The finding: **not one of the 1,691
+comparisons on today's weekly store has a computable confidence interval.**
+With 3-4 test days per lead and a 7-day block there is exactly one possible
+resample, so no interval exists -- and a first run that ignored this
+reported 57% of comparisons as "significant", which is the precise failure
+this step exists to prevent. Every published WEAVR comparison to date rests
+on a sample too small to put an interval around; step 07's daily,
+two-season data is what fixes that. Scoring the 434-member climatological
+reference also hit a real limit: `properscoring`'s CRPS is O(m^2) in memory
+and needs ~83 GB there, so `weavr.verify.crps_large_ensemble` computes the
+identical number from the sorted-ensemble identity in O(m) memory, checked
+against `crps` to ~1e-15.
 See [docs/phase5-regime-covariate-scope.md](docs/phase5-regime-covariate-scope.md)
 for Phase 5's scoping: which regime covariates issue #7 names are real and
 actually obtainable for this project's 2020 JJAS-only data -- monsoon

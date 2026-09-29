@@ -87,6 +87,7 @@ from weavr.bma import fit_hierarchical_bma, sample_bma_mixture, score_bma  # noq
 from weavr.emos import csgd_crps, fit_emos_csg, predict_csgd_params  # noqa: E402
 from weavr.rain_bins import classify_rain_bin  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
+from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
 from weavr.splits import InsufficientTimeBlocksError, seasonal_block_split  # noqa: E402
 from weavr.weighting import fit_region_weights  # noqa: E402
 
@@ -260,11 +261,20 @@ def score_emos_source(
     rng: np.random.Generator,
     n_samples: int = N_MONTE_CARLO_SAMPLES,
     member_dim: str = "member",
+    per_cell_out: dict[str, np.ndarray] | None = None,
 ) -> dict[str, dict]:
     """Per-bin CRPS/RMSE/bias of one EMOS-CSG source's fitted results,
     scored at test time by looking up each test cell's own rain-bin label
     (classified from its own forecast, per this module's docstring) and
     that bin's fitted (or fallback) `CensoredShiftedGammaResult`.
+
+    `per_cell_out`, when given, is additionally filled with full
+    `(sample, latitude, longitude)` grids of `"crps"` and
+    `"predictive_mean"`, NaN outside the scored cells. Step 04 needs the
+    unreduced fields to write per-day scores; collecting them here reuses
+    the numbers this function already computes rather than re-predicting
+    them in a second, possibly divergent, code path. The returned summary is
+    unchanged either way.
     """
     forecast_mean = forecast.mean(dim=member_dim, skipna=True)
     forecast_spread = forecast.std(dim=member_dim, ddof=1, skipna=True)
@@ -276,6 +286,10 @@ def score_emos_source(
 
     test_mask_3d = np.broadcast_to(test_mask[:, None, None], obs_v.shape)
     valid = ~np.isnan(obs_v) & ~np.isnan(mean_v) & ~np.isnan(spread_v) & test_mask_3d
+
+    if per_cell_out is not None:
+        per_cell_out["crps"] = np.full(obs_v.shape, np.nan)
+        per_cell_out["predictive_mean"] = np.full(obs_v.shape, np.nan)
 
     per_bin: dict[str, dict] = {}
     for bin_label, result in results.items():
@@ -299,6 +313,10 @@ def score_emos_source(
         crps_values = csgd_crps(location, scale, shift, obs_cells)
         predictive_mean = _csgd_predictive_mean(location, scale, shift, rng, n_samples=n_samples)
 
+        if per_cell_out is not None:
+            per_cell_out["crps"][cell_mask] = crps_values
+            per_cell_out["predictive_mean"][cell_mask] = predictive_mean
+
         per_bin[bin_label] = {
             "n_test_cells": n_cells,
             "crps_mm": float(np.mean(crps_values)),
@@ -319,11 +337,16 @@ def score_bma_cells(
     rng: np.random.Generator,
     n_samples: int = N_MONTE_CARLO_SAMPLES,
     member_dim: str = "member",
+    per_cell_out: dict[str, np.ndarray] | None = None,
 ) -> dict[tuple[str, str], dict]:
     """Per (bin, region) CRPS/RMSE/bias of the fitted BMA mixture, scored at
     test time -- the same cell-lookup idea as `score_emos_source`, one
     level more stratified (bin and region both determine which
     `BmaFitResult` applies).
+
+    `per_cell_out` behaves exactly as in `score_emos_source`: when given, it
+    is filled with full `(sample, latitude, longitude)` grids of `"crps"`
+    and `"predictive_mean"` for step 04's per-day scores.
     """
     obs_v = _ordered_values(obs)
     bin_v = _ordered_values(rain_bin_labels)
@@ -348,6 +371,10 @@ def score_bma_cells(
     test_mask_3d = np.broadcast_to(test_mask[:, None, None], obs_v.shape)
     valid = valid & test_mask_3d
 
+    if per_cell_out is not None:
+        per_cell_out["crps"] = np.full(obs_v.shape, np.nan)
+        per_cell_out["predictive_mean"] = np.full(obs_v.shape, np.nan)
+
     per_cell: dict[tuple[str, str], dict] = {}
     for (bin_label, region), result in results.items():
         cell_mask = (bin_v == bin_label) & (region_v == region) & valid
@@ -363,10 +390,13 @@ def score_bma_cells(
             continue
 
         cell_mean = {s: mean_arrays[s][cell_mask] for s in mean_arrays}
-        cell_spread = {
-            s: (spread_arrays[s][cell_mask] if spread_arrays[s] is not None else None)
-            for s in mean_arrays
-        }
+        # Bound to a local before the None check so the narrowing sticks;
+        # mypy cannot narrow `spread_arrays[s]` through a dict subscript
+        # inside a comprehension. Behaviour is unchanged.
+        cell_spread: dict[str, np.ndarray | None] = {}
+        for source in mean_arrays:
+            spread = spread_arrays[source]
+            cell_spread[source] = None if spread is None else spread[cell_mask]
         obs_cells = obs_v[cell_mask]
 
         cell_mean_da = {s: xr.DataArray(v, dims="cell") for s, v in cell_mean.items()}
@@ -384,6 +414,10 @@ def score_bma_cells(
             result, cell_mean, cell_spread, rng, n_samples=n_samples
         )
         predictive_mean = samples.mean(axis=-1)
+
+        if per_cell_out is not None:
+            per_cell_out["crps"][cell_mask] = crps_values.values
+            per_cell_out["predictive_mean"][cell_mask] = predictive_mean
 
         per_cell[(bin_label, region)] = {
             "n_test_cells": n_cells,
@@ -415,6 +449,7 @@ def main() -> int:
     parser.add_argument("--ifs-ensemble-store", default="data/ifs_ens_2020_jjas.zarr")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
     parser.add_argument("--out-csv", default="results/tier2_hierarchical_baseline.csv")
+    parser.add_argument("--results-dir", default="results")
     parser.add_argument("--bin-out-csv", default="results/tier2_hierarchical_baseline_by_bin.csv")
     parser.add_argument(
         "--region-out-csv", default="results/tier2_hierarchical_baseline_by_region.csv"
@@ -498,12 +533,43 @@ def main() -> int:
             "tier1_bias_mm": float(V.bias(test_tier1, test_obs)),
         }
 
+        # Step 04 (additive): per-day scores on this same test split, for
+        # every method scored here, so the scorecard can bootstrap them.
+        # The aggregated CSVs below are untouched.
+        def _write_per_day(method: str, grids: dict[str, np.ndarray]) -> None:
+            template = obs_aligned.transpose("sample", "latitude", "longitude")
+            predictive_mean = xr.DataArray(
+                grids["predictive_mean"], coords=template.coords, dims=template.dims
+            ).isel(sample=test_mask)
+            crps_grid = xr.DataArray(
+                grids["crps"], coords=template.coords, dims=template.dims
+            ).isel(sample=test_mask)
+            write_per_day_scores(
+                method,
+                lead_hours,
+                per_day_scores(
+                    predictive_mean,
+                    test_obs,
+                    fold="test",
+                    per_cell_scores={"crps_mm": crps_grid},
+                ),
+                out_dir=args.results_dir,
+            )
+
+        # Only the Tier 2 combiners are written here. This script also
+        # recomputes Tier 0 and Tier 1 (to score them on identical samples),
+        # but those belong to run_tier0_baseline.py and
+        # run_tier1_regional_baseline.py; writing them again would put the
+        # same method name in results/per_day/ from two scripts, and the
+        # scorecard would use whichever ran last.
         emos_per_bin = {}
         for source_key, results in emos_results.items():
+            emos_grids: dict[str, np.ndarray] = {}
             per_bin = score_emos_source(
                 results, forecasts[source_key], obs_aligned, rain_bin_labels, test_mask, rng,
-                n_samples=n_samples,
+                n_samples=n_samples, per_cell_out=emos_grids,
             )
+            _write_per_day(f"tier2_emos_{source_key}", emos_grids)
             emos_per_bin[source_key] = per_bin
             domain_row.update(_domain_summary(per_bin, f"emos_{source_key}"))
             for bin_label, stats in per_bin.items():
@@ -515,10 +581,12 @@ def main() -> int:
                     **stats,
                 })
 
+        bma_grids: dict[str, np.ndarray] = {}
         bma_per_cell = score_bma_cells(
             bma_results, forecasts, obs_aligned, rain_bin_labels, region_labels, test_mask, rng,
-            n_samples=n_samples,
+            n_samples=n_samples, per_cell_out=bma_grids,
         )
+        _write_per_day("tier2_bma", bma_grids)
         domain_row.update(_domain_summary(bma_per_cell, "bma"))
         for (bin_label, region), stats in bma_per_cell.items():
             bin_rows.append({
