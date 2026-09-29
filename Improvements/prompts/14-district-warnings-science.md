@@ -26,6 +26,12 @@ into **district warnings**:
   vary between sources (Survey of India releases, community datasets,
   global datasets whose depiction may differ). The district count also
   depends on vintage (census-2011 era vs current). This is the user's call.
+- **An OpenStreetMap basemap already exists** (`docs/basemap-scope.md`). It
+  draws no national or disputed boundaries. The national outline is a
+  separate, user-supplied official-depiction file at
+  `data/basemap/india-boundary.geojson` (gitignored, may not exist yet).
+  District polygons must sit *under* that outline and agree with it.
+  Never let the district file introduce its own national outline.
 - **The rule's objective is a real choice.** Options: maximise CSI/ETS of
   the colour calls; maximise economic value for a chosen cost/loss band
   (step 15); or match IMD's own historical warning frequency. Each yields
@@ -50,8 +56,10 @@ Follow Improvements/prompts/README.md's conventions. In WEAVR/:
    candidates for India district boundaries. For each, report: licence,
    vintage/district count, whether its national boundary depiction matches
    the Survey of India's official map, file size, and attribution
-   requirements. Recommend the Survey of India-compliant option with the
-   clearest licence. Don't download or commit anything until the user
+   requirements. Also check whether `data/basemap/india-boundary.geojson`
+   exists and, if so, whether each candidate's outer edge agrees with it.
+   Recommend the Survey of India-compliant option with the clearest
+   licence. Don't download or commit anything until the user
    picks.
 
 2. After the user picks:
@@ -59,6 +67,10 @@ Follow Improvements/prompts/README.md's conventions. In WEAVR/:
      to a committed dashboard/data/districts.geojson, ideally under 2 MB,
      with dashboard/data/DISTRICTS_LICENSE.md stating the source, licence
      and attribution text.
+   - If the official outline file exists, add a check (script or test that
+     skips when it is absent) reporting the maximum deviation between the
+     district union's outer edge and that outline, in km. Report it in
+     docs/district-warnings-results.md; don't hide a mismatch.
    - Add src/weavr/districts.py:
      - assign_cells_to_districts(lat, lon, geojson) -> (lat, lon) int
        array of district ids (-1 outside); numpy ray casting; tested on a

@@ -44,6 +44,26 @@ Why this order:
 - **14 → 17 → 19 → 20** is the product spine; 15, 16 and 18 hang off it.
 - **26 last**, and re-run its numbers refresh whenever a late result lands.
 
+### What the OpenStreetMap basemap changes
+
+It is finished and merged, and touches the remaining plan in five places
+(no new steps, no new ordering):
+
+- **14** checks the district file against the official outline, if one is
+  supplied.
+- **17** builds the district map on the basemap instead of hand-rolled SVG
+  (less projection code, more interaction code; a district list is the
+  keyboard path and the fallback).
+- **19** runs three synchronised map instances, with a one-map fallback.
+- **20** is the step that gains real work: publishing a 148 MB tile file
+  (size limit, a leaner public extract, rebuild without the undrawn
+  `boundaries` layer) plus attributions.
+- **26** adds the tile file and boundary to the offline bundle.
+
+Descope ladder: if 20 runs short, publish the static site without the
+basemap (plain grid and district fills work without it) and keep the full
+basemap for the offline finale copy.
+
 ## 2. Optional-ish P1 steps: where they fit
 
 | Step | Fits after | Skip if |

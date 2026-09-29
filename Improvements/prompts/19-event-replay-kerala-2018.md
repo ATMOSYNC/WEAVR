@@ -80,15 +80,21 @@ Follow Improvements/prompts/README.md's conventions. In WEAVR/:
    /api/replay-day?date=&lead= (422 on bad params; tested).
 
 5. Frontend: dashboard-web/js/charts/eventReplay.js (module-prefixed
-   globals), reusing districtWarnings.js's projection/path code (factor it
-   into a shared, prefixed helper if needed; don't duplicate it). Layout:
+   globals), reusing step 17's district layer on `BasemapMap` (factor the
+   add-districts-and-colour code into a shared, prefixed helper if needed;
+   don't duplicate it). Layout:
    - event picker, plus a date picker for judge's choice
    - a lead slider stepping from day 5 to day 1
    - three synchronised maps: WEAVR | a raw-model selector | IMD observed
+     (three MapLibre instances whose camera moves are mirrored; keep the
+     start view fixed on India or on Kerala, and check that three WebGL
+     contexts stay smooth on a laptop and at mobile width; if not, fall
+     back to one map with a method switch and say so)
    - a summary strip: "first Orange at day X, first Red at day Y" per
      method
    - caption: hindcast replay, training fold, sources available, and the
      honest outcome from docs/event-replay-results.md
+   The replay must work with the basemap absent (plain district fills).
    Browser-verify both events at every lead, and 3 random judge's-choice
    days across all three seasons. Check that the maps match the API JSON
    and that there are no console errors; check mobile width.

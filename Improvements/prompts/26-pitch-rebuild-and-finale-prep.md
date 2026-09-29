@@ -68,9 +68,12 @@ never overclaim).
 
 6. Offline demo bundle checklist: Improvements/pitch/finale-checklist.md.
    - the static site build (step 20) on the laptop AND a USB drive
+   - the full basemap tile file (`data/basemap/india.pmtiles`, 148 MB) and
+     the official boundary file, if supplied, on both; a Wi-Fi-off check
+     that the basemap draws (the map must never fetch public tile servers)
    - local copies of the data stores the live replay needs
    - a cached "today" snapshot (step 10)
-   - screenshots of every view
+   - screenshots of every view, with and without geography, at 16:9
    - the Q&A sheet, printed
    - chargers and adapters
    - a no-internet rehearsal: run the full demo with Wi-Fi off, and record

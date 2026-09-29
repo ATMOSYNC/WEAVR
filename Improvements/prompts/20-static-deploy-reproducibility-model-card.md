@@ -28,8 +28,21 @@ static build).
   - Attribute WeatherBench 2 and IMD.
   - HEPPI-derived content follows step 08's user decision.
   - District boundaries follow `DISTRICTS_LICENSE.md`.
+  - Basemap: OpenStreetMap contributors (ODbL), Protomaps, Natural Earth
+    (public domain), MapLibre GL JS (BSD-3) and pmtiles (BSD-3); see
+    `docs/basemap-scope.md` and `dashboard-web/vendor/VERSIONS.md`.
   Put an "Attributions" page in the static site.
-- **India map compliance** (step 14) must hold on the public site.
+- **India map compliance** (step 14) must hold on the public site. The
+  tile file still contains an OSM `boundaries` layer that the style never
+  draws. Before publishing, rebuild the public tile file without it (a
+  small change to `scripts/build_basemap.py`), then run
+  `scripts/check_basemap_boundaries.py` against the file that ships.
+  Publish the official outline only if the user supplied it.
+- **The basemap is a 148 MB binary read with HTTP Range requests.** GitHub
+  Pages serves Range, but a git push rejects files over 100 MB. Measure a
+  lower-zoom extract (max zoom 8 or 9) for the public site and report its
+  size and how it looks; or route hosting of the tile file separately.
+  The offline finale copy keeps the full file.
 - **FastAPI stays** for development. Static mode is a build output, not a
   second codebase.
 
@@ -44,7 +57,12 @@ Follow Improvements/prompts/README.md's conventions. In WEAVR/:
      (enumerate them from /api/meta/leads and each route's documented
      options). Write the results under site/ (gitignored build output),
      e.g. site/api/weight-map/lead-24.json, and CAP as .xml.
-   - Copy dashboard-web/ into site/.
+   - Copy dashboard-web/ into site/, plus the tile file at
+     site/basemap/india.pmtiles and the boundary (if configured) as
+     site/api/basemap/boundary.json; the static /api/basemap/status is a
+     generated JSON. Tiles are binary and fetched by MapLibre directly, so
+     they need the same relative path in both modes, not the fetchJson
+     mapping.
    - Generate site/js/config.js setting window.WEAVR_STATIC = true.
    - In dashboard-web/js/api.js, add a small static-mode path mapping in
      fetchJson (one place, not per call), so the same frontend works
@@ -54,7 +72,8 @@ Follow Improvements/prompts/README.md's conventions. In WEAVR/:
 
 2. Verify locally: serve site/ with `python -m http.server` on a fresh
    port and browser-verify every view, as in steps 16-19 (all leads and
-   parameters, no console errors, mobile width). Also confirm that opening
+   parameters, no console errors, mobile width), with the basemap on and
+   with the tile file removed (the plain-grid fallback must still work). Also confirm that opening
    index.html via a plain static server no longer 404s.
 
 3. Hosting: route via AskUserQuestion:

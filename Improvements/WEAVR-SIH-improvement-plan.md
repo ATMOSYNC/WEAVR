@@ -97,7 +97,7 @@ and add any line that is missing.
 | Rainfall, temperature and wind | Rainfall only | Temperature and wind not blended (C6) |
 | Adaptive weights by lead, region, season and regime | Lead × 6 zones. Regime tested honestly (no-go) | One season only, so no "season" dimension |
 | Skill on extremes, at IMD thresholds | Bins exist, but extreme bins are never fittable. POD is 0 at 204.5 mm | **The headline gap** (A1, A2, B3) |
-| Blended map, weight map, skill trends, extreme-probability map in IMD colours | All 4 built | These are research views, not decision products (C1–C5) |
+| Blended map, weight map, skill trends, extreme-probability map in IMD colours | All 4 built; the two grid maps now draw over an offline OpenStreetMap basemap (`docs/basemap-scope.md`) | These are research views, not decision products (C1–C5) |
 | Operational robustness | Renormalization, drift detection and a daily runner exist | Not scheduled, AIFS mismatch, no live obs (D2) |
 
 ---
@@ -615,12 +615,16 @@ allows.
      historical warning frequency.
   3. **Verify the colours out-of-sample:** district-level POD, FAR and CSI
      for Orange and Red.
-  4. **Frontend:** a district choropleth drawn as SVG paths straight from
-     GeoJSON (consistent with the no-library decision). Clicking a district
-     opens a card: probabilities, colour, and why (C5).
+  4. **Frontend:** a district choropleth drawn as a GeoJSON layer on the
+     existing OpenStreetMap basemap (`BasemapMap`), with a district list for
+     keyboard access and as the fallback. Clicking a district opens a card:
+     probabilities, colour, and why (C5).
   - **Boundaries:** use a map consistent with the Survey of India's official
     depiction of India's borders, and check the GeoJSON's licence before
-    committing it. Ministry judges notice non-compliant maps.
+    committing it. Ministry judges notice non-compliant maps. The basemap
+    itself draws no national boundaries; the official outline is a
+    user-supplied file drawn on top, and district polygons must agree with
+    it.
 - **Effort / risk:** 3–4 pd. Low-medium risk.
 - **Done when:** a new "District warnings" view, plus a verification table
   for the colour calls.
@@ -822,8 +826,10 @@ allows.
   stable precipitation weights; keep regional pooling.
 - **Don't claim "operational"** until D2 has run for real for at least 2
   weeks.
-- **Don't rebuild the frontend** in React or with a map library now. The
-  hand-rolled SVG/canvas works; spend the time on C1–C5.
+- **Don't rebuild the frontend** in React or add a *second* map stack. The
+  vanilla JS stays. The one map library is the already-vendored MapLibre
+  basemap (no build step, fully offline); new map views reuse it. Spend the
+  time on C1–C5.
 - **Don't start large data fetches at the finale venue.** Pre-build every
   store, keep a backup drive, and make the demo work offline.
 
@@ -965,7 +971,8 @@ The merge-sequence doc assumes 2 people; SIH teams are up to 6.
 | HEPPI licence or lead-time ambiguity | A3 challenged | Commit only derived metadata and scores, cite Angus et al. 2024, confirm the lead empirically, email the authors |
 | The GraphCast 2018 archive has other quirks | Delays A2 | One-chunk probe; per-source adapters already exist in the builder pattern |
 | The Kerala replay misses the event | A weak demo moment | Show it anyway, with the tail analysis (B3); add the Mumbai 2019 case; "judge's choice" shows it wasn't cherry-picked |
-| The India boundary GeoJSON is non-compliant | Embarrassment with the ministry jury | Use a Survey of India–compliant depiction, and check the licence |
+| The India boundary GeoJSON is non-compliant | Embarrassment with the ministry jury | Use a Survey of India–compliant depiction, and check the licence. The basemap draws no borders; `check_basemap_boundaries.py` guards that |
+| The 148 MB basemap tile file can't be pushed or hosted as-is | Public site loses its map | Lower-zoom public extract or separate hosting; plain-grid fallback already works; full file stays in the offline bundle |
 | Live dependencies fail during the finale | A broken demo | Cached "today" snapshot and an offline static build (D3) |
 | Scope creep | Nothing finishes | Finish P0 before any P1; each item has a "done when" |
 
