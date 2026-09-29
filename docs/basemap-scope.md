@@ -1,7 +1,25 @@
-# OpenStreetMap basemap — scope and decisions
+# OpenStreetMap basemap — scope, decisions and results
 
-Step 01 of the basemap task. This is the scoping record; later steps append
-their own sections. No dashboard code changes in this step.
+An optional **Show geography** layer for the blended-map and
+extreme-probability views: the 0.25° forecast grid drawn over a basemap built
+from OpenStreetMap data, served from a local file so the dashboard works
+offline, and drawing **no national boundaries** (an official outline you
+supply is drawn on top). The plain canvas maps remain the default and the
+fallback. This document is the scoping record (sections for steps 01–06) plus
+the final verification (step 07, the last section).
+
+**Quick start**
+
+```bash
+brew install pmtiles                     # once
+python scripts/build_basemap.py          # ~41 s, 148 MB, gitignored
+uvicorn dashboard.api:app --port 8000    # then tick "Show geography"
+python scripts/check_basemap_boundaries.py   # optional: confirm no borders
+```
+
+Optional: put your official boundary at `data/basemap/india-boundary.geojson`.
+To turn the feature off, simply do not build the tile file: the toggle then
+falls back to the plain grid with a caption.
 
 ## What exists today
 
@@ -322,3 +340,95 @@ when its text wrapped; it now sits top-left, clear of the zoom buttons.
 
 The synthetic outline was a test rectangle, not a boundary, and was deleted;
 `data/basemap/` holds only the tiles and their manifest.
+
+
+## Final verification and results (step 07)
+
+### What was built
+
+| Piece | Where |
+|---|---|
+| Tile builder and provenance manifest | `scripts/build_basemap.py`, `data/basemap/` (gitignored) |
+| Vendored MapLibre GL JS 5.24.0 and PMTiles 4.5.0 | `dashboard-web/vendor/` |
+| Border-free, label-free style | `dashboard-web/basemap/style.json` |
+| Tile and status routes (HTTP Range, 206) | `dashboard/api.py` |
+| Reusable map component, shared per view | `dashboard-web/js/charts/basemapMap.js` |
+| Toggle on the two map views | `blendedMap.js`, `extremeProbability.js` |
+| Official-boundary hook and attribution | `basemapMap.js`, `GET /api/basemap/boundary` |
+| No-border check | `scripts/check_basemap_boundaries.py` |
+| Tests | `tests/test_build_basemap.py` (16), `test_dashboard_basemap.py` (19), `test_check_basemap_boundaries.py` (11) |
+
+### Measured
+
+| Quantity | Value |
+|---|---|
+| Tile file | 147,968,833 bytes (148.0 MB), India bounding box, max zoom 10, Protomaps build of 2026-09-28 |
+| Build time | about 41 s (155 MB transferred, 51 requests) |
+| Lead change with the map already open (rendered and idle) | 0.30–0.32 s on both views, all five leads |
+| First map after ticking the box | 0.12–0.17 s in a visible tab with warm caches; about 1.1 s measured earlier with a cold cache |
+| Forecast layer size | up to 3,016 non-dry polygons (blended), all 17,415 cells (extreme-probability) |
+| New Python dependencies | none (`pyproject.toml` untouched) |
+| Files committed for data | none: `data/` is gitignored, checked with `git check-ignore` |
+
+### Verification matrix (real browser, fresh port, 2026-09-29)
+
+Both views, every lead (24, 48, 72, 96, 120), unless stated.
+
+| Check | Result |
+|---|---|
+| Lead change, map open | renders; title matches the lead; one map instance; 0.30–0.32 s |
+| Toggle on/off six times, then switch views back and forth | one map instance and one WebGL canvas at the end, choice remembered, no console or `error` events |
+| Pan and zoom at national (zoom 3.6–4.2), state (7.6) and district scale (10) | no errors; basemap features present at every scale |
+| Cell alignment, three places, zoom 6 and 10 | Kochi, Mumbai and Chennai each lie inside their 0.25° cell, and the rendered colour there equals the independently recomputed colour (6 of 6) |
+| Coastline | land inland and sea offshore at Kochi, Mumbai and Chennai (3 of 3) |
+| The four grid corners | 3 px inside each cell edge is hit and 3 px outside is not, for all four corner cells (16 of 16 edge tests); cells are 91×92 px at the south and 91×116 px at the north at zoom 8, the Mercator stretch that a stretched picture would get wrong |
+| 375 px width, both views | map 343 px wide, no horizontal scroll, attribution inside the map, note clear of attribution and zoom buttons, controls inside the screen |
+| Offline | every request over a session covering both views, all leads and all state changes went to `127.0.0.1` only; a search of the app code finds one `https://` string, the OpenStreetMap copyright link the user can click (not a request). The network could not be physically disconnected from this environment, so "no remote host is ever contacted" rests on that request list plus the code search |
+
+### Failure modes
+
+| Case | Result |
+|---|---|
+| Tile file missing | plain grid, caption "Basemap unavailable -- showing the plain grid.", both views, no errors |
+| Tile file truncated to 300 bytes (present, corrupt) | **found and fixed here.** Before the fix the style loaded fine, the toggle stayed on and the forecast grid floated on an empty background while the note claimed a basemap: an error only arrives when tiles are requested. Now the map records tile-source errors from creation and only counts as ready once the source has loaded; the corrupt file falls back in about 0.5 s on both views with no leftover map |
+| WebGL unavailable | same fallback, both views |
+| No boundary file | note "No official boundary configured", no outline (step 06) |
+| Invalid boundary file | API 500 with the reason; map note "Boundary unavailable: …" (step 06) |
+
+A truncated file at 2 MB still rendered (low-zoom tiles come first in the
+archive), which is correct behaviour, not a failure: the test that matters is
+a file too broken to read.
+
+### Border check on the final tile file
+
+`python scripts/check_basemap_boundaries.py` **PASSED** on the final file: 65
+tiles over Kashmir and Arunachal Pradesh at zooms 3–10; only polygons in
+`earth`/`landcover`/`landuse`, road lines in `roads`, polygons/lines/points in
+`water`; 232 `boundaries`, 1,378 `places` and 42 `pois` features present but
+never drawn. On screen, the only line features at Kashmir, Arunachal and the
+national view were highways.
+
+### Known limits
+
+- **Boundary layer still in the file.** `india.pmtiles` contains the
+  `boundaries` layer (232 features in the samples). Nothing draws it, but
+  someone re-styling the file could; the `pmtiles` tool cannot drop a layer.
+  If the static site must not carry it, rebuild with a tool that can filter
+  layers.
+- **No official boundary is configured.** Until you supply
+  `data/basemap/india-boundary.geojson` the map shows no outline; the
+  synthetic rectangle used to test drawing was deleted.
+- **No place labels.** Labels are off (the `places` layer names disputed
+  areas and would need local fonts). Roads and land cover are muted.
+- **Max zoom 10.** About district scale; cells are 25 km, so more detail would
+  add size without information.
+- **Pale extreme-probability map by design.** The example grids peak at
+  0.08–5.1 %, well below the 25 % where colour begins; the note says so.
+- **Hidden-tab testing.** The browser pane used for verification was often
+  hidden, and browsers pause `requestAnimationFrame` in hidden tabs, so most
+  checks replaced it with a timer. In a hidden tab the 10 s load timeout can
+  trigger the fallback. The last runs were in a visible tab with the real
+  timer and matched.
+- **CI does not test `dashboard-web`** (JavaScript and CSS are outside its
+  test jobs), so the front-end checks above are manual and repeatable, not
+  automated.
