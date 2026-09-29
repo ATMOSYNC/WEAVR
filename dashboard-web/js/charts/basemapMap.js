@@ -27,6 +27,9 @@ const BASEMAP_MAP_LOAD_TIMEOUT_MS = 10000;
 const BASEMAP_MAP_CELLS_SOURCE = "weavr-cells";
 const BASEMAP_MAP_CELLS_LAYER = "weavr-cells-fill";
 const BASEMAP_MAP_CELL_OPACITY = 0.78;
+const BASEMAP_MAP_OVERLAY_SOURCE = "weavr-overlay";
+const BASEMAP_MAP_OVERLAY_LAYER = "weavr-overlay-fill";
+const BASEMAP_MAP_OVERLAY_OPACITY = 0.75;
 
 let basemapMapProtocolRegistered = false;
 const basemapMapInstances = new Set();
@@ -52,10 +55,12 @@ function basemapMapGridStep(values) {
 /**
  * One polygon per cell, spanning +-half a step around its centre.
  * `colorAt(i, j)` gives the colour for latitude index i, longitude index j;
- * a null/undefined colour leaves the cell out (transparent).
+ * a null/undefined colour leaves the cell out (transparent). Optional
+ * `opacityAt(i, j)` gives each cell its own 0..1 fill opacity (default: the
+ * layer's standard opacity).
  * Returns a GeoJSON FeatureCollection in [lon, lat] order.
  */
-function basemapMapCellPolygons(latitude, longitude, colorAt) {
+function basemapMapCellPolygons(latitude, longitude, colorAt, opacityAt) {
   const halfLat = Math.abs(basemapMapGridStep(latitude)) / 2;
   const halfLon = Math.abs(basemapMapGridStep(longitude)) / 2;
   const features = [];
@@ -69,7 +74,10 @@ function basemapMapCellPolygons(latitude, longitude, colorAt) {
       const north = latitude[i] + halfLat;
       features.push({
         type: "Feature",
-        properties: { c: color },
+        properties: {
+          c: color,
+          o: opacityAt ? opacityAt(i, j) : BASEMAP_MAP_CELL_OPACITY,
+        },
         geometry: {
           type: "Polygon",
           coordinates: [[[west, south], [east, south], [east, north], [west, north], [west, south]]],
@@ -186,25 +194,44 @@ async function basemapMapCreate(container, options = {}) {
     container,
     map,
     destroyed: false,
-    /** grid = {latitude[], longitude[], colorAt(i, j)} */
+    /**
+     * grid = {latitude[], longitude[], colorAt(i, j), opacityAt?(i, j),
+     *         overlayColorAt?(i, j)}
+     * The optional overlay is a second, distinct layer drawn on top (used
+     * for the extreme-probability "fallback cell" grey pass).
+     */
     setCells(grid) {
-      const data = basemapMapCellPolygons(grid.latitude, grid.longitude, grid.colorAt);
-      const source = map.getSource(BASEMAP_MAP_CELLS_SOURCE);
-      if (source) {
-        source.setData(data);
-      } else {
-        map.addSource(BASEMAP_MAP_CELLS_SOURCE, { type: "geojson", data });
+      const upsert = (sourceId, layerId, data, opacityExpression) => {
+        const source = map.getSource(sourceId);
+        if (source) {
+          source.setData(data);
+          return;
+        }
+        map.addSource(sourceId, { type: "geojson", data });
         map.addLayer({
-          id: BASEMAP_MAP_CELLS_LAYER,
+          id: layerId,
           type: "fill",
-          source: BASEMAP_MAP_CELLS_SOURCE,
+          source: sourceId,
           paint: {
             "fill-color": ["get", "c"],
-            "fill-opacity": BASEMAP_MAP_CELL_OPACITY,
+            "fill-opacity": opacityExpression,
             "fill-antialias": false,
           },
         });
-      }
+      };
+      upsert(
+        BASEMAP_MAP_CELLS_SOURCE,
+        BASEMAP_MAP_CELLS_LAYER,
+        basemapMapCellPolygons(grid.latitude, grid.longitude, grid.colorAt, grid.opacityAt),
+        ["get", "o"]
+      );
+      const overlayAt = grid.overlayColorAt || (() => null);
+      upsert(
+        BASEMAP_MAP_OVERLAY_SOURCE,
+        BASEMAP_MAP_OVERLAY_LAYER,
+        basemapMapCellPolygons(grid.latitude, grid.longitude, overlayAt, () => BASEMAP_MAP_OVERLAY_OPACITY),
+        ["get", "o"]
+      );
       if (!fitted) {
         const [w, s, e, n] = basemapMapGridBounds(grid.latitude, grid.longitude);
         map.fitBounds([[w, s], [e, n]], { padding: 12, animate: false });
@@ -227,9 +254,59 @@ async function basemapMapCreate(container, options = {}) {
   return instance;
 }
 
+const basemapMapSharedEntries = new Map();
+
+/**
+ * One long-lived map per view, re-attached each time the view re-renders (a
+ * lead change rebuilds the view's DOM, and creating a map costs about a
+ * second). The creation PROMISE is cached, not the finished handle, so a
+ * re-render while the map is still loading joins that creation instead of
+ * starting a second map.
+ *
+ *   const entry = BasemapMap.shared("blended");
+ *   container.appendChild(entry.element);   // before calling handle()
+ *   const handle = await entry.handle();     // rejects on failure
+ */
+function basemapMapShared(key) {
+  let entry = basemapMapSharedEntries.get(key);
+  if (entry && entry.destroyed) {
+    basemapMapSharedEntries.delete(key); // another view pruned it
+    entry = undefined;
+  }
+  if (!entry) {
+    entry = {
+      element: document.createElement("div"),
+      destroyed: false,
+      promise: null,
+      handle() {
+        if (!entry.promise) {
+          entry.promise = basemapMapCreate(entry.element).then(
+            (created) => {
+              const destroy = created.destroy;
+              created.destroy = () => {
+                entry.destroyed = true;
+                destroy();
+              };
+              return created;
+            },
+            (err) => {
+              if (basemapMapSharedEntries.get(key) === entry) basemapMapSharedEntries.delete(key);
+              throw err;
+            }
+          );
+        }
+        return entry.promise;
+      },
+    };
+    basemapMapSharedEntries.set(key, entry);
+  }
+  return entry;
+}
+
 const BasemapMap = {
   isAvailable: basemapMapIsAvailable,
   create: basemapMapCreate,
+  shared: basemapMapShared,
   // Exposed so the half-cell offset and the grid extent can be checked
   // directly in the browser (see docs/basemap-scope.md, step 04).
   cellPolygons: basemapMapCellPolygons,

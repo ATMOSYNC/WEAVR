@@ -33,6 +33,34 @@
 const EXTREME_PROBABILITY_CELL_SIZE = 4;
 const EXTREME_PROBABILITY_FALLBACK_RGBA = "rgba(120, 120, 120, 0.75)";
 
+// Geography mode. The colour scale's first two stops are dry (white) and
+// light (green, at 0.25), so a solid fill at low probability would wash the
+// basemap out with white. Opacity therefore rises linearly from 0 at p = 0
+// to its full value at p = 0.25 (the first non-dry stop); colours are still
+// interpolated from the real scale, unchanged.
+const EXTREME_PROBABILITY_FULL_OPACITY_AT = 0.25;
+const EXTREME_PROBABILITY_MAX_OPACITY = 0.85;
+const EXTREME_PROBABILITY_GEOGRAPHY_FALLBACK_COLOR = "#787878";
+
+// Remembered across lead changes so the choice survives a re-render.
+let extremeProbabilityGeographyOn = false;
+
+const EXTREME_PROBABILITY_GEOGRAPHY_UNAVAILABLE =
+  "Basemap unavailable -- showing the plain grid.";
+
+/** Fill opacity for a cell of probability `p` in geography mode. */
+function extremeProbabilityOpacity(p) {
+  const fraction = Math.min(1, Math.max(0, p) / EXTREME_PROBABILITY_FULL_OPACITY_AT);
+  return fraction * EXTREME_PROBABILITY_MAX_OPACITY;
+}
+
+/** Highest probability on the grid, so the note can say why a map looks pale. */
+function extremeProbabilityMax(grid) {
+  let max = 0;
+  grid.probability.forEach((row) => row.forEach((p) => { if (p > max) max = p; }));
+  return max;
+}
+
 const EXTREME_PROBABILITY_CAPTION =
   "This map shows EMOS-CSG's real fitted ifs_ens combiner (the " +
   "real 50-member IFS ensemble) -- chosen over BMA because its " +
@@ -217,9 +245,83 @@ const ExtremeProbabilityView = {
     title.textContent = `P(rain > 204.5mm) at lead ${grid.lead_hours}h (sample: ${grid.sample_time})`;
     container.appendChild(title);
 
+    const toggleLabel = document.createElement("label");
+    toggleLabel.className = "map-mode-toggle";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.id = "extreme-probability-geography";
+    toggle.checked = extremeProbabilityGeographyOn;
+    toggleLabel.appendChild(toggle);
+    toggleLabel.appendChild(document.createTextNode("Show geography"));
+    container.appendChild(toggleLabel);
+
+    const geographyNote = document.createElement("p");
+    geographyNote.className = "view-caption";
+    geographyNote.id = "extreme-probability-geography-note";
+    container.appendChild(geographyNote);
+
     const canvasContainer = document.createElement("div");
     container.appendChild(canvasContainer);
     renderExtremeProbabilityCanvas(canvasContainer, grid, colors.probability_colorscale);
+
+    const mapEntry = BasemapMap.shared("extreme-probability");
+    const mapContainer = mapEntry.element;
+    mapContainer.id = "extreme-probability-geography-map";
+    mapContainer.hidden = true;
+    container.appendChild(mapContainer);
+
+    const maxProbability = extremeProbabilityMax(grid);
+    const geographyNoteText =
+      "Cells are drawn on an OpenStreetMap-derived basemap served from this " +
+      "machine, with the same colours as the plain grid. Low probabilities " +
+      "fade to transparent so the geography shows through; grey cells are the " +
+      "fallback cells. The highest probability at this lead is " +
+      `${(maxProbability * 100).toFixed(1)}%, so the map is pale by design ` +
+      "-- it is not missing data. The basemap draws no national boundaries.";
+
+    const showCanvas = (message) => {
+      mapContainer.hidden = true;
+      canvasContainer.hidden = false;
+      geographyNote.textContent = message || "";
+    };
+
+    const showGeography = async () => {
+      if (!(await BasemapMap.isAvailable())) {
+        throw new Error("basemap unavailable");
+      }
+      const handle = await mapEntry.handle();
+      handle.setCells({
+        latitude: grid.latitude,
+        longitude: grid.longitude,
+        colorAt: (i, j) => interpolateProbabilityColor(colors.probability_colorscale, grid.probability[i][j]),
+        opacityAt: (i, j) => extremeProbabilityOpacity(grid.probability[i][j]),
+        overlayColorAt: (i, j) =>
+          grid.is_fallback[i][j] ? EXTREME_PROBABILITY_GEOGRAPHY_FALLBACK_COLOR : null,
+      });
+      canvasContainer.hidden = true;
+      mapContainer.hidden = false;
+      handle.resize();
+      geographyNote.textContent = geographyNoteText;
+    };
+
+    const applyMode = async () => {
+      extremeProbabilityGeographyOn = toggle.checked;
+      if (!toggle.checked) {
+        showCanvas("");
+        return;
+      }
+      try {
+        await showGeography();
+      } catch (err) {
+        // Any failure leaves the plain grid in place, with the reason stated.
+        toggle.checked = false;
+        extremeProbabilityGeographyOn = false;
+        mapContainer.innerHTML = "";
+        showCanvas(EXTREME_PROBABILITY_GEOGRAPHY_UNAVAILABLE);
+      }
+    };
+    toggle.addEventListener("change", applyMode);
+    if (extremeProbabilityGeographyOn) applyMode();
 
     renderExtremeProbabilityLegend(container, colors.probability_colorscale);
 

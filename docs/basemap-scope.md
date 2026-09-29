@@ -202,3 +202,47 @@ pane used for these checks was hidden, and browsers pause
 `requestAnimationFrame` in hidden tabs, so the checks replaced it with a
 timer; in a visible tab MapLibre runs normally. In a hidden tab the 10 s load
 timeout can trigger the fallback.
+
+## The extreme-probability map on the basemap (step 05)
+
+The extreme-probability view gets the same **Show geography** checkbox (off by
+default), using the step-04 component rather than a copy of it. Changes to the
+shared component: `setCells` now also accepts a per-cell `opacityAt` and an
+optional second `overlayColorAt` layer, and `BasemapMap.shared(key)` holds one
+long-lived map per view (creation promise cached, as in step 04). The blended
+map was moved onto `BasemapMap.shared` and behaves as before.
+
+**Continuous colours, per-cell opacity.** Cell colours are interpolated from
+the same `probability_colorscale` as the plain grid. That scale starts at
+white for 0 and reaches its first real colour (light green) only at 0.25, so
+solid fills at low probability would wash the basemap out with white.
+Opacity therefore rises linearly from 0 at p = 0 to 0.85 at p ≥ 0.25. Colours
+are unchanged; only how strongly they cover the basemap.
+
+**The map is pale, and says why.** The example grids' highest probabilities
+are 3.0 % (24 h), 0.08 % (48 h), 0.16 % (72 h), 5.1 % (96 h) and 3.1 %
+(120 h), all far below the 0.25 where colour starts to show. The geography note
+states the highest probability at the current lead, so a pale map is not
+mistaken for missing data.
+
+**Fallback cells stay distinct.** They are a second polygon layer, solid grey
+at 0.75 opacity, drawn above the probability layer, with the legend swatch and
+the existing warning banner unchanged. Lead 96 h has four (27.5 N 84 E;
+27.75 N 83.75, 84, 84.25 E) and they read clearly over the basemap.
+
+### Verification (real browser, fresh port, 2026-09-29)
+
+| Check | Result |
+|---|---|
+| Colours and opacities | 24 of 24 sampled cells at 120 h, queried on the rendered map at each cell's projected centre, equal an independent recomputation of the colour scale interpolation and of the opacity rule from the API's probabilities |
+| Every lead | renders; title and data match the lead; one map instance |
+| Fallback overlay | 96 h: 4 cells, grey overlay present at the right cells; other leads have none |
+| Switching between the two map views three times, toggles on | 1 map instance and 1 WebGL canvas at the end, no errors |
+| Tile file missing | plain grid plus the caption, no errors |
+| WebGL unavailable | same fallback |
+| 375 px width | map 343 px wide, legend inside the screen, no horizontal scroll |
+
+An earlier test run reported errors after view switches; they came from the
+test harness replacing `requestAnimationFrame` without replacing
+`cancelAnimationFrame`, so timers survived `map.remove()`. With both replaced
+there were none. The same hidden-pane caveat as step 04 applies.

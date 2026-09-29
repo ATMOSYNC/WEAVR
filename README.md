@@ -572,6 +572,6 @@ offline. The scope, decisions and measured tile sizes are in
 The dashboard server now also serves the local basemap file at
 `/basemap/india.pmtiles` (with a fallback status at `/api/basemap/status`),
 and the map libraries are vendored under `dashboard-web/vendor/`. The blended
-map has a "Show geography" toggle (off by default) that draws the forecast
+map and the extreme-probability map have a "Show geography" toggle (off by default) that draws the forecast
 grid over the local basemap; it falls back to the plain grid if the tile file
 or WebGL is unavailable.
