@@ -80,3 +80,41 @@ boundary on top. This is tested in steps 03, 06 and 07, not just intended.
 | 05 | `basemapMap.js`, `extremeProbability.js` |
 | 06 | `dashboard/api.py`, `basemapMap.js`, a border-check script/test |
 | 07 | docs and verification only |
+
+## Building the basemap (step 02)
+
+```bash
+python scripts/build_basemap.py --dry-run      # estimate only, downloads nothing
+python scripts/build_basemap.py --source-url https://build.protomaps.com/20260928.pmtiles
+```
+
+Requires the `pmtiles` CLI (`brew install pmtiles`). The script extracts only
+the India bounding box (66.5, 6.5, 100.0, 38.5, the common grid's extent) up
+to max zoom 10, writes to `india.pmtiles.partial` first and renames on
+success (so an interrupted run never leaves a truncated file that looks
+valid), then writes `data/basemap/manifest.json`. A second run is a no-op
+while the file still matches the manifest; `--force` rebuilds. With no
+`--source-url` it uses the newest daily build in the last ten days.
+Pass an explicit URL when you want a reproducible build.
+
+**Measured (2026-09-29):** 148.0 MB archive (147,968,833 bytes), 155 MB
+transferred, 51 requests, about 41 s wall time. Header check: bounds
+66.5–100.0 E, 6.5–38.5 N, zoom 0–10, 13,091 addressed tiles, 10,830 tile
+entries. `data/basemap/` is gitignored (`git check-ignore` confirms it).
+
+The manifest records source URL, bounding box, max zoom, tool version, size,
+SHA-256, build time and the attribution string.
+
+### Layers in the file, and which carry boundaries
+
+| Layer | Use in the map style |
+|---|---|
+| `boundaries` | **Carries national, disputed and administrative boundaries. Never included.** |
+| `earth`, `water`, `landcover`, `landuse` | Polygons: land, water bodies, cover. Included. |
+| `roads` | Lines: roads, rail, ferries. Included, muted. |
+| `places` | Point labels, including names of disputed areas. Excluded until local fonts exist and the labels are reviewed. |
+| `buildings`, `pois` | Excluded (nothing useful at 0.25° scale). |
+
+Only `boundaries` is documented as holding boundary lines. That comes from the
+build's layer list, not from decoding the tiles, so step 06 still has to
+verify that no other layer carries a boundary feature.
