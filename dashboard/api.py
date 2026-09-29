@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from dashboard.colors import PROBABILITY_COLORSCALE, RAIN_BIN_COLORS, rain_bin_index
@@ -58,6 +58,14 @@ DASHBOARD_WEB_DIR = Path(__file__).resolve().parent.parent / "dashboard-web"
 # Built by scripts/build_basemap.py; gitignored. Module-level so tests can point it
 # at a small temp file.
 BASEMAP_TILES_PATH = Path(__file__).resolve().parent.parent / "data" / "basemap" / "india.pmtiles"
+# The official India boundary, supplied by the user (docs/basemap-scope.md). Kept
+# next to the tiles under the gitignored data/ so a file whose licence is not
+# confirmed is never committed or served by the static mount.
+BASEMAP_BOUNDARY_PATH = (
+    Path(__file__).resolve().parent.parent / "data" / "basemap" / "india-boundary.geojson"
+)
+DEFAULT_BOUNDARY_ATTRIBUTION = "Boundary: user-supplied official file"
+_BOUNDARY_GEOMETRIES = {"LineString", "MultiLineString", "Polygon", "MultiPolygon"}
 
 
 def _validate_lead(lead: int, available: list[int]) -> None:
@@ -169,6 +177,52 @@ def basemap_status() -> dict[str, Any]:
     if BASEMAP_TILES_PATH.is_file():
         return {"available": True, "bytes": BASEMAP_TILES_PATH.stat().st_size}
     return {"available": False, "bytes": None}
+
+
+def _boundary_geometries(document: Any) -> list[dict[str, Any]]:
+    """Every geometry in a GeoJSON document, or raise ValueError if it is not
+    an outline (line or polygon) GeoJSON."""
+    if not isinstance(document, dict):
+        raise ValueError("boundary file is not a GeoJSON object")
+    kind = document.get("type")
+    if kind == "FeatureCollection":
+        geometries = [f.get("geometry") for f in document.get("features", [])]
+    elif kind == "Feature":
+        geometries = [document.get("geometry")]
+    elif kind in _BOUNDARY_GEOMETRIES:
+        geometries = [document]
+    else:
+        raise ValueError(f"unsupported GeoJSON type {kind!r}")
+    if not geometries:
+        raise ValueError("boundary file has no geometry")
+    for geometry in geometries:
+        if not isinstance(geometry, dict) or geometry.get("type") not in _BOUNDARY_GEOMETRIES:
+            raise ValueError("boundary geometries must be lines or polygons")
+    return [g for g in geometries if isinstance(g, dict)]
+
+
+@app.get("/api/basemap/boundary")
+def basemap_boundary() -> Response:
+    """The user-supplied official boundary, or 404 {"configured": false}.
+
+    A file that exists but is not valid outline GeoJSON is a 500 with the
+    reason, not a silently ignored one: a boundary that quietly fails to draw
+    would look exactly like "no boundary configured"."""
+    if not BASEMAP_BOUNDARY_PATH.is_file():
+        return JSONResponse({"configured": False}, status_code=404)
+    try:
+        document = json.loads(BASEMAP_BOUNDARY_PATH.read_text())
+        _boundary_geometries(document)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"invalid boundary file: {exc}") from exc
+    attribution = document.get("attribution") if isinstance(document, dict) else None
+    return JSONResponse(
+        {
+            "configured": True,
+            "attribution": attribution or DEFAULT_BOUNDARY_ATTRIBUTION,
+            "geojson": document,
+        }
+    )
 
 
 @app.get("/basemap/india.pmtiles", response_model=None)
