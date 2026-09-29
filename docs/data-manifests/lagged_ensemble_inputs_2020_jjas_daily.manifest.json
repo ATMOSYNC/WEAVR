@@ -1,0 +1,70 @@
+{
+  "graphcast": {
+    "status": "ok",
+    "variables": [
+      "2m_temperature",
+      "total_precipitation_24hr"
+    ],
+    "n_nominal_times": 122,
+    "n_lead_hours": 5,
+    "n_offsets": 9,
+    "n_members_by_lead": {
+      "24": 6,
+      "48": 8,
+      "72": 9,
+      "96": 9,
+      "120": 9
+    },
+    "n_chunks_fetched": 3470,
+    "n_nominal_combos": 5002,
+    "n_unique_pairs": 1735,
+    "init_cadence_days": 7,
+    "nominal_times_from": "data/baseline_2020_jjas_daily.zarr",
+    "known_gaps": [],
+    "source_archive_path": "gs://weatherbench2/datasets/graphcast/2020/date_range_2019-11-16_2021-02-01_12_hours_derived.zarr",
+    "fetched_at": "2026-09-29T10:38:34.308511Z"
+  },
+  "_meta": {
+    "init_cadence_days": 7,
+    "nominal_times_from": "data/baseline_2020_jjas_daily.zarr",
+    "start": "2020-06-01",
+    "end": "2020-09-30",
+    "lead_hours": [
+      24,
+      48,
+      72,
+      96,
+      120
+    ],
+    "n_lags": 4,
+    "lag_spacing_hours": 12,
+    "batch_size": 50,
+    "workers": 4
+  },
+  "pangu": {
+    "status": "ok",
+    "variables": [
+      "2m_temperature"
+    ],
+    "n_nominal_times": 122,
+    "n_lead_hours": 5,
+    "n_offsets": 9,
+    "n_members_by_lead": {
+      "24": 6,
+      "48": 8,
+      "72": 9,
+      "96": 9,
+      "120": 9
+    },
+    "n_chunks_fetched": 1735,
+    "n_nominal_combos": 5002,
+    "n_unique_pairs": 1735,
+    "init_cadence_days": 7,
+    "nominal_times_from": "data/baseline_2020_jjas_daily.zarr",
+    "known_gaps": [
+      "no precipitation variable in this archive"
+    ],
+    "source_archive_path": "gs://weatherbench2/datasets/pangu/2018-2022_0012_0p25.zarr",
+    "fetched_at": "2026-09-29T10:53:15.934558Z"
+  }
+}
