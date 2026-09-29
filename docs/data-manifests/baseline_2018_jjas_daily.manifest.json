@@ -1,0 +1,83 @@
+{
+  "graphcast": {
+    "status": "ok",
+    "variables": [
+      "2m_temperature",
+      "total_precipitation_24hr"
+    ],
+    "n_init_times": 122,
+    "n_lead_steps": 5,
+    "init_cadence_days": 1,
+    "init_cycle": "00:00 UTC",
+    "known_gaps": [],
+    "source_archive_path": "gs://weatherbench2/datasets/graphcast/2018/date_range_2017-11-16_2019-02-01_12_hours_derived.zarr",
+    "fetched_at": "2026-09-29T18:34:47.331345Z"
+  },
+  "_meta": {
+    "init_cadence_days": 1,
+    "init_cycle": "00:00 UTC",
+    "start": "2018-06-01",
+    "end": "2018-09-30",
+    "year": 2018,
+    "lead_hours": [
+      24,
+      48,
+      72,
+      96,
+      120
+    ]
+  },
+  "pangu": {
+    "status": "ok",
+    "variables": [
+      "2m_temperature"
+    ],
+    "n_init_times": 122,
+    "n_lead_steps": 5,
+    "init_cadence_days": 1,
+    "init_cycle": "00:00 UTC",
+    "known_gaps": [
+      "no precipitation variable in this archive"
+    ],
+    "source_archive_path": "gs://weatherbench2/datasets/pangu/2018-2022_0012_0p25.zarr",
+    "fetched_at": "2026-09-29T18:36:06.394086Z"
+  },
+  "hres": {
+    "status": "ok",
+    "variables": [
+      "2m_temperature",
+      "total_precipitation_24hr"
+    ],
+    "n_init_times": 122,
+    "n_lead_steps": 5,
+    "init_cadence_days": 1,
+    "init_cycle": "00:00 UTC",
+    "known_gaps": [],
+    "source_archive_path": "gs://weatherbench2/datasets/hres/2016-2022-0012-1440x721.zarr",
+    "fetched_at": "2026-09-29T18:37:55.718658Z"
+  },
+  "ifs_ens_mean": {
+    "status": "ok",
+    "variables": [
+      "2m_temperature",
+      "total_precipitation_24hr"
+    ],
+    "n_init_times": 122,
+    "n_lead_steps": 5,
+    "init_cadence_days": 1,
+    "init_cycle": "00:00 UTC",
+    "known_gaps": [],
+    "source_archive_path": "gs://weatherbench2/datasets/ifs_ens/2018-2022-1440x721_mean.zarr",
+    "fetched_at": "2026-09-29T18:40:25.338314Z"
+  },
+  "imd_observed": {
+    "status": "ok",
+    "variables": [
+      "rain"
+    ],
+    "n_days": 122,
+    "missing_days": [],
+    "source_archive_path": "data\\imd_cache\\RF25_ind2018_rfp25.nc",
+    "fetched_at": "2026-09-29T18:56:47.108867Z"
+  }
+}

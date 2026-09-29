@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the 2020 daily-cadence stores against what they are supposed to be.
+"""Validate a 2018 or 2020 daily-cadence season against its expected structure.
 
 Step 05 rebuilds the 2020 stores at daily init cadence. A store that looks
 plausible but is quietly short of init times, or missing lagged members at
@@ -9,7 +9,7 @@ result wrong in a way nobody notices. So each expectation is checked and
 
 What is checked, and why each one:
 
-- **122 init times, 2020-06-01 to 2020-09-30, no gaps.** The whole point of
+- **122 init times, June 1 to September 30, no gaps.** The whole point of
   the step is 18 weekly -> 122 daily samples. A partial fetch is the most
   likely failure and the easiest to miss.
 - **Leads [24, 48, 72, 96, 120].** What every tier script asks for.
@@ -26,8 +26,8 @@ What is checked, and why each one:
 - **IFS-ENS: 50 members.**
 
 Usage:
-    python scripts/validate_daily_stores.py [--baseline PATH] [--lagged PATH]
-        [--ifs-ens PATH] [--expected-inits N]
+    python scripts/validate_daily_stores.py [--year 2018|2020]
+        [--baseline PATH] [--lagged PATH] [--ifs-ens PATH] [--expected-inits N]
 """
 
 from __future__ import annotations
@@ -41,8 +41,6 @@ import pandas as pd
 import xarray as xr
 
 EXPECTED_INITS = 122
-EXPECTED_START = "2020-06-01"
-EXPECTED_END = "2020-09-30"
 EXPECTED_LEADS = (24, 48, 72, 96, 120)
 
 BASELINE_GROUPS = ("graphcast", "pangu", "hres", "ifs_ens_mean", "imd_observed")
@@ -77,16 +75,19 @@ class Report:
         print(f"    --   {message}")
 
 
-def check_init_times(times: np.ndarray, report: Report, label: str, expected: int) -> None:
+def check_init_times(
+    times: np.ndarray, report: Report, label: str, expected: int, year: int = 2020
+) -> None:
     """Init count, span and gap-freeness in one place, for every store."""
     index = pd.DatetimeIndex(times)
     report.check(len(index) == expected, f"{label}: {len(index)} init times (expected {expected})")
     if len(index) == 0:
         return
+    expected_start, expected_end = f"{year}-06-01", f"{year}-09-30"
     report.check(
-        str(index.min().date()) == EXPECTED_START and str(index.max().date()) == EXPECTED_END,
+        str(index.min().date()) == expected_start and str(index.max().date()) == expected_end,
         f"{label}: spans {index.min().date()}..{index.max().date()} "
-        f"(expected {EXPECTED_START}..{EXPECTED_END})",
+        f"(expected {expected_start}..{expected_end})",
     )
     gaps = (pd.Series(index).diff().dt.days.dropna() != 1).sum()
     report.check(gaps == 0, f"{label}: {gaps} gaps in the daily sequence (expected 0)")
@@ -127,7 +128,7 @@ def count_members_by_lead(data: xr.DataArray) -> dict[int, int]:
     return per_lead
 
 
-def validate_baseline(path: str, report: Report, expected_inits: int) -> None:
+def validate_baseline(path: str, report: Report, expected_inits: int, year: int = 2020) -> None:
     print(f"\n=== baseline store: {path}")
     if not Path(path).exists():
         report.check(False, f"{path} does not exist")
@@ -139,14 +140,14 @@ def validate_baseline(path: str, report: Report, expected_inits: int) -> None:
             report.check(False, f"{group}: cannot open ({type(exc).__name__}: {exc})")
             continue
         print(f"  [{group}] {dict(data.sizes)} vars={list(data.data_vars)}")
-        check_init_times(data["time"].values, report, group, expected_inits)
+        check_init_times(data["time"].values, report, group, expected_inits, year)
         if "prediction_timedelta" in data.dims:
             leads = tuple(int(x) for x in data["prediction_timedelta"].values)
             report.check(leads == EXPECTED_LEADS, f"{group}: leads {leads}")
         check_not_all_nan(data, report, group)
 
 
-def validate_lagged(path: str, report: Report, expected_inits: int) -> None:
+def validate_lagged(path: str, report: Report, expected_inits: int, year: int = 2020) -> None:
     print(f"\n=== lagged-ensemble store: {path}")
     if not Path(path).exists():
         report.check(False, f"{path} does not exist")
@@ -158,7 +159,7 @@ def validate_lagged(path: str, report: Report, expected_inits: int) -> None:
             report.check(False, f"{group}: cannot open ({type(exc).__name__}: {exc})")
             continue
         print(f"  [{group}] {dict(data.sizes)} vars={list(data.data_vars)}")
-        check_init_times(data["nominal_time"].values, report, group, expected_inits)
+        check_init_times(data["nominal_time"].values, report, group, expected_inits, year)
         check_not_all_nan(data, report, group)
 
         for name, array in data.data_vars.items():
@@ -173,7 +174,9 @@ def validate_lagged(path: str, report: Report, expected_inits: int) -> None:
             )
 
 
-def validate_ifs_ens(path: str, report: Report, expected_inits: int, required: bool) -> None:
+def validate_ifs_ens(
+    path: str, report: Report, expected_inits: int, required: bool, year: int = 2020
+) -> None:
     print(f"\n=== IFS-ENS store: {path}")
     if not Path(path).exists():
         if not required:
@@ -190,7 +193,7 @@ def validate_ifs_ens(path: str, report: Report, expected_inits: int, required: b
         report.check(False, f"cannot open ({type(exc).__name__}: {exc})")
         return
     print(f"  {dict(data.sizes)} vars={list(data.data_vars)}")
-    check_init_times(data["time"].values, report, "ifs_ens", expected_inits)
+    check_init_times(data["time"].values, report, "ifs_ens", expected_inits, year)
     report.check(
         data.sizes.get("member") == IFS_ENS_MEMBERS,
         f"ifs_ens: {data.sizes.get('member')} members (expected {IFS_ENS_MEMBERS})",
@@ -202,9 +205,10 @@ def validate_ifs_ens(path: str, report: Report, expected_inits: int, required: b
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline", default="data/baseline_2020_jjas_daily.zarr")
-    parser.add_argument("--lagged", default="data/lagged_ensemble_inputs_2020_jjas_daily.zarr")
-    parser.add_argument("--ifs-ens", default="data/ifs_ens_2020_jjas_daily.zarr")
+    parser.add_argument("--year", type=int, choices=(2018, 2020), default=2020)
+    parser.add_argument("--baseline", default=None)
+    parser.add_argument("--lagged", default=None)
+    parser.add_argument("--ifs-ens", default=None)
     parser.add_argument("--expected-inits", type=int, default=EXPECTED_INITS)
     parser.add_argument(
         "--no-require-ifs-ens",
@@ -218,10 +222,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    args.baseline = args.baseline or f"data/baseline_{args.year}_jjas_daily.zarr"
+    args.lagged = args.lagged or f"data/lagged_ensemble_inputs_{args.year}_jjas_daily.zarr"
+    args.ifs_ens = args.ifs_ens or f"data/ifs_ens_{args.year}_jjas_daily.zarr"
+
     report = Report()
-    validate_baseline(args.baseline, report, args.expected_inits)
-    validate_lagged(args.lagged, report, args.expected_inits)
-    validate_ifs_ens(args.ifs_ens, report, args.expected_inits, args.require_ifs_ens)
+    validate_baseline(args.baseline, report, args.expected_inits, args.year)
+    validate_lagged(args.lagged, report, args.expected_inits, args.year)
+    validate_ifs_ens(args.ifs_ens, report, args.expected_inits, args.require_ifs_ens, args.year)
 
     print()
     if report.failures:

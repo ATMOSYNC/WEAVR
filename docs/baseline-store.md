@@ -39,10 +39,10 @@ gs://weatherbench2/datasets/graphcast/2018/
   100% finite, with a maximum of 168.9 mm (the Kerala floods week).
 - Lead times run from 6 h in 6-hourly steps.
 
-One difference matters when building from it: this store names its spatial
-dimensions **`lat`/`lon`**, not `latitude`/`longitude` as the 2020 store
-does. Code that assumes the 2020 names will fail here, so any 2018 builder
-must rename them.
+The 2018 derived store names its spatial dimensions **`lat`/`lon`**. A live
+recheck of the 2020 derived path used by this repository found `lat`/`lon`
+there too, correcting the earlier claim that it used `latitude`/`longitude`.
+The builders normalize these names before geographic slicing and regridding.
 
 The other three sources cover JJAS 2018 as well — checked the same way, all
 with **243 initialisations** over 2018-06-01..2018-09-30:
@@ -507,3 +507,100 @@ takes the **minimum across every nominal time** rather than sampling a few,
 since a partial fetch is precisely the failure that sampling would miss.
 `--no-require-ifs-ens` records the skip above as a documented decision
 instead of a failure.
+
+## Second season (2018)
+
+Issue #68 adds JJAS 2018 as a separate, resumable season. Per-season Zarr
+stores keep their own manifests; appending another year into a live Zarr
+store would make retries and partial failures harder to audit.
+`weavr.stores.open_multi_season(paths, group)` checks the latitude and
+longitude grids and concatenates matching source groups in chronological
+order. It rejects overlapping dates and incompatible variables.
+
+### Live archive probe
+
+The 2018 GraphCast derived archive was opened lazily before downloading a
+season. The 2020 derived archive was opened for comparison. Both have
+`(time, prediction_timedelta, lat, lon)` for precipitation, ascending
+latitude from -90 to 90 degrees, longitude from 0 to 359.75 degrees, integer
+lead values with `units=hours`, and one full-global-grid chunk per
+initialization and lead (`1 x 1 x 721 x 1440`, about 4.2 MB raw). The 2018
+archive has 884 total initializations; the 2020 archive has 886. The derived
+precipitation variable and dataset have no `units` attribute in either
+archive. A 2018-08-15 00 UTC, +24 h India slice loaded in **2.53 seconds**;
+its maximum was 0.16893 m (168.9 mm). Precipitation is treated as metres,
+following the WeatherBench 2 convention already used by the verification
+code, and multiplied by 1000 when compared with IMD millimetres.
+
+WeatherBench 2's [data guide](https://weatherbench2.readthedocs.io/en/latest/data-guide.html#graphcast)
+states that the **2018 forecasts use a GraphCast model trained through
+2017**, while the **2020 forecasts use a model trained through 2019**. This
+is a model checkpoint change, not merely a different evaluation window.
+The source archives and coordinate renames are selected by
+`weavr.archives.ARCHIVES[(source, year)]`; the 2018 GraphCast path is
+`graphcast/2018/date_range_2017-11-16_2019-02-01_12_hours_derived.zarr`.
+HRES, IFS-ENS mean, and Pangu use the same multi-year archives in both
+seasons. Pangu remains temperature-only.
+
+### Build and validation
+
+```bash
+python scripts/build_baseline_store.py --year 2018
+python scripts/build_lagged_ensemble_store.py --year 2018 --workers 4
+python scripts/validate_daily_stores.py --year 2018 --no-require-ifs-ens
+```
+
+The official IMD binary endpoint timed out during this build. The yearly
+0.25-degree IMD rainfall NetCDF was taken from the [public Zenodo archive](https://zenodo.org/records/11195106),
+whose full ZIP matched its published MD5
+`cda7001f29fe8480a56d05026362ff3f`. The extracted
+`RF25_ind2018_rfp25.nc` has 365 daily records, the expected 129 x 135
+India grid, rainfall in millimetres, and missing values decoded as NaN.
+The baseline builder accepts that yearly file explicitly:
+
+```bash
+python scripts/build_baseline_store.py --year 2018 \
+    --imd-nc-path data/imd_cache/RF25_ind2018_rfp25.nc
+```
+
+The five 2018 baseline groups built successfully into a 228 MiB store.
+Validation confirmed 122 daily initializations or observation days from
+June 1 through September 30, no gaps, all five requested leads for each
+forecast, no all-NaN sample, and finite IMD land rainfall on every day.
+The IMD group has 26.6% finite cells on the full rectangular grid, reflecting
+the India land mask.
+
+For a real cross-season units check, the +24 h GraphCast daily rainfall was
+converted from metres to millimetres and averaged over cells with IMD land
+coverage. All 122 JJAS days were used in each year (the 2020 GraphCast chunks
+were read from the public archive because the owner's 2020 Zarr store is not
+in this checkout). In 2018, GraphCast averaged **7.324 mm/day** against IMD
+**6.532 mm/day** (ratio 1.121); in 2020, GraphCast averaged **8.187 mm/day**
+against IMD **7.844 mm/day** (ratio 1.044). Both are on the expected scale,
+with no factor-of-1000 unit discrepancy. This is a magnitude sanity check,
+not a skill score: the 00 UTC forecast and IMD's 03 UTC observation-day
+windows are not exactly aligned.
+
+The daily 00 UTC design uses 122 initializations (June 1 to September 30)
+and leads 24, 48, 72, 96, and 120 h. GraphCast's earlier archive begins in
+November 2017, so the +/-48 h lag window around JJAS 2018 lies inside it.
+The lagged store includes GraphCast precipitation and temperature and Pangu
+temperature, matching the 2020 daily manifest. The first measured GraphCast
+chunk took 2.53 s; a serial extrapolation for its 610 daily
+initialization/lead chunks is about 26 minutes per variable. The builders
+batch and overlap requests. Each 2018 lagged source deduplicated 5,002
+nominal lag/lead combinations to 1,735 unique pairs across 35 batches.
+GraphCast fetched 3,470 variable chunks in 18.3 minutes; Pangu fetched
+1,735 temperature chunks in 10.1 minutes. The completed lagged store is
+749 MiB. The validator confirmed 122 nominal initializations with no gaps,
+no all-NaN samples, and temperature member counts of 6/8/9/9/9 for
+24/48/72/96/120 h. GraphCast precipitation has 5/7/9/9/9 members at those
+leads, matching the documented accumulation constraint. Both stores'
+provenance and counts are saved in `docs/data-manifests/`.
+
+The [step 06 data handoff](step-06-data-handoff.md) confirms that the
+2020 full-member daily IFS-ENS store was deliberately skipped and applies
+the same decision to 2018. The IFS-ENS **mean** remains present daily in the
+baseline store. The 50-member daily builder can be run with `--year 2018`
+if a suitable data location is provided later. Tier 2's member-based
+comparison therefore retains its documented weekly cadence.

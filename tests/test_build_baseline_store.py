@@ -11,6 +11,7 @@ from build_baseline_store import (  # noqa: E402
     _clear_encoding,
     _lat_slice_for,
     _weekly_init_times,
+    build_imd_group,
 )
 
 
@@ -87,3 +88,28 @@ class TestClearEncoding:
 
         assert out["v"].encoding == {}
         assert out["time"].encoding == {}
+
+
+def test_build_imd_group_from_yearly_netcdf(tmp_path):
+    rain = xr.DataArray(
+        np.array([[[12.0, 13.0], [14.0, 15.0]], [[1.0, 2.0], [3.0, np.nan]]]),
+        dims=("TIME", "LATITUDE", "LONGITUDE"),
+        coords={
+            "TIME": pd.date_range("2018-06-01", periods=2),
+            "LATITUDE": [6.5, 6.75],
+            "LONGITUDE": [66.5, 66.75],
+        },
+        attrs={"units": "mm"},
+    )
+    nc_path = tmp_path / "imd_2018.nc"
+    xr.Dataset({"RAINFALL": rain}).to_netcdf(nc_path)
+
+    result, info = build_imd_group(
+        2018, "2018-06-01", "2018-06-02", str(nc_path)
+    )
+
+    assert result.sizes["time"] == 2
+    assert "rain" in result
+    assert result["rain"].sel(time="2018-06-01", latitude=6.5, longitude=66.5) == 12.0
+    assert info["missing_days"] == []
+    assert info["source_archive_path"] == str(nc_path)

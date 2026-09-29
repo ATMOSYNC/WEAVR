@@ -7,14 +7,10 @@ one full JJAS (June-September) monsoon season of WeatherBench 2 forecasts,
 regridded to the common 0.25 deg grid (weavr.grid), plus IMD gridded
 rainfall as ground truth, sitting in one Zarr store.
 
-Year: 2020, not an arbitrary "most recent" pick. WeatherBench 2's public
-GraphCast archive only has two evaluation windows (Nov 2017-Feb 2019 and
-Nov 2019-Feb 2021) -- confirmed by listing the actual GCS bucket rather than
-assuming "most recent" meant 2024/2025 as the original brief guessed. Only
-the second window overlaps a full monsoon season, so 2020 JJAS is the only
-year where GraphCast, Pangu, HRES and IFS ENS all have data. If NEPS-G
-access comes through later, add it as a fifth group in this store --
-sources are pulled independently, so nothing here needs to change.
+WeatherBench 2 has GraphCast evaluation windows covering both JJAS 2018 and
+JJAS 2020. Select the source-specific archive by --year and write each year
+to its own resumable store. The default keeps the original 2020 weekly build;
+--year 2018 defaults to daily 00 UTC initializations.
 
 Known gap, documented rather than silently dropped: Pangu's WeatherBench 2
 archive has no precipitation variable at all (2m_temperature only). It is
@@ -23,20 +19,16 @@ the store, not zero-filled.
 
 Sampling density: measured, not assumed. WeatherBench 2's native-resolution
 stores are chunked at roughly one (init_time, lead_time) pair per chunk, and
-a single chunk fetch from GCS measured at 0.75-2s serially in this
-environment. Pulling every 12-hourly init time (~244 over JJAS) at every
-6-hourly lead step out to 120h (~20 steps) is ~4880 chunk fetches for one
-variable of one source alone -- confirmed to stall for 15+ minutes with
-nothing written, before being killed. This script instead samples **weekly**
-init times spanning the full JJAS calendar range, at a small set of
-representative lead times reaching to 120h (24/48/72/96/120h). This still
-covers the entire monsoon season in calendar time -- it trades init-time
-density for tractability, rather than silently truncating the date range.
+a single chunk fetch from GCS takes seconds. The script samples five
+representative lead times (24/48/72/96/120h). The 2020 default preserves its
+weekly cadence; the 2018 default samples daily 00 UTC starts, matching the
+2020 daily store built separately in step 05.
 IMD's daily observations are pulled at full density regardless (they're
 already one chunk per day, cheap regardless of cadence).
 
 Usage:
-    python scripts/build_baseline_store.py [--out PATH] [--lead-hours H [H ...]]
+    python scripts/build_baseline_store.py [--year 2018|2020] [--out PATH]
+                                            [--lead-hours H [H ...]]
                                             [--start DATE] [--end DATE]
                                             [--init-cadence-days N]
 
@@ -65,6 +57,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from weavr.archives import archive_for, normalize_coordinates
 from weavr.data.imd_gridded import fetch_year
 from weavr.grid import SourceTooCoarseError, regrid_to_common
 
@@ -86,47 +79,27 @@ INDIA_LON_SLICE_0_360 = slice(66.0, 101.0)  # WeatherBench 2 native stores use 0
 @dataclass
 class ForecastSource:
     name: str
+    year: int
     zarr_path: str
-    lat_dim: str
-    lon_dim: str
     variables: list[str]
     known_gaps: list[str] = field(default_factory=list)
 
 
-FORECAST_SOURCES = [
-    ForecastSource(
-        name="graphcast",
-        zarr_path=(
-            "gs://weatherbench2/datasets/graphcast/2020/"
-            "date_range_2019-11-16_2021-02-01_12_hours_derived.zarr"
-        ),
-        lat_dim="lat",
-        lon_dim="lon",
-        variables=["2m_temperature", "total_precipitation_24hr"],
-    ),
-    ForecastSource(
-        name="pangu",
-        zarr_path="gs://weatherbench2/datasets/pangu/2018-2022_0012_0p25.zarr",
-        lat_dim="latitude",
-        lon_dim="longitude",
-        variables=["2m_temperature"],
-        known_gaps=["no precipitation variable in this archive"],
-    ),
-    ForecastSource(
-        name="hres",
-        zarr_path="gs://weatherbench2/datasets/hres/2016-2022-0012-1440x721.zarr",
-        lat_dim="latitude",
-        lon_dim="longitude",
-        variables=["2m_temperature", "total_precipitation_24hr"],
-    ),
-    ForecastSource(
-        name="ifs_ens_mean",
-        zarr_path="gs://weatherbench2/datasets/ifs_ens/2018-2022-1440x721_mean.zarr",
-        lat_dim="latitude",
-        lon_dim="longitude",
-        variables=["2m_temperature", "total_precipitation_24hr"],
-    ),
-]
+def forecast_sources(year: int) -> list[ForecastSource]:
+    """Select the same source set from the requested evaluation year."""
+    specs: tuple[tuple[str, list[str], list[str]], ...] = (
+        ("graphcast", ["2m_temperature", "total_precipitation_24hr"], []),
+        ("pangu", ["2m_temperature"], ["no precipitation variable in this archive"]),
+        ("hres", ["2m_temperature", "total_precipitation_24hr"], []),
+        ("ifs_ens_mean", ["2m_temperature", "total_precipitation_24hr"], []),
+    )
+    return [
+        ForecastSource(name, year, archive_for(name, year).path, variables, gaps)
+        for name, variables, gaps in specs
+    ]
+
+
+FORECAST_SOURCES = forecast_sources(DEFAULT_YEAR)
 
 
 def _load_manifest(path: Path) -> dict:
@@ -189,6 +162,7 @@ def _slice_source(
 ) -> xr.Dataset:
     ds = xr.open_zarr(source.zarr_path, storage_options=GCS_ANON, consolidated=True)
     ds = ds[[v for v in source.variables if v in ds.data_vars]]
+    ds = normalize_coordinates(ds, archive_for(source.name, source.year))
 
     sampled_times = _weekly_init_times(ds, start, end, init_cadence_days)
     ds = ds.sel({"time": sampled_times})
@@ -197,15 +171,8 @@ def _slice_source(
     # "nearest" in case a source's lead-time grid doesn't hit these exactly.
     ds = ds.sel({"prediction_timedelta": lead_hours}, method="nearest")
 
-    lat_slice = _lat_slice_for(
-        ds, source.lat_dim, INDIA_LAT_SLICE.start, INDIA_LAT_SLICE.stop
-    )
-    ds = ds.sel({source.lat_dim: lat_slice, source.lon_dim: INDIA_LON_SLICE_0_360})
-
-    if source.lat_dim != "latitude":
-        ds = ds.rename({source.lat_dim: "latitude"})
-    if source.lon_dim != "longitude":
-        ds = ds.rename({source.lon_dim: "longitude"})
+    lat_slice = _lat_slice_for(ds, "latitude", INDIA_LAT_SLICE.start, INDIA_LAT_SLICE.stop)
+    ds = ds.sel(latitude=lat_slice, longitude=INDIA_LON_SLICE_0_360)
 
     return ds
 
@@ -277,8 +244,18 @@ def build_forecast_group(
     return ds, info
 
 
-def build_imd_group(year: int, start: str, end: str) -> tuple[xr.Dataset, dict]:
-    ds = fetch_year(year, var_type="rain")
+def build_imd_group(
+    year: int, start: str, end: str, imd_nc_path: str | None = None
+) -> tuple[xr.Dataset, dict]:
+    if imd_nc_path:
+        ds = xr.open_dataset(imd_nc_path)
+        ds = ds.rename(
+            {"TIME": "time", "LATITUDE": "lat", "LONGITUDE": "lon", "RAINFALL": "rain"}
+        )
+        if ds["rain"].attrs.get("units") != "mm":
+            raise ValueError("IMD NetCDF rainfall must have units='mm'")
+    else:
+        ds = fetch_year(year, var_type="rain", cache_dir="data/imd_cache")
     ds = ds.sel(time=slice(start, end))
     ds = ds.rename({"lat": "latitude", "lon": "longitude"})
     ds = _clear_encoding(ds)
@@ -300,24 +277,41 @@ def build_imd_group(year: int, start: str, end: str) -> tuple[xr.Dataset, dict]:
         "variables": list(ds.data_vars),
         "n_days": int(ds.sizes.get("time", 0)),
         "missing_days": [str(d.date()) for d in missing_days],
+        "source_archive_path": imd_nc_path or "https://imdpune.gov.in/cmpg/Griddata/rainfall.php",
     }
     return ds, info
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--year", type=int, choices=(2018, 2020), default=DEFAULT_YEAR)
+    parser.add_argument(
+        "--imd-nc-path",
+        default=None,
+        help="Use a yearly IMD 0.25-degree NetCDF file instead of the IMD server",
+    )
     parser.add_argument(
         "--out",
-        default=os.environ.get("WEAVR_BASELINE_STORE_PATH", "data/baseline_2020_jjas.zarr"),
+        default=None,
     )
-    parser.add_argument("--start", default=DEFAULT_START)
-    parser.add_argument("--end", default=DEFAULT_END)
+    parser.add_argument("--start", default=None)
+    parser.add_argument("--end", default=None)
     parser.add_argument(
         "--lead-hours", type=int, nargs="+", default=DEFAULT_LEAD_HOURS
     )
-    parser.add_argument("--init-cadence-days", type=int, default=DEFAULT_INIT_CADENCE_DAYS)
+    parser.add_argument("--init-cadence-days", type=int, default=None)
     parser.add_argument("--force", action="store_true", help="re-pull sources already marked ok")
     args = parser.parse_args()
+
+    args.start = args.start or f"{args.year}-06-01"
+    args.end = args.end or f"{args.year}-09-30"
+    args.init_cadence_days = args.init_cadence_days or (
+        1 if args.year == 2018 else DEFAULT_INIT_CADENCE_DAYS
+    )
+    args.out = args.out or os.environ.get("WEAVR_BASELINE_STORE_PATH") or (
+        f"data/baseline_{args.year}_jjas_daily.zarr"
+        if args.year == 2018 else "data/baseline_2020_jjas.zarr"
+    )
 
     store_path = Path(args.out)
     store_path.parent.mkdir(parents=True, exist_ok=True)
@@ -342,10 +336,15 @@ def main() -> int:
                 args.init_cadence_days,
             ),
         )
-        for source in FORECAST_SOURCES
+        for source in forecast_sources(args.year)
     ]
     jobs.append(
-        ("imd_observed", functools.partial(build_imd_group, DEFAULT_YEAR, args.start, args.end))
+        (
+            "imd_observed",
+            functools.partial(
+                build_imd_group, args.year, args.start, args.end, args.imd_nc_path
+            ),
+        )
     )
 
     for group_name, job in jobs:
@@ -375,6 +374,7 @@ def main() -> int:
                 "init_cycle": "00:00 UTC",
                 "start": args.start,
                 "end": args.end,
+                "year": args.year,
                 "lead_hours": args.lead_hours,
             }
             _save_manifest(manifest_path, manifest)
