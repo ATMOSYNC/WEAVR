@@ -222,19 +222,40 @@ async function basemapMapCreate(container, options = {}) {
   map.touchZoomRotate.disableRotation();
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
 
+  // Record errors from the tile source from the very start: a tile file that
+  // exists but is truncated or corrupt lets the style "load" fine and only
+  // fails when tiles are requested, so a check on 'load' alone would leave a
+  // forecast grid floating on an empty background with the note claiming a
+  // basemap.
+  let tileSourceError = null;
+  map.on("error", (event) => {
+    if (event.sourceId === "basemap" && !tileSourceError) {
+      tileSourceError = event.error || new Error("basemap tiles failed to load");
+    }
+  });
+
   await new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error("basemap did not load in time")),
       BASEMAP_MAP_LOAD_TIMEOUT_MS
     );
+    const settle = (fn, value) => {
+      clearTimeout(timer);
+      map.off("sourcedata", checkTiles);
+      map.off("error", checkTiles);
+      fn(value);
+    };
+    function checkTiles() {
+      if (tileSourceError) settle(reject, tileSourceError);
+      else if (loaded && map.isSourceLoaded("basemap")) settle(resolve);
+    }
+    let loaded = false;
     map.once("load", () => {
-      clearTimeout(timer);
-      resolve();
+      loaded = true;
+      checkTiles();
     });
-    map.once("error", (event) => {
-      clearTimeout(timer);
-      reject(event.error || new Error("basemap failed to load"));
-    });
+    map.on("sourcedata", checkTiles);
+    map.on("error", checkTiles);
   }).catch((err) => {
     map.remove();
     container.classList.remove("basemap-map");

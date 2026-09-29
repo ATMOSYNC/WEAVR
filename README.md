@@ -562,9 +562,9 @@ the demo lives in [`Improvements/`](Improvements/):
 [`prompts/completed/`](Improvements/prompts/completed/) (steps 01–05, with
 `DONE.md` summarising what they delivered).
 
-## OpenStreetMap basemap (in progress)
+## OpenStreetMap basemap
 
-An optional "Show geography" layer for the two map views is being added,
+An optional "Show geography" layer for the two map views,
 built from OpenStreetMap data served from a local file so the demo works
 offline. The scope, decisions and measured tile sizes are in
 [`docs/basemap-scope.md`](docs/basemap-scope.md).
