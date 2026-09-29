@@ -91,6 +91,13 @@ note this directional consistency; it will not attempt a literal
 reproduction of Angus et al.'s numbers (different ensemble, different
 seasons, no shared dates to align on).
 
+> **Update (29 Sep 2026, Step 03 / PR #54):** The premise that HEPPI's calendar
+> is unrecoverable no longer holds. `scripts/recover_heppi_dates.py` successfully
+> matched all 242 JJAS samples across 2018 and 2019 with 100% confidence
+> (`docs/heppi-date-map.csv`), resolving the missing calendar constraint and
+> unlocking NCMRWF's NEPS-G 23-member ensemble for multi-model blending in Step 08.
+> See [docs/heppi-reference-dataset.md](heppi-reference-dataset.md) for full details.
+
 ## Real per-bin sample counts: dry/light/moderate are fittable everywhere, heavy is marginal, extreme is not fittable at all
 
 Using `weavr.verify.IMD_RAIN_THRESHOLDS_MM` (7.5/64.5/115.6/204.5mm) as bin
