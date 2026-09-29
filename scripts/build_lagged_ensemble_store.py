@@ -77,11 +77,13 @@ import argparse
 import json
 import os
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+import dask
 import numpy as np
 import xarray as xr
 
@@ -142,6 +144,54 @@ def _valid_combos(
     return combos
 
 
+def deduplicate_fetch_pairs(
+    combos: list[tuple[int, int, int, np.datetime64, int]],
+) -> list[tuple[np.datetime64, int]]:
+    """Return sorted unique (source_time, source_lead) pairs across all combos."""
+    seen = set()
+    unique = []
+    for _, _, _, source_time, source_lead in combos:
+        key = (source_time, int(source_lead))
+        if key not in seen:
+            seen.add(key)
+            unique.append(key)
+    unique.sort(key=lambda p: (p[0], p[1]))
+    return unique
+
+
+def _get_nominal_times(
+    ds: xr.Dataset,
+    start: str,
+    end: str,
+    init_cadence_days: int,
+    nominal_times_from: str | Path | None = None,
+) -> np.ndarray:
+    """Resolve nominal init times either from an existing store or using cadence."""
+    if nominal_times_from:
+        p = Path(nominal_times_from)
+        if not p.exists():
+            raise FileNotFoundError(f"Store for nominal times not found: {p}")
+        try:
+            import zarr
+
+            r = zarr.open_group(p, mode="r")
+            keys = list(r.group_keys())
+            group = "graphcast" if "graphcast" in keys else (keys[0] if keys else None)
+            if group is not None:
+                store_ds = xr.open_zarr(p, group=group, consolidated=True)
+            else:
+                store_ds = xr.open_zarr(p, consolidated=True)
+            coord = "time" if "time" in store_ds.coords else "nominal_time"
+            times = store_ds[coord].values
+        except Exception:
+            store_ds = xr.open_zarr(p, consolidated=True)
+            coord = "time" if "time" in store_ds.coords else "nominal_time"
+            times = store_ds[coord].values
+        times = times[(times >= np.datetime64(start)) & (times <= np.datetime64(end))]
+        return times
+    return _weekly_init_times(ds, start, end, init_cadence_days)
+
+
 def build_lagged_group(
     source: ForecastSource,
     start: str,
@@ -150,11 +200,16 @@ def build_lagged_group(
     init_cadence_days: int,
     n_lags: int,
     lag_spacing_hours: int,
+    nominal_times_from: str | Path | None = None,
+    batch_size: int = 50,
+    workers: int = 6,
 ) -> tuple[xr.Dataset, dict]:
     ds = xr.open_zarr(source.zarr_path, storage_options=GCS_ANON, consolidated=True)
     ds = ds[[v for v in source.variables if v in ds.data_vars]]
 
-    nominal_times = _weekly_init_times(ds, start, end, init_cadence_days)
+    nominal_times = _get_nominal_times(
+        ds, start, end, init_cadence_days, nominal_times_from=nominal_times_from
+    )
 
     lat_slice = _lat_slice_for(ds, source.lat_dim, INDIA_LAT_SLICE.start, INDIA_LAT_SLICE.stop)
     ds = ds.sel({source.lat_dim: lat_slice, source.lon_dim: INDIA_LON_SLICE_0_360})
@@ -170,13 +225,6 @@ def build_lagged_group(
     n_lat = ds.sizes["latitude"]
     n_lon = ds.sizes["longitude"]
 
-    # Fetched in one batch per nominal week (~41 combos each), not one giant
-    # vectorized .sel() over all ~740 combos at once -- a single mega-call
-    # was measured live to stall indefinitely (bytes-in flat for 45+s, the
-    # async I/O thread parked in a socket wait with no forward progress)
-    # rather than merely being slow. Batching per week keeps each vectorized
-    # selection small enough to actually complete, at the cost of one dask
-    # `.load()` call per nominal time instead of a single call overall.
     out_vars: dict[str, tuple[tuple[str, ...], np.ndarray]] = {
         var: (
             ("nominal_time", "lead_hours", "member_offset_hours", "latitude", "longitude"),
@@ -185,24 +233,53 @@ def build_lagged_group(
         for var in ds.data_vars
     }
 
-    combos_by_nominal: dict[int, list[tuple[int, int, int, np.datetime64, int]]] = {}
-    for combo in combos:
-        combos_by_nominal.setdefault(combo[0], []).append(combo)
+    # Deduplicate fetch pairs across all nominal inits and leads
+    unique_pairs = deduplicate_fetch_pairs(combos)
+    pair_to_combos: dict[tuple[np.datetime64, int], list[tuple[int, int, int]]] = {}
+    for i, j, k, source_time, source_lead in combos:
+        pair_to_combos.setdefault((source_time, int(source_lead)), []).append((i, j, k))
 
-    for i in sorted(combos_by_nominal):
-        week_combos = combos_by_nominal[i]
-        time_indexer = xr.DataArray([c[3] for c in week_combos], dims="combo")
-        lead_indexer = xr.DataArray([c[4] for c in week_combos], dims="combo")
-        fetched = ds.sel(time=time_indexer, prediction_timedelta=lead_indexer).load()
-        print(
-            f"  [{source.name}] nominal week {i + 1}/{n_nominal} "
-            f"({nominal_times[i]}): {len(week_combos)} combos fetched"
-        )
+    n_unique = len(unique_pairs)
+    n_batches = (n_unique + batch_size - 1) // batch_size
+    pct_reduction = 100.0 * (1.0 - n_unique / max(len(combos), 1))
+    print(
+        f"  [{source.name}] {n_nominal} nominal inits ({len(combos)} total combos) "
+        f"deduplicated to {n_unique} unique (source_time, source_lead) pairs "
+        f"({pct_reduction:.1f}% reduction). "
+        f"Fetching in {n_batches} batches (batch size {batch_size}) ...",
+        flush=True,
+    )
+
+    t0_fetch = time.time()
+    for batch_idx in range(n_batches):
+        batch = unique_pairs[batch_idx * batch_size : (batch_idx + 1) * batch_size]
+        time_indexer = xr.DataArray([p[0] for p in batch], dims="fetch_pair")
+        lead_indexer = xr.DataArray([p[1] for p in batch], dims="fetch_pair")
+
+        t_batch_0 = time.time()
+        # The concurrency here is dask's, not an explicit thread pool: one
+        # vectorised .sel() over the whole batch becomes `batch_size`
+        # independent chunk reads, which dask fetches in parallel. `workers`
+        # sets how many at once. Wiring it to the scheduler is what makes the
+        # --workers flag (and the value recorded in the manifest) mean
+        # something -- it was previously accepted and stored but unused.
+        with dask.config.set(scheduler="threads", num_workers=workers):
+            fetched = ds.sel(time=time_indexer, prediction_timedelta=lead_indexer).load()
+        dt_batch = time.time() - t_batch_0
 
         for var in ds.data_vars:
             values = fetched[var].values
-            for combo_idx, (_, j, k, _, _) in enumerate(week_combos):
-                out_vars[var][1][i, j, k] = values[combo_idx]
+            for pair_idx, p in enumerate(batch):
+                val_slice = values[pair_idx]
+                for (i, j, k) in pair_to_combos[p]:
+                    out_vars[var][1][i, j, k] = val_slice
+
+        print(
+            f"    batch {batch_idx + 1}/{n_batches} done "
+            f"({len(batch)} pairs in {dt_batch:.2f}s, "
+            f"elapsed: {time.time() - t0_fetch:.1f}s)",
+            flush=True,
+        )
 
     lat_values = ds["latitude"].values
     lon_values = ds["longitude"].values
@@ -235,10 +312,12 @@ def build_lagged_group(
         "n_lead_hours": n_leads,
         "n_offsets": n_offsets,
         "n_members_by_lead": n_valid_by_lead,
-        "n_chunks_fetched": len(combos) * len(list(ds.data_vars)),
+        "n_chunks_fetched": len(unique_pairs) * len(list(ds.data_vars)),
+        "n_nominal_combos": len(combos),
+        "n_unique_pairs": len(unique_pairs),
+        "init_cadence_days": init_cadence_days,
+        "nominal_times_from": str(nominal_times_from) if nominal_times_from else None,
         "known_gaps": source.known_gaps,
-        # See build_baseline_store.py's own build_forecast_group for why
-        # this is recorded (Phase 6's model-version-metadata check).
         "source_archive_path": source.zarr_path,
     }
     return out, info
@@ -268,6 +347,23 @@ def main() -> int:
     parser.add_argument("--init-cadence-days", type=int, default=DEFAULT_INIT_CADENCE_DAYS)
     parser.add_argument("--n-lags", type=int, default=DEFAULT_N_LAGS)
     parser.add_argument("--lag-spacing-hours", type=int, default=DEFAULT_LAG_SPACING_HOURS)
+    parser.add_argument(
+        "--nominal-times-from",
+        default=None,
+        help="Path to baseline zarr store to read nominal init times from",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=50,
+        help="Number of unique (source_time, source_lead) pairs per fetch batch",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=6,
+        help="Number of concurrent worker threads for batch fetching (default: 6)",
+    )
     parser.add_argument("--force", action="store_true", help="re-pull sources already marked ok")
     args = parser.parse_args()
 
@@ -279,9 +375,19 @@ def main() -> int:
     ai_sources = [s for s in FORECAST_SOURCES if s.name in AI_SOURCE_NAMES]
 
     print(f"Building lagged-ensemble input store at {store_path}")
+    # --nominal-times-from overrides the cadence entirely, so printing the
+    # cadence flag alongside it would claim a 7-day spacing while actually
+    # building 122 daily inits -- misleading in exactly the log a reader
+    # checks to confirm what was built.
+    cadence_description = (
+        f"nominal times from {args.nominal_times_from}"
+        if args.nominal_times_from
+        else f"init cadence {args.init_cadence_days}d"
+    )
     print(
-        f"Window: {args.start} .. {args.end}, init cadence {args.init_cadence_days}d, "
-        f"lead hours {args.lead_hours}, +/-{args.n_lags} lags @ {args.lag_spacing_hours}h"
+        f"Window: {args.start} .. {args.end}, {cadence_description}, "
+        f"lead hours {args.lead_hours}, +/-{args.n_lags} lags @ {args.lag_spacing_hours}h, "
+        f"workers {args.workers}"
     )
 
     for source in ai_sources:
@@ -300,6 +406,9 @@ def main() -> int:
                 args.init_cadence_days,
                 args.n_lags,
                 args.lag_spacing_hours,
+                nominal_times_from=args.nominal_times_from,
+                batch_size=args.batch_size,
+                workers=args.workers,
             )
             mode: Literal["w", "a"] = "w" if not store_path.exists() else "a"
             ds.to_zarr(store_path, group=group_name, mode=mode)
@@ -315,10 +424,25 @@ def main() -> int:
             }
             print(f"[FAIL] {group_name}: {exc}", file=sys.stderr)
         finally:
+            manifest["_meta"] = {
+                "init_cadence_days": args.init_cadence_days,
+                "nominal_times_from": (
+                    str(args.nominal_times_from) if args.nominal_times_from else None
+                ),
+                "start": args.start,
+                "end": args.end,
+                "lead_hours": args.lead_hours,
+                "n_lags": args.n_lags,
+                "lag_spacing_hours": args.lag_spacing_hours,
+                "batch_size": args.batch_size,
+                "workers": args.workers,
+            }
             _save_manifest(manifest_path, manifest)
 
     print("\n--- Summary ---")
     for group_name, info in manifest.items():
+        if group_name.startswith("_"):
+            continue
         status = info.get("status")
         if status == "ok":
             print(
@@ -328,7 +452,9 @@ def main() -> int:
         else:
             print(f"  {group_name}: FAILED - {info.get('error')}")
 
-    n_failed = sum(1 for i in manifest.values() if i.get("status") != "ok")
+    n_failed = sum(
+        1 for k, i in manifest.items() if not k.startswith("_") and i.get("status") != "ok"
+    )
     return 1 if n_failed else 0
 
 

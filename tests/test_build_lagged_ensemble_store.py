@@ -10,6 +10,7 @@ from build_lagged_ensemble_store import (  # noqa: E402
     MIN_SOURCE_LEAD_HOURS,
     _lag_offsets,
     _valid_combos,
+    deduplicate_fetch_pairs,
 )
 
 
@@ -76,3 +77,45 @@ class TestValidCombos:
         for lead, n_expected in expected.items():
             combos = _valid_combos(nominal_times, lead_hours=[lead], offsets=offsets)
             assert len(combos) == n_expected, f"lead={lead}"
+
+
+class TestDeduplicateFetchPairs:
+    def test_overlapping_lags_between_consecutive_days_produce_one_fetch_each(self):
+        nominal_times = np.array(["2020-06-01", "2020-06-02"], dtype="datetime64[ns]")
+        offsets = _lag_offsets(n_lags=4, spacing_hours=12)
+        lead_hours = [24, 48, 72, 96, 120]
+
+        combos = _valid_combos(nominal_times, lead_hours=lead_hours, offsets=offsets)
+        unique_pairs = deduplicate_fetch_pairs(combos)
+
+        # 41 combos per day * 2 days = 82 combos
+        assert len(combos) == 82
+        # Overlapping pairs must reduce the total unique count
+        assert len(unique_pairs) < len(combos)
+        assert len(unique_pairs) == len(set(unique_pairs))
+
+        # Check the exact shared pair: Day 1 (lead 48, offset +24) vs Day 2 (lead 24, offset 0)
+        # Both require source_time = 2020-06-02T00:00 and source_lead = 24
+        shared_time = np.datetime64("2020-06-02T00:00:00")
+        shared_lead = 24
+        matching_combos = [
+            c for c in combos if c[3] == shared_time and c[4] == shared_lead
+        ]
+        assert len(matching_combos) == 2
+
+        matching_unique = [
+            p for p in unique_pairs if p[0] == shared_time and p[1] == shared_lead
+        ]
+        assert len(matching_unique) == 1
+
+    def test_all_combos_covered_by_unique_pairs(self):
+        nominal_times = np.array(["2020-06-01", "2020-06-02", "2020-06-03"], dtype="datetime64[ns]")
+        offsets = _lag_offsets(n_lags=4, spacing_hours=12)
+        lead_hours = [24, 48, 72, 96, 120]
+
+        combos = _valid_combos(nominal_times, lead_hours=lead_hours, offsets=offsets)
+        unique_pairs = deduplicate_fetch_pairs(combos)
+        unique_set = set(unique_pairs)
+
+        for _, _, _, source_time, source_lead in combos:
+            assert (source_time, source_lead) in unique_set

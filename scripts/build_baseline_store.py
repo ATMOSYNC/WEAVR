@@ -157,6 +157,7 @@ def _lat_slice_for(ds: xr.Dataset, lat_dim: str, lo: float, hi: float) -> slice:
 def _weekly_init_times(ds: xr.Dataset, start: str, end: str, cadence_days: int) -> np.ndarray:
     """Pick one init time per `cadence_days` within [start, end], from what the source actually has.
 
+    Filters to 00 UTC-only inits when present to guarantee consistent cycle alignment.
     Building the target dates independently of the source's own time index
     and then re-selecting can miss entirely if the source's init times don't
     fall exactly on those dates/hours (they may be offset, e.g. 00/12 UTC vs
@@ -165,7 +166,13 @@ def _weekly_init_times(ds: xr.Dataset, start: str, end: str, cadence_days: int) 
     all_times = ds.sel(time=slice(start, end)).time.values
     if len(all_times) == 0:
         return all_times
-    # all_times is 12-hourly; a cadence in days maps to a stride in entries.
+    # Filter to 00 UTC inits if present to guarantee consistent 00 UTC cycle sampling
+    dt_times = pd.to_datetime(all_times)
+    utc00_mask = dt_times.hour == 0
+    if np.any(utc00_mask):
+        utc00_times = all_times[utc00_mask]
+        return utc00_times[::cadence_days]
+    # Fallback for sources without 00 UTC
     hours_per_step = float(
         (all_times[1] - all_times[0]) / np.timedelta64(1, "h") if len(all_times) > 1 else 24.0
     )
@@ -228,7 +235,20 @@ def build_forecast_group(
     init_cadence_days: int,
 ) -> tuple[xr.Dataset, dict]:
     ds = _slice_source(source, start, end, lead_hours, init_cadence_days)
-    ds = ds.load()
+    n_times = int(ds.sizes.get("time", 0))
+    batch_size = 25
+    if n_times > batch_size:
+        batches = []
+        for i in range(0, n_times, batch_size):
+            t_slice = ds.isel(time=slice(i, i + batch_size))
+            print(
+                f"  [{source.name}] loading init times "
+                f"{i + 1}..{min(i + batch_size, n_times)} of {n_times}..."
+            )
+            batches.append(t_slice.load())
+        ds = xr.concat(batches, dim="time")
+    else:
+        ds = ds.load()
     ds = _clear_encoding(ds)
 
     try:
@@ -244,6 +264,8 @@ def build_forecast_group(
         "variables": list(ds.data_vars),
         "n_init_times": int(ds.sizes.get("time", 0)),
         "n_lead_steps": int(ds.sizes.get("prediction_timedelta", 0)),
+        "init_cadence_days": init_cadence_days,
+        "init_cycle": "00:00 UTC",
         "known_gaps": source.known_gaps,
         # WeatherBench 2's closest thing to a model-version identifier: this
         # path changes when WB2 republishes a model under a new date-range
@@ -348,11 +370,20 @@ def main() -> int:
             }
             print(f"[FAIL] {group_name}: {exc}", file=sys.stderr)
         finally:
+            manifest["_meta"] = {
+                "init_cadence_days": args.init_cadence_days,
+                "init_cycle": "00:00 UTC",
+                "start": args.start,
+                "end": args.end,
+                "lead_hours": args.lead_hours,
+            }
             _save_manifest(manifest_path, manifest)
 
     print("\n--- Summary ---")
     print(f"Window requested: {args.start} .. {args.end}")
     for group_name, info in manifest.items():
+        if group_name.startswith("_"):
+            continue
         status = info.get("status")
         if status == "ok":
             gaps = info.get("known_gaps") or info.get("missing_days") or "none"
@@ -360,7 +391,9 @@ def main() -> int:
         else:
             print(f"  {group_name}: FAILED - {info.get('error')}")
 
-    n_failed = sum(1 for i in manifest.values() if i.get("status") != "ok")
+    n_failed = sum(
+        1 for k, i in manifest.items() if not k.startswith("_") and i.get("status") != "ok"
+    )
     return 1 if n_failed else 0
 
 

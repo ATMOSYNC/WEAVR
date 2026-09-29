@@ -347,3 +347,160 @@ docstring for why the live daily pipeline's actual drift-detection hook
 (covering AIFS/IFS/HRES, per `docs/phase6-operational-scope.md`) turned
 out to have no explicit version signal to hook either, and uses a real
 statistical drift check instead.
+
+## Daily cadence addition (2020)
+
+Step 05 of the improvement plan
+(`Improvements/prompts/stream-b-data-and-ops/05-daily-cadence-2020-stores.md`).
+
+The Phase 0/1 stores sample JJAS 2020 **weekly** -- 18 initialisations --
+because `build_baseline_store.py` feared "every 12-hourly init x every
+6-hourly lead" would stall. But WEAVR only ever scores **5 lead times**, so
+daily 00 UTC sampling is 122 x 5 = 610 chunk fetches per source-variable,
+not thousands. This section adds **daily** stores alongside the weekly ones,
+which are left untouched so every existing result stays reproducible.
+
+Why it matters: step 04 measured that with 3-4 test days per lead, **not one
+of 1,691 method comparisons had a computable confidence interval**
+(`docs/scorecard-and-significance.md`). 18 -> 122 samples is the fix.
+
+### What was built
+
+| Store | Status |
+|---|---|
+| `data/baseline_2020_jjas_daily.zarr` | **built**, 122 inits, validated |
+| `data/lagged_ensemble_inputs_2020_jjas_daily.zarr` | builder ready and deduplicating; the fetch itself is long-running and was not completed in this pass |
+| `data/ifs_ens_2020_jjas_daily.zarr` | **not built** -- see below |
+
+All three builders are parametrised, deduplicated and tested here; the data
+itself is gitignored, so the remaining two stores can be produced at any time
+by running the commands below without further code changes.
+
+### Measured fetch costs
+
+Timed live against the real archives before launching anything long
+(one chunk = one init time at one lead, the archive's own chunk granularity):
+
+| Source | s/chunk | Chunk size | 610 chunks, serial |
+|---|---|---|---|
+| GraphCast `total_precipitation_24hr` | 2.57 | 4.2 MB | 0.44 h |
+| HRES `total_precipitation_24hr` | 2.07 | 4.2 MB | 0.35 h |
+| IFS-ENS `total_precipitation_24hr` (50 members) | 33.92 | **207.6 MB** | **5.75 h** |
+
+**The builds must run one at a time.** Running the lagged and IFS-ENS builds
+concurrently was tried and measured: the lagged build's batch time degraded
+from 57 s to 97 s to **331 s**, and the IFS-ENS build completed zero
+timestamps in 12 minutes. Stopping IFS-ENS restored the lagged build to 57 s
+per batch immediately. The bottleneck is shared bandwidth, so running two
+fetches in parallel is strictly worse than running them in sequence.
+
+### Baseline store: 00 UTC cycle, batched loads
+
+- Built with `--init-cadence-days 1` into a new `--out`; the weekly store is
+  untouched.
+- **00 UTC only.** The source archives are 12-hourly, so a daily stride must
+  pick one cycle or it would alternate 00/12 UTC and silently mix two
+  different forecast cycles into one series. `_sample_init_times` filters to
+  00 UTC before striding, and the manifest records
+  `"init_cadence_days": 1` and `"init_cycle": "00:00 UTC"`.
+- **Batched loads.** 122 init times are loaded 25 at a time rather than in
+  one call; the single-call form that worked for 18 weekly inits did not
+  survive 122.
+- Validated: all five groups carry 122 daily steps spanning
+  2020-06-01..2020-09-30 with **zero gaps**, every variable finite, no
+  all-NaN days.
+
+### Lagged-ensemble store: cross-day deduplication
+
+Each nominal init needs +/-4 lags at 12 h spacing. With *daily* nominal
+inits those overlap heavily between neighbouring days: nominal day T at lead
+48 h with offset +24 h targets exactly the same `(source_time, source_lead)`
+pair as nominal day T+1 at lead 24 h with offset 0.
+
+Deduplicating before fetching, rather than after, is what makes the daily
+build affordable:
+
+- 122 nominal dates x 41 valid combos = **5,002 combos**
+- unique `(source_time, source_lead)` pairs = **1,735**
+- **65.3% fewer fetches**
+
+Without it the build would download the same chunk up to three times.
+`tests/test_build_lagged_ensemble_store.py` pins the property directly:
+overlapping lags between consecutive days must produce one fetch each.
+
+Member availability must reproduce the weekly store's documented structure --
+short leads legitimately carry fewer members, because a lagged member needs a
+*shorter* source lead to reach the same valid time, and a 24 h accumulation
+is undefined below 24 h:
+
+- `2m_temperature`: 6 / 8 / 9 / 9 / 9 members at leads 24 / 48 / 72 / 96 / 120 h
+- `total_precipitation_24hr`: 5 / 7 / 9 / 9 / 9
+
+`scripts/validate_daily_stores.py` checks exactly this against the built
+store, and fails if it does not hold.
+
+Measured cost, from a real run: **57 s per 50-pair batch**, 35 batches per
+source, two sources -- about **70 minutes** end to end. Build it with:
+
+```bash
+python scripts/build_lagged_ensemble_store.py \
+    --out data/lagged_ensemble_inputs_2020_jjas_daily.zarr \
+    --nominal-times-from data/baseline_2020_jjas_daily.zarr --workers 4
+```
+
+### IFS-ENS daily store: deliberately not built
+
+`data/ifs_ens_2020_jjas_daily.zarr` **does not exist**, by decision, not by
+failure.
+
+The archive chunks this variable as `(1, 50, 1, 721, 1440)` -- **all 50
+members in a single chunk**. Fetching 122 inits x 5 leads therefore means
+downloading **126 GB** of full-global-grid slabs to keep a ~2 GB India
+subset, and at the measured 6.1 MB/s single-stream throughput that is
+between 3.5 and 9.5 hours.
+
+Two consequences worth recording, because both are counter-intuitive:
+
+- **Subsetting members does not help.** A "fetch only 20 of 50 members"
+  fallback saves storage but *no download time at all*, because the 50
+  members arrive in one indivisible chunk. The only lever that reduces the
+  download is fewer init times.
+- **More workers may not help either.** The cost is bandwidth, not latency,
+  so a worker pool splits the same pipe rather than widening it.
+
+What this costs downstream: the daily baseline store still contains
+`ifs_ens_mean`, so **Tier 0, Tier 1 and the single-source baselines get the
+full 122 days**. Only Tier 2's EMOS-on-IFS-ENS and the BMA combiner need the
+50 individual members, and those continue to use the weekly
+`data/ifs_ens_2020_jjas.zarr` (18 inits) until someone runs the daily pull.
+Step 07 must state that mixed cadence explicitly wherever it reports a Tier 2
+number, rather than letting a reader assume every tier had 122 days.
+
+The builder is fully parametrised and ready whenever the pull is wanted:
+
+```bash
+python scripts/build_ifs_ensemble_store.py \
+    --out data/ifs_ens_2020_jjas_daily.zarr \
+    --init-times-from data/baseline_2020_jjas_daily.zarr \
+    --workers 4
+```
+
+`--init-times-from` replaced the previously hard-coded 18 weekly timestamps
+(the old default is preserved, so the weekly build stays reproducible), and
+each timestamp is fetched under a 300 s timeout with up to 3 retries and
+written atomically into `.staging/`, so an interrupted run resumes without
+re-fetching.
+
+### Validating
+
+```bash
+python scripts/validate_daily_stores.py --no-require-ifs-ens
+```
+
+`scripts/validate_daily_stores.py` fails on -- not merely prints -- init
+count, season span, gaps, leads, all-NaN variables, all-NaN days, lagged
+member counts per lead, and IFS-ENS member count. The member-count check
+takes the **minimum across every nominal time** rather than sampling a few,
+since a partial fetch is precisely the failure that sampling would miss.
+`--no-require-ifs-ens` records the skip above as a documented decision
+instead of a failure.

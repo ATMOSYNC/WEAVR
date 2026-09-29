@@ -53,9 +53,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import sys
+import threading
 import time
 import traceback
 from datetime import datetime
@@ -92,14 +94,24 @@ def _save_manifest(path: Path, manifest: dict) -> None:
 
 
 def real_baseline_timestamps(baseline_store: str, group: str = "ifs_ens_mean") -> np.ndarray:
-    """The exact 18 weekly JJAS-2020 timestamps the baseline store already
-    uses for this source family, read directly from the real store -- not
-    re-derived from a cadence formula, so this new store's samples are
-    guaranteed to align 1:1 with `data/baseline_2020_jjas.zarr` by
-    construction rather than by coincidence.
+    """The timestamps the baseline store already uses, read directly from the real store.
+    Guarantees the new store's samples align 1:1 with baseline store by construction.
     """
-    ds = xr.open_zarr(baseline_store, group=group, consolidated=True)
-    return ds["time"].values
+    try:
+        ds = xr.open_zarr(baseline_store, group=group, consolidated=True)
+        return ds["time"].values
+    except Exception:
+        import zarr
+
+        r = zarr.open_group(baseline_store, mode="r")
+        keys = list(r.group_keys())
+        target = group if group in keys else (keys[0] if keys else None)
+        if target is not None:
+            ds = xr.open_zarr(baseline_store, group=target, consolidated=True)
+        else:
+            ds = xr.open_zarr(baseline_store, consolidated=True)
+        coord = "time" if "time" in ds.coords else "nominal_time"
+        return ds[coord].values
 
 
 def fetch_one_timestamp(
@@ -119,12 +131,115 @@ def staging_path(staging_dir: Path, ts: np.datetime64) -> Path:
     return staging_dir / f"{ts_key}.nc"
 
 
+def fetch_and_stage_one_timestamp(
+    ds: xr.Dataset,
+    ts: np.datetime64,
+    lead_hours: list[int],
+    staging_dir: Path,
+    manifest: dict,
+    manifest_path: Path,
+    lock: threading.Lock,
+    per_timestamp_seconds: dict[str, float],
+    force: bool = False,
+    max_retries: int = 3,
+    timeout_seconds: float = 300.0,
+    worker_label: str = "",
+) -> bool:
+    ts_key = str(np.datetime_as_string(ts, unit="s"))
+    staging_file = staging_path(staging_dir, ts)
+
+    with lock:
+        already_ok = manifest.get(ts_key, {}).get("status") == "ok" and staging_file.exists()
+    if not force and already_ok:
+        print(f"[skip] {ts_key}: already fetched and cached in staging")
+        return True
+
+    tag = f"[{worker_label}] " if worker_label else ""
+    print(f"[fetch] {tag}{ts_key} ...")
+
+    last_exc = None
+    for attempt in range(1, max_retries + 1):
+        t0 = time.time()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            fut = pool.submit(fetch_one_timestamp, ds, ts, lead_hours)
+            fetched = fut.result(timeout=timeout_seconds)
+            pool.shutdown(wait=False)
+
+            elapsed = time.time() - t0
+            # Atomic staging write: write to unique .tmp file first, then atomic rename
+            tmp_staging_file = staging_file.with_name(
+                f"{staging_file.stem}.tmp.{os.getpid()}.{threading.get_ident()}.nc"
+            )
+            fetched.assign_coords(time=ts).to_netcdf(tmp_staging_file)
+            tmp_staging_file.replace(staging_file)
+
+            with lock:
+                per_timestamp_seconds[ts_key] = elapsed
+                manifest[ts_key] = {
+                    "status": "ok",
+                    "elapsed_seconds": elapsed,
+                    "attempts": attempt,
+                    "fetched_at": datetime.utcnow().isoformat() + "Z",
+                }
+                manifest["_per_timestamp_seconds"] = per_timestamp_seconds
+                _save_manifest(manifest_path, manifest)
+
+            print(f"[ok]   {tag}{ts_key}: {elapsed:.1f}s (attempt {attempt})")
+            return True
+        except Exception as exc:
+            pool.shutdown(wait=False, cancel_futures=True)
+            last_exc = exc
+            print(f"[retry {attempt}/{max_retries}] {tag}{ts_key}: {exc}", file=sys.stderr)
+            if attempt < max_retries:
+                time.sleep(min(2 ** attempt, 10))
+
+    with lock:
+        manifest[ts_key] = {
+            "status": "failed",
+            "error": str(last_exc),
+            "attempts": max_retries,
+            "traceback": traceback.format_exc(),
+            "fetched_at": datetime.utcnow().isoformat() + "Z",
+        }
+        _save_manifest(manifest_path, manifest)
+    print(f"[FAIL] {tag}{ts_key}: failed after {max_retries} attempts: {last_exc}", file=sys.stderr)
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     default_out = os.environ.get("WEAVR_IFS_ENSEMBLE_STORE_PATH", "data/ifs_ens_2020_jjas.zarr")
     parser.add_argument("--out", default=default_out)
-    parser.add_argument("--baseline-store", default="data/baseline_2020_jjas.zarr")
+    parser.add_argument(
+        "--init-times-from",
+        "--baseline-store",
+        dest="init_times_from",
+        default="data/baseline_2020_jjas.zarr",
+        help=(
+            "Path to a zarr store to read init times from "
+            "(default: data/baseline_2020_jjas.zarr)"
+        ),
+    )
     parser.add_argument("--lead-hours", type=int, nargs="+", default=DEFAULT_LEAD_HOURS)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of concurrent worker threads for chunk fetching (default: 1)",
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=300.0,
+        help="Timeout in seconds for fetching a single timestamp (default: 300.0)",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        help="Maximum retry attempts per timestamp (default: 3)",
+    )
     parser.add_argument(
         "--force", action="store_true", help="re-fetch timestamps already marked ok"
     )
@@ -142,57 +257,80 @@ def main() -> int:
 
     ds = xr.open_zarr(IFS_ENS_ZARR_PATH, storage_options=GCS_ANON, consolidated=True)
     ds = ds[[PRECIP_VARIABLE]]
-    timestamps = real_baseline_timestamps(args.baseline_store)
+    timestamps = real_baseline_timestamps(args.init_times_from)
     lat_slice = _lat_slice_for(ds, "latitude", INDIA_LAT_SLICE.start, INDIA_LAT_SLICE.stop)
     ds = ds.sel(latitude=lat_slice, longitude=INDIA_LON_SLICE_0_360)
     ds = ds.rename({"number": "member"})
 
-    print(f"Window: {len(timestamps)} timestamps (matching {args.baseline_store}'s own), "
-          f"lead hours {args.lead_hours}")
+    print(
+        f"Window: {len(timestamps)} timestamps (matching {args.init_times_from}'s own), "
+        f"lead hours {args.lead_hours}, workers={args.workers}"
+    )
 
-    # WeatherBench 2's closest thing to a model-version identifier, recorded
-    # once at the manifest's top level (this script has one source, unlike
-    # build_baseline_store.py's per-source-group manifest) -- see
-    # build_baseline_store.py's own build_forecast_group for why (Phase 6's
-    # model-version-metadata check).
     manifest["_source_archive_path"] = IFS_ENS_ZARR_PATH
+    manifest["_meta"] = {
+        "init_times_from": str(args.init_times_from),
+        "lead_hours": args.lead_hours,
+        "workers": args.workers,
+        "timeout_seconds": args.timeout_seconds,
+        "max_retries": args.max_retries,
+    }
     _save_manifest(manifest_path, manifest)
 
     fetch_start = time.time()
     per_timestamp_seconds: dict[str, float] = manifest.get("_per_timestamp_seconds", {})
+    lock = threading.Lock()
 
-    for i, ts in enumerate(timestamps):
+    needed_timestamps = []
+    for ts in timestamps:
         ts_key = str(np.datetime_as_string(ts, unit="s"))
         staging_file = staging_path(staging_dir, ts)
         already_ok = manifest.get(ts_key, {}).get("status") == "ok" and staging_file.exists()
-        if not args.force and already_ok:
+        if args.force or not already_ok:
+            needed_timestamps.append(ts)
+        else:
             print(f"[skip] {ts_key}: already fetched and cached in staging")
-            continue
 
-        print(f"[fetch] timestamp {i + 1}/{len(timestamps)} ({ts_key}) ...")
-        t0 = time.time()
-        try:
-            fetched = fetch_one_timestamp(ds, ts, args.lead_hours)
-            elapsed = time.time() - t0
-            fetched.assign_coords(time=ts).to_netcdf(staging_file)
-            per_timestamp_seconds[ts_key] = elapsed
-            manifest[ts_key] = {
-                "status": "ok",
-                "elapsed_seconds": elapsed,
-                "fetched_at": datetime.utcnow().isoformat() + "Z",
+    print(f"Need to fetch {len(needed_timestamps)}/{len(timestamps)} timestamps...")
+
+    if args.workers > 1 and needed_timestamps:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {
+                executor.submit(
+                    fetch_and_stage_one_timestamp,
+                    ds,
+                    ts,
+                    args.lead_hours,
+                    staging_dir,
+                    manifest,
+                    manifest_path,
+                    lock,
+                    per_timestamp_seconds,
+                    force=args.force,
+                    max_retries=args.max_retries,
+                    timeout_seconds=args.timeout_seconds,
+                    worker_label=f"worker-{idx % args.workers + 1}",
+                ): ts
+                for idx, ts in enumerate(needed_timestamps)
             }
-            print(f"[ok]   {ts_key}: {elapsed:.1f}s")
-        except Exception as exc:  # one timestamp failing must not abort the rest
-            manifest[ts_key] = {
-                "status": "failed",
-                "error": str(exc),
-                "traceback": traceback.format_exc(),
-                "fetched_at": datetime.utcnow().isoformat() + "Z",
-            }
-            print(f"[FAIL] {ts_key}: {exc}", file=sys.stderr)
-        finally:
-            manifest["_per_timestamp_seconds"] = per_timestamp_seconds
-            _save_manifest(manifest_path, manifest)
+            for fut in concurrent.futures.as_completed(futures):
+                fut.result()
+    else:
+        for idx, ts in enumerate(needed_timestamps):
+            fetch_and_stage_one_timestamp(
+                ds,
+                ts,
+                args.lead_hours,
+                staging_dir,
+                manifest,
+                manifest_path,
+                lock,
+                per_timestamp_seconds,
+                force=args.force,
+                max_retries=args.max_retries,
+                timeout_seconds=args.timeout_seconds,
+                worker_label=f"{idx + 1}/{len(needed_timestamps)}",
+            )
 
     total_elapsed = time.time() - fetch_start
 
@@ -207,9 +345,7 @@ def main() -> int:
         )
         return 1
 
-    # Every timestamp is now cached in staging (this run's fetches plus any
-    # from a prior partial run) -- combine all of them, not just this run's
-    # subset, so a resumed run doesn't silently drop earlier successes.
+    print(f"\nCombining {len(timestamps)} timestamps from staging into final store...")
     fetched_datasets = [xr.open_dataset(staging_path(staging_dir, ts)) for ts in timestamps]
     combined = xr.concat(fetched_datasets, dim="time")
     combined = _clear_encoding(combined)
@@ -230,6 +366,7 @@ def main() -> int:
         "n_timestamps": len(fetched_datasets),
         "n_lead_hours": len(args.lead_hours),
         "n_members": N_MEMBERS,
+        "workers": args.workers,
         "total_elapsed_seconds": total_elapsed,
         "total_bytes_fetched": real_total_bytes,
         "mean_seconds_per_timestamp": total_elapsed / max(len(timestamps), 1),
@@ -241,9 +378,7 @@ def main() -> int:
     print(
         f"Fetched {len(fetched_datasets)} timestamps this run in {total_elapsed / 60:.1f} min "
         f"({real_total_bytes / 1e9:.2f} GB from staging) -- "
-        f"{summary['mean_seconds_per_timestamp']:.1f}s/timestamp average "
-        f"(vs. the ~34s/single-chunk x 5 leads = ~170s/timestamp serial estimate; "
-        f"per-timestamp batching lets dask fetch a timestamp's 5 leads concurrently)."
+        f"{summary['mean_seconds_per_timestamp']:.1f}s/timestamp average."
     )
     print(f"Wrote {store_path}")
     return 0
