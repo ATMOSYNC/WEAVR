@@ -1,0 +1,77 @@
+{
+  "version": 8,
+  "name": "WEAVR basemap (no boundaries, no labels)",
+  "metadata": {
+    "weavr:note": "Draws land, water, cover and roads only. Boundaries, places, buildings and POIs are deliberately absent; the official boundary is drawn by WEAVR on top. The vector source url is a placeholder that basemapMap.js replaces with an absolute pmtiles:// URL at runtime."
+  },
+  "sources": {
+    "basemap": {
+      "type": "vector",
+      "url": "pmtiles://__BASEMAP_TILES_URL__",
+      "maxzoom": 10,
+      "attribution": "© OpenStreetMap contributors"
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": { "background-color": "#dbe6ee" }
+    },
+    {
+      "id": "earth",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "earth",
+      "paint": { "fill-color": "#eeeeea" }
+    },
+    {
+      "id": "landcover",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "landcover",
+      "paint": { "fill-color": "#dfe6d6", "fill-opacity": 0.7 }
+    },
+    {
+      "id": "landuse",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "landuse",
+      "paint": { "fill-color": "#e2e2d8", "fill-opacity": 0.6 }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "water",
+      "filter": ["==", ["geometry-type"], "Polygon"],
+      "paint": { "fill-color": "#dbe6ee" }
+    },
+    {
+      "id": "water-lines",
+      "type": "line",
+      "source": "basemap",
+      "source-layer": "water",
+      "filter": ["==", ["geometry-type"], "LineString"],
+      "paint": { "line-color": "#c4d6e3", "line-width": 0.8 }
+    },
+    {
+      "id": "roads-minor",
+      "type": "line",
+      "source": "basemap",
+      "source-layer": "roads",
+      "minzoom": 8,
+      "filter": ["in", ["get", "kind"], ["literal", ["medium_road", "minor_road"]]],
+      "paint": { "line-color": "#cfcfc8", "line-width": 0.6 }
+    },
+    {
+      "id": "roads-major",
+      "type": "line",
+      "source": "basemap",
+      "source-layer": "roads",
+      "minzoom": 5,
+      "filter": ["in", ["get", "kind"], ["literal", ["highway", "major_road"]]],
+      "paint": { "line-color": "#bdbdb4", "line-width": 1.0 }
+    }
+  ]
+}

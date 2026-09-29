@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from dashboard.colors import PROBABILITY_COLORSCALE, RAIN_BIN_COLORS, rain_bin_index
@@ -54,6 +55,9 @@ from weavr.verify import IMD_RAIN_THRESHOLDS_MM
 app = FastAPI(title="WEAVR dashboard API")
 
 DASHBOARD_WEB_DIR = Path(__file__).resolve().parent.parent / "dashboard-web"
+# Built by scripts/build_basemap.py; gitignored. Module-level so tests can point it
+# at a small temp file.
+BASEMAP_TILES_PATH = Path(__file__).resolve().parent.parent / "data" / "basemap" / "india.pmtiles"
 
 
 def _validate_lead(lead: int, available: list[int]) -> None:
@@ -157,6 +161,26 @@ def meta_leads() -> dict[str, list[int]]:
             ),
         )
     return {"leads": blend_leads}
+
+
+@app.get("/api/basemap/status")
+def basemap_status() -> dict[str, Any]:
+    """Whether the local tile file exists, so the frontend can fall back cleanly."""
+    if BASEMAP_TILES_PATH.is_file():
+        return {"available": True, "bytes": BASEMAP_TILES_PATH.stat().st_size}
+    return {"available": False, "bytes": None}
+
+
+@app.get("/basemap/india.pmtiles", response_model=None)
+def basemap_tiles() -> Response:
+    """The local PMTiles archive. FileResponse answers HTTP Range requests
+    (206 Partial Content), which is how the browser reads a PMTiles file."""
+    if not BASEMAP_TILES_PATH.is_file():
+        return PlainTextResponse(
+            "Basemap tiles not built. Run: python scripts/build_basemap.py",
+            status_code=404,
+        )
+    return FileResponse(BASEMAP_TILES_PATH, media_type="application/octet-stream")
 
 
 # Registered last so it never shadows the /api/* routes above -- FastAPI

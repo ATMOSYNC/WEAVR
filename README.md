@@ -568,3 +568,9 @@ An optional "Show geography" layer for the two map views is being added,
 built from OpenStreetMap data served from a local file so the demo works
 offline. The scope, decisions and measured tile sizes are in
 [`docs/basemap-scope.md`](docs/basemap-scope.md).
+
+The dashboard server now also serves the local basemap file at
+`/basemap/india.pmtiles` (with a fallback status at `/api/basemap/status`),
+and the map libraries are vendored under `dashboard-web/vendor/`. Nothing in
+the dashboard uses them yet; the "Show geography" toggle arrives in a later
+step.
