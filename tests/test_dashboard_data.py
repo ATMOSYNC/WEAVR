@@ -12,6 +12,7 @@ from dashboard.data_loading import (  # noqa: E402
     DEFAULT_TIER2_CSV,
     DEFAULT_TIER3_CSV,
     DEFAULT_WEIGHTS_CSV,
+    load_probability_grid,
     load_skill_trends_data,
     load_weight_map_data,
 )
@@ -171,3 +172,62 @@ class TestLoadSkillTrendsData:
                 f"{col} differs between tier2 and tier3 -- "
                 "load_skill_trends_data's no-duplicate assumption no longer holds"
             )
+
+
+class TestLoadProbabilityGrid:
+    def test_committed_grid_loads_default_threshold_204_5(self):
+        grid = load_probability_grid(24, threshold=204.5)
+        assert grid["lead_hours"] == 24
+        assert grid["threshold"] == 204.5
+        assert "probability" in grid
+        assert "is_fallback" in grid
+        assert "method" in grid
+
+    def test_missing_threshold_keys_raises_key_error_not_silent_fallback(self, tmp_path):
+        test_npz = tmp_path / "legacy_grid.npz"
+        import numpy as np
+
+        np.savez(
+            test_npz,
+            lead_hours=np.array([24]),
+            latitude=np.array([10.0]),
+            longitude=np.array([70.0]),
+            probability_lead_24=np.array([[0.05]]),
+            is_fallback_lead_24=np.array([[False]]),
+            sample_time_lead_24=np.array("2020-07-01"),
+        )
+        # 204.5 succeeds by resolving the legacy/default keys
+        grid_204 = load_probability_grid(24, test_npz, threshold=204.5)
+        assert grid_204["threshold"] == 204.5
+        assert grid_204["probability"][0, 0] == 0.05
+
+        # 115.6 MUST raise KeyError and must NOT silently fall back to the 204.5 array
+        with pytest.raises(KeyError, match="Threshold 115.6mm not found"):
+            load_probability_grid(24, test_npz, threshold=115.6)
+
+    def test_explicit_threshold_keys_load_successfully_when_present(self, tmp_path):
+        test_npz = tmp_path / "multi_threshold_grid.npz"
+        import numpy as np
+
+        np.savez(
+            test_npz,
+            lead_hours=np.array([24]),
+            latitude=np.array([10.0]),
+            longitude=np.array([70.0]),
+            probability_115p6_lead_24=np.array([[0.25]]),
+            is_fallback_115p6_lead_24=np.array([[False]]),
+            method_115p6_lead_24=np.array([["csgd+gpd_tail"]]),
+            probability_204p5_lead_24=np.array([[0.05]]),
+            is_fallback_204p5_lead_24=np.array([[False]]),
+            method_204p5_lead_24=np.array([["csgd"]]),
+            sample_time_lead_24=np.array("2020-07-01"),
+        )
+        grid_115 = load_probability_grid(24, test_npz, threshold=115.6)
+        assert grid_115["threshold"] == 115.6
+        assert grid_115["probability"][0, 0] == 0.25
+        assert grid_115["method"][0, 0] == "csgd+gpd_tail"
+
+        grid_204 = load_probability_grid(24, test_npz, threshold=204.5)
+        assert grid_204["threshold"] == 204.5
+        assert grid_204["probability"][0, 0] == 0.05
+        assert grid_204["method"][0, 0] == "csgd"

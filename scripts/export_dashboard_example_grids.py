@@ -17,23 +17,31 @@ For each of the 5 lead times, blends the single most recent real aligned
 sample (not a synthetic one, and not an average across samples, which would
 blur the real spatial pattern a viewer should see).
 
-**Extreme-probability grid** (`example_probability_grid.npz`): per step 4's
-own decision (routed via `AskUserQuestion`), uses EMOS-CSG's `ifs_ens`
-combiner (the real 50-member IFS ensemble, not GraphCast's lagged
-pseudo-ensemble) -- its censored-shifted-gamma has a real closed-form
-survival function (`weavr.emos.exceedance_probability_csgd`), unlike BMA's
-mixture (no closed form, per `weavr.bma`'s own docstring). This diverges
-from the blended map's own Tier 1 combiner, stated plainly in the view
-itself, because Tier 1's deterministic blend has no predictive distribution
-to compute an exceedance probability from at all. Reuses
-`run_tier2_hierarchical_baseline.py`'s own real data-loading functions
-(`load_graphcast_ensemble`, `load_ifs_ensemble`, `load_hres_forecast`,
-`align_all_sources`) and `weavr.emos.fit_emos_csg`/`predict_csgd_params`
-rather than reimplementing EMOS-CSG fitting a second time. Unlike
-`run_tier2_hierarchical_baseline.py`'s own held-out evaluation split, this
-script fits on *all* available real samples (a display snapshot, not a
-skill evaluation) -- stated explicitly since it is a real difference from
-that script's own convention.
+**Extreme-probability grid** (`example_probability_grid.npz`): step 4/12
+deliverable. Exports P(rain > 115.6 mm) and P(rain > 204.5 mm) for all
+five lead times, each with per-cell method flags
+(``"csgd"`` | ``"csgd+gpd_tail"`` | ``"fallback"``) from
+``weavr.tail.exceedance_probability_with_tail``.
+
+Output NPZ keys for each lead time L and threshold T:
+
+- ``probability_{slug}_lead_{L}`` -- float (lat, lon), P(rain > T mm)
+- ``is_fallback_{slug}_lead_{L}`` -- bool (lat, lon), True only when no
+  fittable EMOS-CSG bin is available (true fallback, not GPD tail)
+- ``method_{slug}_lead_{L}`` -- str (lat, lon), method flag
+
+where slug is ``115p6`` for 115.6 mm and ``204p5`` for 204.5 mm.
+Legacy keys ``probability_lead_{L}`` / ``is_fallback_lead_{L}`` are also
+written, pointing to the 204.5 mm results, for backward compatibility.
+
+The extreme-value GPD tail is fitted from IMD observed precipitation
+(all available samples in the baseline store) pooled across Sreekala &
+Babu zones above u = 64.5 mm via ``weavr.tail.fit_pooled_gpd``. EMOS-CSG
+is also fitted on all samples -- a display snapshot, not the held-out
+skill evaluation ``run_tier2_hierarchical_baseline.py`` performs (a real,
+stated difference from that script's own convention). Bin classification
+uses the GraphCast ensemble mean, the same convention the rest of the
+pipeline uses.
 
 Usage:
     python scripts/export_dashboard_example_grids.py
@@ -68,10 +76,15 @@ from run_tier2_hierarchical_baseline import (  # noqa: E402
     load_ifs_ensemble,
 )
 
-from weavr.emos import exceedance_probability_csgd, fit_emos_csg, predict_csgd_params  # noqa: E402
-from weavr.rain_bins import RAIN_BIN_LABELS, classify_rain_bin  # noqa: E402
-from weavr.regions import assign_regions  # noqa: E402
-from weavr.verify import IMD_RAIN_THRESHOLDS_MM  # noqa: E402
+from weavr.emos import fit_emos_csg  # noqa: E402
+from weavr.rain_bins import classify_rain_bin  # noqa: E402
+from weavr.regions import SREEKALA_BABU_ZONES, assign_regions  # noqa: E402
+from weavr.tail import (  # noqa: E402
+    DEFAULT_TAIL_THRESHOLD_U,
+    TailFit,
+    exceedance_probability_with_tail,
+    fit_pooled_gpd,
+)
 from weavr.weighting import RegionWeightResult  # noqa: E402
 
 DEFAULT_STORE = "data/baseline_2020_jjas.zarr"
@@ -80,7 +93,9 @@ DEFAULT_LAGGED_STORE = "data/lagged_ensemble_inputs_2020_jjas.zarr"
 DEFAULT_IFS_ENSEMBLE_STORE = "data/ifs_ens_2020_jjas.zarr"
 DEFAULT_OUT_BLEND = "dashboard/data/example_blend_grid.npz"
 DEFAULT_OUT_PROBABILITY = "dashboard/data/example_probability_grid.npz"
-EXTREME_THRESHOLD_MM = IMD_RAIN_THRESHOLDS_MM[-1]  # 204.5mm, IMD's own "extremely heavy" boundary
+# Both extreme thresholds exported (step 12 deliverable).
+EXTREME_THRESHOLDS_MM: tuple[float, float] = (115.6, 204.5)
+_THRESHOLD_SLUG: dict[float, str] = {115.6: "115p6", 204.5: "204p5"}
 
 
 def load_fitted_weights(csv_path: str | Path, lead_hours: int) -> dict[str, dict[str, float]]:
@@ -135,27 +150,64 @@ def build_example_blend_grid(store_path: str, weights_csv: str, lead_hours: int)
     return blend.isel(sample=-1)
 
 
-def build_example_probability_grid(
+def _collect_exceedances_by_region(
+    obs: xr.Dataset,
+    precip_var: str,
+    threshold_u: float,
+    region_labels: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Collect IMD precipitation exceedances above `threshold_u` per zone.
+
+    Returns a mapping ``{region: 1D array of raw observations > threshold_u}``
+    used as input to ``fit_pooled_gpd``. The exceedances are the raw observed
+    values (not the excess values z = y - u); ``fit_pooled_gpd`` handles the
+    subtraction internally.
+    """
+    precip = obs[precip_var].values  # shape (sample, lat, lon) or (lat, lon, sample)
+    # Ensure shape is (n_samples, n_lat, n_lon) using xarray's standard dim ordering.
+    lat_dim = obs[precip_var].dims.index("latitude") if "latitude" in obs[precip_var].dims else 1
+    lon_dim = obs[precip_var].dims.index("longitude") if "longitude" in obs[precip_var].dims else 2
+    # Flatten samples, keep spatial dims as (lat, lon).
+    spatial_shape = (obs.sizes.get("latitude", precip.shape[lat_dim]),
+                     obs.sizes.get("longitude", precip.shape[lon_dim]))
+    precip_flat = precip.reshape(-1, *spatial_shape)  # (sample, lat, lon)
+
+    exceedances: dict[str, list[float]] = {r: [] for r in SREEKALA_BABU_ZONES}
+    for r in SREEKALA_BABU_ZONES:
+        mask = (region_labels == r)  # (lat, lon)
+        for s in range(precip_flat.shape[0]):
+            vals = precip_flat[s][mask]  # 1D, one cell per region gridpoint
+            vals = vals[~np.isnan(vals)]
+            vals = vals[vals > threshold_u]
+            exceedances[r].extend(vals.tolist())
+    return {r: np.asarray(v, dtype=float) for r, v in exceedances.items()}
+
+
+def build_example_probability_grids(
     baseline_store: str, lagged_store: str, ifs_store: str, lead_hours: int
 ) -> dict[str, np.ndarray | str]:
-    """The real EMOS-CSG (`ifs_ens` source) exceedance-probability grid,
-    P(rain > 204.5mm), for one lead time, at the most recent real aligned
-    sample.
+    """EMOS-CSG (`ifs_ens`) exceedance-probability grids for both thresholds.
 
-    Fits on *all* available real samples (a display snapshot, not the
-    held-out skill evaluation `run_tier2_hierarchical_baseline.py` itself
-    performs) -- a real, stated difference from that script's own
-    convention. `rain_bin_labels` are classified from GraphCast's own
-    ensemble-mean forecast, the same shared convention
-    `run_tier2_hierarchical_baseline.py` uses so EMOS-CSG's per-cell bin
-    lookup matches this project's one established rule, even though the
-    probability itself comes from the `ifs_ens` combiner.
+    Returns results for P(rain > 115.6 mm) and P(rain > 204.5 mm) with
+    per-cell method flags ("csgd" | "csgd+gpd_tail" | "fallback").
 
-    Returns `{"probability": (lat, lon) float array, "is_fallback": (lat,
-    lon) bool array}` -- a cell is `True` in `is_fallback` when its own
-    forecast fell in a rain-intensity bin EMOS-CSG could not fit for real
-    at this lead (checked against `docs/phase4-data-and-combiner-scope.md`'s
-    own finding: the extremely_heavy bin is never fittable at any lead).
+    The GPD tail is fitted from IMD observations (all available samples,
+    not just the held-out test split) pooled across Sreekala & Babu zones.
+    EMOS-CSG is also fitted on all available samples (a display snapshot,
+    not a held-out skill evaluation -- a real, documented difference from
+    ``run_tier2_hierarchical_baseline.py``).
+
+    Bin classification uses the GraphCast ensemble mean, the same convention
+    the rest of the pipeline uses (see ``run_tier2_hierarchical_baseline.py``).
+
+    Returns
+    -------
+    dict with keys:
+        ``latitude``, ``longitude``, ``sample_time`` -- grid coordinates.
+        For each threshold slug ("115p6", "204p5"):
+            ``probability_{slug}`` -- float (lat, lon), P(rain > T mm).
+            ``is_fallback_{slug}`` -- bool (lat, lon), True only for true fallback.
+            ``method_{slug}`` -- str (lat, lon), one of the three method flags.
     """
     obs = xr.open_zarr(baseline_store, group="imd_observed", consolidated=True).load()
 
@@ -176,32 +228,44 @@ def build_example_probability_grid(
     ifs_spread_sample = forecasts["ifs_ens"].std(dim="member", ddof=1, skipna=True).isel(
         sample=-1
     )
-    bin_labels_sample = rain_bin_labels.isel(sample=-1)
 
-    shape = ifs_mean_sample.shape
-    probability = np.full(shape, np.nan, dtype=float)
-    is_fallback = np.zeros(shape, dtype=bool)
+    # Region labels for each gridpoint (shape: lat x lon).
+    lat_vals = ifs_mean_sample["latitude"].values
+    lon_vals = ifs_mean_sample["longitude"].values
+    lat_grid, lon_grid = np.meshgrid(lat_vals, lon_vals, indexing="ij")
+    region_labels = assign_regions(lat_grid.ravel(), lon_grid.ravel()).reshape(lat_grid.shape)
 
-    for bin_label in RAIN_BIN_LABELS:
-        result = emos_results[bin_label]
-        cell_mask = (bin_labels_sample.values == bin_label) & ~np.isnan(ifs_mean_sample.values)
-        if not cell_mask.any():
-            continue
-        mean_cells = ifs_mean_sample.values[cell_mask]
-        spread_cells = ifs_spread_sample.values[cell_mask]
-        location, scale, shift = predict_csgd_params(result, mean_cells, spread_cells)
-        probability[cell_mask] = exceedance_probability_csgd(
-            location, scale, shift, EXTREME_THRESHOLD_MM
-        )
-        is_fallback[cell_mask] = result.is_fallback
+    # Fit pooled GPD on all available IMD observations.
+    precip_var = next(
+        (v for v in obs.data_vars if "precip" in v.lower() or "rain" in v.lower()),
+        next(iter(obs.data_vars)),  # fallback: first variable
+    )
+    exceedances_by_region = _collect_exceedances_by_region(
+        obs, precip_var, DEFAULT_TAIL_THRESHOLD_U, region_labels
+    )
+    tail_fit: TailFit = fit_pooled_gpd(exceedances_by_region, DEFAULT_TAIL_THRESHOLD_U)
 
-    return {
-        "latitude": ifs_mean_sample["latitude"].values,
-        "longitude": ifs_mean_sample["longitude"].values,
-        "probability": probability,
-        "is_fallback": is_fallback,
+    out: dict[str, np.ndarray | str] = {
+        "latitude": lat_vals,
+        "longitude": lon_vals,
         "sample_time": str(ifs_mean_sample["sample"].values),
     }
+    for threshold in EXTREME_THRESHOLDS_MM:
+        slug = _THRESHOLD_SLUG[threshold]
+        probs, methods = exceedance_probability_with_tail(
+            forecast_values=ifs_mean_sample,
+            ensemble_mean=ifs_mean_sample,
+            ensemble_spread=ifs_spread_sample,
+            emos_results_by_bin=emos_results,
+            tail_fit=tail_fit,
+            region=region_labels,
+            threshold=threshold,
+        )
+        is_fallback = methods == "fallback"
+        out[f"probability_{slug}"] = probs
+        out[f"is_fallback_{slug}"] = is_fallback
+        out[f"method_{slug}"] = methods
+    return out
 
 
 def main() -> int:
@@ -240,18 +304,32 @@ def main() -> int:
 
     probability_arrays: dict[str, np.ndarray] = {"lead_hours": np.array(LEAD_HOURS)}
     for lead_hours in LEAD_HOURS:
-        print(f"[lead {lead_hours:>3}h] building example extreme-probability grid...")
-        probability_grid = build_example_probability_grid(
+        print(f"[lead {lead_hours:>3}h] building example extreme-probability grids "
+              f"(thresholds: {list(EXTREME_THRESHOLDS_MM)} mm)...")
+        probability_grid = build_example_probability_grids(
             args.store, args.lagged_store, args.ifs_ensemble_store, lead_hours
         )
         if "latitude" not in probability_arrays:
             probability_arrays["latitude"] = np.asarray(probability_grid["latitude"])
             probability_arrays["longitude"] = np.asarray(probability_grid["longitude"])
+        for threshold in EXTREME_THRESHOLDS_MM:
+            slug = _THRESHOLD_SLUG[threshold]
+            probability_arrays[f"probability_{slug}_lead_{lead_hours}"] = np.asarray(
+                probability_grid[f"probability_{slug}"]
+            )
+            probability_arrays[f"is_fallback_{slug}_lead_{lead_hours}"] = np.asarray(
+                probability_grid[f"is_fallback_{slug}"]
+            )
+            probability_arrays[f"method_{slug}_lead_{lead_hours}"] = np.asarray(
+                probability_grid[f"method_{slug}"]
+            )
+        # Backward-compatible legacy keys: point to the 204.5 mm results so that
+        # existing code reading probability_lead_N / is_fallback_lead_N still works.
         probability_arrays[f"probability_lead_{lead_hours}"] = np.asarray(
-            probability_grid["probability"]
+            probability_grid[f"probability_{_THRESHOLD_SLUG[204.5]}"]
         )
         probability_arrays[f"is_fallback_lead_{lead_hours}"] = np.asarray(
-            probability_grid["is_fallback"]
+            probability_grid[f"is_fallback_{_THRESHOLD_SLUG[204.5]}"]
         )
         probability_arrays[f"sample_time_lead_{lead_hours}"] = np.array(
             probability_grid["sample_time"]
