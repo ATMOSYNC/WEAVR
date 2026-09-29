@@ -552,3 +552,12 @@ only when it matters:
 Merging a PR does not re-run CI on `main`: the squash-merged code is exactly
 what the PR's checks already passed. Add `[skip ci]` to a commit message to
 skip a run on a PR by hand.
+## Improvement plan
+
+The step-by-step plan for strengthening the evidence, the tail forecasts and
+the demo lives in [`Improvements/`](Improvements/):
+[`WEAVR-SIH-improvement-plan.md`](Improvements/WEAVR-SIH-improvement-plan.md)
+(what and why), [`EXECUTION-PLAN.md`](Improvements/EXECUTION-PLAN.md) (order),
+[`prompts/`](Improvements/prompts/) (one prompt per remaining step) and
+[`prompts/completed/`](Improvements/prompts/completed/) (steps 01–05, with
+`DONE.md` summarising what they delivered).
