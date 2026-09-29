@@ -118,3 +118,39 @@ SHA-256, build time and the attribution string.
 Only `boundaries` is documented as holding boundary lines. That comes from the
 build's layer list, not from decoding the tiles, so step 06 still has to
 verify that no other layer carries a boundary feature.
+
+## Serving the basemap (step 03)
+
+**Vendored libraries** (`dashboard-web/vendor/`, versions and licences in
+`VERSIONS.md`): MapLibre GL JS 5.24.0 (1.06 MB) and PMTiles 4.5.0 (20 KB),
+both BSD-3-Clause. Version 5 was chosen over the newest 6.x because 6.x is
+ES-module only, which the no-build-step frontend cannot load with plain
+script tags.
+
+**Style** (`dashboard-web/basemap/style.json`): background, `earth`,
+`landcover`, `landuse`, `water` (polygons and lines) and two `roads` layers
+(major from zoom 5, minor from zoom 8). No `boundaries`, `places`,
+`buildings` or `pois`, no symbol layers, no glyphs or sprite, no remote URLs.
+The vector source URL is a placeholder (`pmtiles://__BASEMAP_TILES_URL__`);
+`basemapMap.js` (step 04) replaces it with an absolute
+`pmtiles://<origin>/basemap/india.pmtiles` at runtime.
+
+**Routes** (`dashboard/api.py`):
+
+| Route | Behaviour |
+|---|---|
+| `GET /basemap/india.pmtiles` | Streams `data/basemap/india.pmtiles`; answers `Range` requests with `206 Partial Content`. Missing file: `404` plain text telling you to run `scripts/build_basemap.py`. |
+| `GET /api/basemap/status` | `{"available": bool, "bytes": int \| null}` so the frontend can fall back before creating a map. |
+
+**Tests** (`tests/test_dashboard_basemap.py`, 12): status with and without the
+file; full, range (`bytes 10-19/1024`) and missing-file responses; the real
+file's first bytes read as `PMTiles`; the style contains no forbidden source
+layers, no symbol layers, no boundary-like names, no remote URLs, uses only
+layers that exist in the tile file, and names OpenStreetMap in its
+attribution.
+
+**Browser check (2026-09-29):** on a fresh port, the vendored libraries and
+the real tile file rendered the Kerala coast at zoom 7 (land, sea, roads,
+"© OpenStreetMap contributors" attribution) with no map errors, and every
+network request went to `127.0.0.1` only. `curl -r 0-99` on the tile route
+returns `206` with `Content-Range: bytes 0-99/147968833`.
