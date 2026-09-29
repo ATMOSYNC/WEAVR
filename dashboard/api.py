@@ -125,20 +125,41 @@ def blended_map(lead: int = Query(..., description="Lead time in hours")) -> dic
     }
 
 
+ALLOWED_EXTREME_THRESHOLDS = (115.6, 204.5)
+
+
 @app.get("/api/extreme-probability")
 def extreme_probability(
     lead: int = Query(..., description="Lead time in hours"),
+    threshold: float = Query(204.5, description="Threshold in mm (115.6 or 204.5)"),
 ) -> dict[str, Any]:
+    if threshold not in ALLOWED_EXTREME_THRESHOLDS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"threshold={threshold} not supported; must be one of "
+                f"{list(ALLOWED_EXTREME_THRESHOLDS)}"
+            ),
+        )
     available = available_probability_grid_leads()
     _validate_lead(lead, available)
-    grid = load_probability_grid(lead)
+    try:
+        grid = load_probability_grid(lead, threshold=threshold)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     return {
         "latitude": grid["latitude"].tolist(),
         "longitude": grid["longitude"].tolist(),
         "probability": grid["probability"].tolist(),
         "is_fallback": grid["is_fallback"].tolist(),
+        "method": (
+            grid["method"].tolist()
+            if hasattr(grid["method"], "tolist")
+            else list(grid["method"])
+        ),
         "sample_time": grid["sample_time"],
         "lead_hours": grid["lead_hours"],
+        "threshold": threshold,
     }
 
 

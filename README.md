@@ -103,12 +103,16 @@ flowchart LR
 
 Every stage is a small, tested module in `src/weavr/`: `grid`, `ensemble`,
 `weighting`, `emos`, `bma`, `regions`, `verify`, `significance`,
-`climatology`, `independence`, `drift`, `renormalize`, `stacking` and
-`quantile_mapping`, with the runnable pipelines in `scripts/`.
+`climatology`, `independence`, `drift`, `renormalize`, `stacking`,
+`quantile_mapping` and `tail`, with the runnable pipelines in `scripts/`.
 
 ### Tail repair: Quantile mapping (`weavr.quantile_mapping`)
 
 To repair under-forecast extreme rainfall before blending or parametric fitting, WEAVR provides empirical quantile mapping calibrated against historical IMD gauge analyses (`fit_quantile_map`, `apply_quantile_mapping`). It zeroes dry/drizzle values below a data-driven wet-day threshold (0.1 mm), performs linear quantile interpolation across wet ranks, and preserves forecast extreme anomalies above historical training maximums via an additive upper-tail extrapolation rule.
+
+### Tail repair: Extreme-value tail (`weavr.tail`)
+
+For rain bins where extreme events are too scarce to fit parametric EMOS-CSG (such as $\ge 204.5\text{ mm}$), WEAVR anchors probabilities on a pooled Generalized Pareto distribution (GPD) fitted across 15 years of IMD extremes (`weavr.tail`). The GPD shares a single shape parameter $\xi$ nationwide while allowing region-specific scale parameters $\sigma_r$. The tail is continuously spliced at threshold $u$ ($64.5\text{ mm}$) with the nearest fittable EMOS-CSG bin: $P(Y > y) = P_{\text{CSGD}}(Y > u) \cdot (1 + \xi (y - u)/\sigma_r)^{-1/\xi}$, eliminating false-zero fallback grey cells and providing calibrated probabilities for $115.6\text{ mm}$ and $204.5\text{ mm}$ extremes.
 
 ### Tier 2b: Combiner meta-blend (`weavr.stacking`)
 

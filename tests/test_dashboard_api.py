@@ -123,6 +123,49 @@ class TestExtremeProbability:
         response = client.get("/api/extreme-probability", params={"lead": 999})
         assert response.status_code == 422
 
+    def test_default_threshold_204_5_returns_200(self):
+        response = client.get("/api/extreme-probability", params={"lead": 24, "threshold": 204.5})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["threshold"] == 204.5
+        assert "method" in data
+        assert len(data["method"]) == 129
+        valid_methods = {"csgd", "csgd+gpd_tail", "fallback"}
+        for row in data["method"]:
+            for m in row:
+                assert m in valid_methods
+
+    def test_unexported_threshold_115_6_returns_404_not_silent_fallback(self):
+        # On the committed example export (which currently only contains 204.5mm),
+        # requesting 115.6 must NOT silently return 204.5 data; it must return 404.
+        response = client.get("/api/extreme-probability", params={"lead": 24, "threshold": 115.6})
+        assert response.status_code == 404
+        assert "115.6" in response.json()["detail"]
+
+    def test_threshold_115_6_returns_200_when_present_in_export(self, tmp_path, monkeypatch):
+        test_npz = tmp_path / "multi_threshold.npz"
+        np.savez(
+            test_npz,
+            lead_hours=np.array([24]),
+            latitude=np.linspace(6.5, 38.5, 129),
+            longitude=np.linspace(66.5, 100.0, 135),
+            probability_115p6_lead_24=np.full((129, 135), 0.2),
+            is_fallback_115p6_lead_24=np.zeros((129, 135), dtype=bool),
+            method_115p6_lead_24=np.full((129, 135), "csgd+gpd_tail"),
+            sample_time_lead_24=np.array("2020-07-01"),
+        )
+        monkeypatch.setattr("dashboard.data_loading.DEFAULT_PROBABILITY_GRID_NPZ", test_npz)
+
+        response = client.get("/api/extreme-probability", params={"lead": 24, "threshold": 115.6})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["threshold"] == 115.6
+        assert data["method"][0][0] == "csgd+gpd_tail"
+
+    def test_unsupported_threshold_returns_422(self):
+        response = client.get("/api/extreme-probability", params={"lead": 24, "threshold": 50.0})
+        assert response.status_code == 422
+
 
 class TestStreamlitPrototypeRetired:
     def test_streamlit_app_and_views_were_intentionally_removed(self):

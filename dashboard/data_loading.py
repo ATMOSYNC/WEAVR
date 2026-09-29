@@ -194,37 +194,70 @@ def load_blend_grid(lead_hours: int, npz_path: str | Path = DEFAULT_BLEND_GRID_N
 
 
 def available_probability_grid_leads(
-    npz_path: str | Path = DEFAULT_PROBABILITY_GRID_NPZ,
+    npz_path: str | Path | None = None,
 ) -> list[int]:
     """Lead times (hours) present in the committed example probability-grid export."""
-    with np.load(npz_path) as data:
+    actual_path = DEFAULT_PROBABILITY_GRID_NPZ if npz_path is None else npz_path
+    with np.load(actual_path) as data:
         return [int(lh) for lh in data["lead_hours"]]
 
 
 def load_probability_grid(
-    lead_hours: int, npz_path: str | Path = DEFAULT_PROBABILITY_GRID_NPZ
+    lead_hours: int,
+    npz_path: str | Path | None = None,
+    *,
+    threshold: float = 204.5,
 ) -> dict:
-    """Load one lead time's real example P(rain > 204.5mm) grid.
+    """Load one lead time's real example P(rain > threshold) grid.
 
     Built by `scripts/export_dashboard_example_grids.py` from EMOS-CSG's
-    real fitted `ifs_ens` combiner (step 4's own decision, routed via
-    `AskUserQuestion` -- see `dashboard-web/js/charts/extremeProbability.js`'s
-    docstring) -- this function only reads the already-exported `.npz`, it
-    does not compute anything.
+    real fitted `ifs_ens` combiner with pooled extreme-value tail (Step 12).
 
     Returns `{"latitude": ndarray, "longitude": ndarray, "probability":
-    ndarray (lat, lon), "is_fallback": bool ndarray (lat, lon),
-    "sample_time": str, "lead_hours": int}`.
+    ndarray (lat, lon), "is_fallback": bool ndarray (lat, lon), "method":
+    ndarray (lat, lon), "sample_time": str, "lead_hours": int, "threshold": float}`.
     """
-    with np.load(npz_path) as data:
+    actual_path = DEFAULT_PROBABILITY_GRID_NPZ if npz_path is None else npz_path
+    with np.load(actual_path) as data:
         available = [int(lh) for lh in data["lead_hours"]]
         if lead_hours not in available:
             raise ValueError(f"lead_hours={lead_hours} not in this export's leads {available}")
+
+        th_slug = "115p6" if abs(threshold - 115.6) < 0.1 else "204p5"
+        key_prob = f"probability_{th_slug}_lead_{lead_hours}"
+        if key_prob not in data:
+            if abs(threshold - 204.5) < 0.1 and f"probability_lead_{lead_hours}" in data:
+                key_prob = f"probability_lead_{lead_hours}"
+            else:
+                raise KeyError(
+                    f"Threshold {threshold}mm not found in {actual_path} "
+                    f"(missing key '{key_prob}')"
+                )
+
+        key_fallback = f"is_fallback_{th_slug}_lead_{lead_hours}"
+        if key_fallback not in data:
+            if abs(threshold - 204.5) < 0.1 and f"is_fallback_lead_{lead_hours}" in data:
+                key_fallback = f"is_fallback_lead_{lead_hours}"
+            else:
+                raise KeyError(
+                    f"Threshold {threshold}mm fallback mask not found in {actual_path} "
+                    f"(missing key '{key_fallback}')"
+                )
+
+        key_method = f"method_{th_slug}_lead_{lead_hours}"
+        if key_method in data:
+            method = data[key_method]
+        else:
+            is_fb = data[key_fallback]
+            method = np.where(is_fb, "fallback", "csgd")
+
         return {
             "latitude": data["latitude"],
             "longitude": data["longitude"],
-            "probability": data[f"probability_lead_{lead_hours}"],
-            "is_fallback": data[f"is_fallback_lead_{lead_hours}"],
+            "probability": data[key_prob],
+            "is_fallback": data[key_fallback],
+            "method": method,
             "sample_time": str(data[f"sample_time_lead_{lead_hours}"]),
             "lead_hours": lead_hours,
+            "threshold": threshold,
         }
