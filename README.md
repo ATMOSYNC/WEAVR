@@ -151,6 +151,14 @@ which are not in the repository (`data/` is gitignored). The order, sources
 and licences are in [docs/data-sources.md](docs/data-sources.md) and
 [docs/baseline-store.md](docs/baseline-store.md).
 
+For the second monsoon season, run the baseline and lagged builders with
+`--year 2018`, then validate with `scripts/validate_daily_stores.py --year 2018
+--no-require-ifs-ens`. The year-specific archive map and
+`weavr.stores.open_multi_season` join matching 2018 and 2020 groups for the
+next leave-one-year-out evaluation. See the
+[2018 store notes](docs/baseline-store.md#second-season-2018) for the data
+and full-member IFS-ENS scope.
+
 ## Evidence and honesty
 
 WEAVR is built around reporting what the data shows, including the parts that

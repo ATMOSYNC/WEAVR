@@ -76,9 +76,10 @@ from build_baseline_store import (  # noqa: E402
     _lat_slice_for,
 )
 
+from weavr.archives import archive_for  # noqa: E402
 from weavr.grid import SourceTooCoarseError, regrid_to_common  # noqa: E402
 
-IFS_ENS_ZARR_PATH = "gs://weatherbench2/datasets/ifs_ens/2018-2022-1440x721.zarr"
+IFS_ENS_ZARR_PATH = archive_for("ifs_ens", 2020).path
 PRECIP_VARIABLE = "total_precipitation_24hr"
 N_MEMBERS = 50
 
@@ -209,13 +210,13 @@ def fetch_and_stage_one_timestamp(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    default_out = os.environ.get("WEAVR_IFS_ENSEMBLE_STORE_PATH", "data/ifs_ens_2020_jjas.zarr")
-    parser.add_argument("--out", default=default_out)
+    parser.add_argument("--year", type=int, choices=(2018, 2020), default=2020)
+    parser.add_argument("--out", default=None)
     parser.add_argument(
         "--init-times-from",
         "--baseline-store",
         dest="init_times_from",
-        default="data/baseline_2020_jjas.zarr",
+        default=None,
         help=(
             "Path to a zarr store to read init times from "
             "(default: data/baseline_2020_jjas.zarr)"
@@ -244,6 +245,15 @@ def main() -> int:
         "--force", action="store_true", help="re-fetch timestamps already marked ok"
     )
     args = parser.parse_args()
+    args.out = args.out or os.environ.get("WEAVR_IFS_ENSEMBLE_STORE_PATH") or (
+        f"data/ifs_ens_{args.year}_jjas_daily.zarr"
+        if args.year == 2018 else "data/ifs_ens_2020_jjas.zarr"
+    )
+    args.init_times_from = args.init_times_from or (
+        f"data/baseline_{args.year}_jjas_daily.zarr"
+        if args.year == 2018 else "data/baseline_2020_jjas.zarr"
+    )
+    archive_path = archive_for("ifs_ens", args.year).path
 
     store_path = Path(args.out)
     store_path.parent.mkdir(parents=True, exist_ok=True)
@@ -253,9 +263,9 @@ def main() -> int:
     staging_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Building real IFS 50-member ensemble store at {store_path}")
-    print(f"Source: {IFS_ENS_ZARR_PATH}")
+    print(f"Source: {archive_path}")
 
-    ds = xr.open_zarr(IFS_ENS_ZARR_PATH, storage_options=GCS_ANON, consolidated=True)
+    ds = xr.open_zarr(archive_path, storage_options=GCS_ANON, consolidated=True)
     ds = ds[[PRECIP_VARIABLE]]
     timestamps = real_baseline_timestamps(args.init_times_from)
     lat_slice = _lat_slice_for(ds, "latitude", INDIA_LAT_SLICE.start, INDIA_LAT_SLICE.stop)
@@ -267,7 +277,7 @@ def main() -> int:
         f"lead hours {args.lead_hours}, workers={args.workers}"
     )
 
-    manifest["_source_archive_path"] = IFS_ENS_ZARR_PATH
+    manifest["_source_archive_path"] = archive_path
     manifest["_meta"] = {
         "init_times_from": str(args.init_times_from),
         "lead_hours": args.lead_hours,

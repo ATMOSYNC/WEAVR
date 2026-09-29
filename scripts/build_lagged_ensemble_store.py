@@ -12,6 +12,11 @@ than an extension in Phase 1.
 
 Scope, decided by what was checked, not assumed:
 
+--year 2018 selects the earlier GraphCast checkpoint and takes 122 daily
+nominal starts from the 2018 baseline store by default. The historical
+measurements below describe the first, weekly 2020 build; the same lag and
+lead conventions are checked again for 2018.
+
 - **GraphCast and Pangu only.** These are the phase-plan's named "AI models" --
   the ones with a single deterministic forecast per init time and no ensemble
   spread of their own. HRES (NWP deterministic) and ifs_ens_mean (already a
@@ -62,7 +67,7 @@ Scope, decided by what was checked, not assumed:
   actual GCS requests instead of paying the full serial estimate.
 
 Usage:
-    python scripts/build_lagged_ensemble_store.py [--out PATH]
+    python scripts/build_lagged_ensemble_store.py [--year 2018|2020] [--out PATH]
         [--start DATE] [--end DATE] [--lead-hours H [H ...]]
         [--init-cadence-days N] [--n-lags N] [--lag-spacing-hours H]
 
@@ -89,11 +94,8 @@ import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_baseline_store import (  # noqa: E402
-    DEFAULT_END,
     DEFAULT_INIT_CADENCE_DAYS,
     DEFAULT_LEAD_HOURS,
-    DEFAULT_START,
-    FORECAST_SOURCES,
     GCS_ANON,
     INDIA_LAT_SLICE,
     INDIA_LON_SLICE_0_360,
@@ -101,8 +103,10 @@ from build_baseline_store import (  # noqa: E402
     _clear_encoding,
     _lat_slice_for,
     _weekly_init_times,
+    forecast_sources,
 )
 
+from weavr.archives import archive_for, normalize_coordinates  # noqa: E402
 from weavr.grid import SourceTooCoarseError, regrid_to_common  # noqa: E402
 
 # The AI models the phase-plan names for lagged-ensemble treatment -- not
@@ -206,17 +210,14 @@ def build_lagged_group(
 ) -> tuple[xr.Dataset, dict]:
     ds = xr.open_zarr(source.zarr_path, storage_options=GCS_ANON, consolidated=True)
     ds = ds[[v for v in source.variables if v in ds.data_vars]]
+    ds = normalize_coordinates(ds, archive_for(source.name, source.year))
 
     nominal_times = _get_nominal_times(
         ds, start, end, init_cadence_days, nominal_times_from=nominal_times_from
     )
 
-    lat_slice = _lat_slice_for(ds, source.lat_dim, INDIA_LAT_SLICE.start, INDIA_LAT_SLICE.stop)
-    ds = ds.sel({source.lat_dim: lat_slice, source.lon_dim: INDIA_LON_SLICE_0_360})
-    if source.lat_dim != "latitude":
-        ds = ds.rename({source.lat_dim: "latitude"})
-    if source.lon_dim != "longitude":
-        ds = ds.rename({source.lon_dim: "longitude"})
+    lat_slice = _lat_slice_for(ds, "latitude", INDIA_LAT_SLICE.start, INDIA_LAT_SLICE.stop)
+    ds = ds.sel(latitude=lat_slice, longitude=INDIA_LON_SLICE_0_360)
 
     offsets = _lag_offsets(n_lags, lag_spacing_hours)
     combos = _valid_combos(nominal_times, lead_hours, offsets)
@@ -335,16 +336,15 @@ def _save_manifest(path: Path, manifest: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--year", type=int, choices=(2018, 2020), default=2020)
     parser.add_argument(
         "--out",
-        default=os.environ.get(
-            "WEAVR_LAGGED_ENSEMBLE_STORE_PATH", "data/lagged_ensemble_inputs_2020_jjas.zarr"
-        ),
+        default=None,
     )
-    parser.add_argument("--start", default=DEFAULT_START)
-    parser.add_argument("--end", default=DEFAULT_END)
+    parser.add_argument("--start", default=None)
+    parser.add_argument("--end", default=None)
     parser.add_argument("--lead-hours", type=int, nargs="+", default=DEFAULT_LEAD_HOURS)
-    parser.add_argument("--init-cadence-days", type=int, default=DEFAULT_INIT_CADENCE_DAYS)
+    parser.add_argument("--init-cadence-days", type=int, default=None)
     parser.add_argument("--n-lags", type=int, default=DEFAULT_N_LAGS)
     parser.add_argument("--lag-spacing-hours", type=int, default=DEFAULT_LAG_SPACING_HOURS)
     parser.add_argument(
@@ -367,12 +367,24 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="re-pull sources already marked ok")
     args = parser.parse_args()
 
+    args.start = args.start or f"{args.year}-06-01"
+    args.end = args.end or f"{args.year}-09-30"
+    args.init_cadence_days = args.init_cadence_days or (
+        1 if args.year == 2018 else DEFAULT_INIT_CADENCE_DAYS
+    )
+    args.out = args.out or os.environ.get("WEAVR_LAGGED_ENSEMBLE_STORE_PATH") or (
+        f"data/lagged_ensemble_inputs_{args.year}_jjas_daily.zarr"
+        if args.year == 2018 else "data/lagged_ensemble_inputs_2020_jjas.zarr"
+    )
+    if args.year == 2018 and args.nominal_times_from is None:
+        args.nominal_times_from = f"data/baseline_{args.year}_jjas_daily.zarr"
+
     store_path = Path(args.out)
     store_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path = store_path.with_suffix(".manifest.json")
     manifest = _load_manifest(manifest_path)
 
-    ai_sources = [s for s in FORECAST_SOURCES if s.name in AI_SOURCE_NAMES]
+    ai_sources = [s for s in forecast_sources(args.year) if s.name in AI_SOURCE_NAMES]
 
     print(f"Building lagged-ensemble input store at {store_path}")
     # --nominal-times-from overrides the cadence entirely, so printing the
@@ -431,6 +443,7 @@ def main() -> int:
                 ),
                 "start": args.start,
                 "end": args.end,
+                "year": args.year,
                 "lead_hours": args.lead_hours,
                 "n_lags": args.n_lags,
                 "lag_spacing_hours": args.lag_spacing_hours,

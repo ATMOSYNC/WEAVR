@@ -31,6 +31,11 @@ class TestCheckInitTimes:
         check_init_times(_daily_times(), report, "x", 122)
         assert report.failures == []
 
+    def test_2018_season_uses_2018_dates(self):
+        report = Report()
+        check_init_times(_daily_times(start="2018-06-01"), report, "x", 122, year=2018)
+        assert report.failures == []
+
     def test_a_short_fetch_fails(self):
         # The most likely real failure: the build stopped partway.
         report = Report()
