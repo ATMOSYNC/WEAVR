@@ -131,7 +131,21 @@ Tier 1 weight in 25 of 30 cells is its 0.77-0.93 correlation with IFS-ENS
 opposite, in fact: HRES is the only source in the store that detects **any**
 115.6 mm event, while GraphCast, the RMSE winner, detects none at any lead.
 That is the research brief's section 1.3 caveat -- RMSE rewards smooth,
-MSE-trained output -- showing up as a measurement rather than a worry.
+See [docs/preregistration.md](docs/preregistration.md) for the eleven
+headline claims WEAVR hopes to make (H1-H11), each with its exact data,
+split, metric, comparison and pass rule -- **registered before the v2
+evidence base produced a single number**, so the git history of that file
+proves the criteria came first. Phase 5's Tier 3 go/no-go was the precedent
+(stated before the run, and published as a clean NO-GO); this makes it the
+rule for every claim that reaches a slide. The verdicts land in
+`results/preregistration_verdicts.csv`, only PASS claims may appear as
+findings, and a failed claim is reported as prominently as a passed one. Two
+decisions are locked in there: **H1 is judged on RMSE and CRPS separately**,
+never merged into one answer, so the metric WEAVR currently loses on stays
+on the record; and every "best of" comparator is chosen on **training** data
+with the headline configuration declared before verdicts are computed, since
+reporting five tiers and claiming the best is five chances at a
+one-in-twenty error rather than one.
 
 [scripts/recover_heppi_dates.py](scripts/recover_heppi_dates.py) resolves the
 missing calendar in the third-party HEPPI reference dataset
@@ -146,7 +160,6 @@ at offset 0 (r = 0.5946), confirming index i validates against observation i.
 `weavr.data.heppi_reference` now attaches a real `time` coordinate and drops
 unconfirmed non-monsoon days by default, unlocking India's operational 23-member
 NEPS-G ensemble for multi-model blending.
-
 See [docs/phase5-regime-covariate-scope.md](docs/phase5-regime-covariate-scope.md)
 for Phase 5's scoping: which regime covariates issue #7 names are real and
 actually obtainable for this project's 2020 JJAS-only data -- monsoon
