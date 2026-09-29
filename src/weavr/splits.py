@@ -145,3 +145,38 @@ def seasonal_block_split(
     train_mask[train_positions] = True
     test_mask[test_positions] = True
     return train_mask, test_mask
+
+
+def iter_evaluation_folds(
+    dataset_or_times: TimesLike,
+    time_dim: str = "time",
+    test_fraction: float = 0.2,
+    position: Literal["trailing", "leading"] = "trailing",
+) -> Iterator[tuple[np.ndarray, np.ndarray, str]]:
+    """Yield (train_mask, test_mask, split_label) for evaluation.
+
+    If 2 or more distinct years are present in `dataset_or_times`, delegates to
+    `leave_one_year_out`, yielding one fold per year with `split_label` set to the
+    held-out year (e.g. "2018", "2020").
+
+    If only 1 year is present, delegates to `seasonal_block_split`, yielding
+    a single fold with `split_label="seasonal_block_split"`.
+    """
+    times = _extract_times(dataset_or_times, time_dim)
+    years = times.year.values
+    distinct_years = np.unique(years)
+
+    if len(distinct_years) >= 2:
+        for year in sorted(distinct_years):
+            test_mask = years == year
+            train_mask = ~test_mask
+            yield train_mask, test_mask, str(year)
+    else:
+        train_mask, test_mask = seasonal_block_split(
+            times,
+            test_fraction=test_fraction,
+            time_dim=time_dim,
+            position=position,
+        )
+        yield train_mask, test_mask, "seasonal_block_split"
+

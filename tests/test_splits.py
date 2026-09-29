@@ -5,6 +5,7 @@ import xarray as xr
 
 from weavr.splits import (
     InsufficientTimeBlocksError,
+    iter_evaluation_folds,
     leave_one_year_out,
     seasonal_block_split,
 )
@@ -132,3 +133,45 @@ class TestSeasonalBlockSplit:
 
         with pytest.raises(ValueError, match="position"):
             seasonal_block_split(ds, position="sideways")  # type: ignore[arg-type]
+
+
+class TestIterEvaluationFolds:
+    def test_two_synthetic_years_yields_two_folds_with_year_labels(self):
+        times = pd.date_range("2018-06-01", "2018-09-30", freq="10D").union(
+            pd.date_range("2020-06-01", "2020-09-30", freq="10D")
+        )
+        ds = _dataset_with_times(times)
+
+        folds = list(iter_evaluation_folds(ds))
+        assert len(folds) == 2
+
+        labels = [label for _, _, label in folds]
+        assert labels == ["2018", "2020"]
+
+        # Check train and test masks for fold 2018
+        train_mask_18, test_mask_18, label_18 = folds[0]
+        assert label_18 == "2018"
+        assert not np.any(train_mask_18 & test_mask_18)
+        assert np.all(train_mask_18 | test_mask_18)
+        assert np.all(pd.DatetimeIndex(times[test_mask_18]).year == 2018)
+        assert np.all(pd.DatetimeIndex(times[train_mask_18]).year == 2020)
+
+        # Check train and test masks for fold 2020
+        train_mask_20, test_mask_20, label_20 = folds[1]
+        assert label_20 == "2020"
+        assert np.all(pd.DatetimeIndex(times[test_mask_20]).year == 2020)
+        assert np.all(pd.DatetimeIndex(times[train_mask_20]).year == 2018)
+
+    def test_single_year_yields_one_labelled_block_split(self):
+        times = pd.date_range("2020-06-01", "2020-09-30", freq="D")
+        ds = _dataset_with_times(times)
+
+        folds = list(iter_evaluation_folds(ds, test_fraction=0.25))
+        assert len(folds) == 1
+
+        train_mask, test_mask, label = folds[0]
+        assert label == "seasonal_block_split"
+        assert not np.any(train_mask & test_mask)
+        assert np.all(train_mask | test_mask)
+        assert test_mask.sum() == pytest.approx(len(times) * 0.25, abs=1)
+

@@ -126,3 +126,29 @@ class TestLoadMonsoonPhaseForSamples:
 
         assert result.dims == ("sample",)
         np.testing.assert_array_equal(result["sample"].values, sample_values)
+
+    def test_reindexes_multi_season_samples(self):
+        lat = np.linspace(6.5, 38.5, 3)
+        lon = np.linspace(66.5, 100.0, 3)
+        times_2018 = pd.date_range("2018-06-01", periods=10, freq="D")
+        times_2020 = pd.date_range("2020-06-01", periods=10, freq="D")
+        times = times_2018.append(times_2020)
+        clim_times = pd.date_range("2010-06-01", periods=10, freq="D")
+
+        rain_values = 5.0 + np.zeros((20, 3, 3))
+        clim_values = 5.0 + np.zeros((10, 3, 3))
+
+        obs = xr.Dataset(
+            {"rain": (("time", "latitude", "longitude"), rain_values)},
+            coords={"time": times, "latitude": lat, "longitude": lon},
+        )
+        climatology = xr.Dataset(
+            {"rain": (("time", "latitude", "longitude"), clim_values)},
+            coords={"time": clim_times, "latitude": lat, "longitude": lon},
+        )
+
+        sample_values = np.array([times_2018[2], times_2020[4]])
+        result = load_monsoon_phase_for_samples(obs, climatology, sample_values)
+        assert result.dims == ("sample",)
+        assert len(result) == 2
+        np.testing.assert_array_equal(result["sample"].values, sample_values)

@@ -69,9 +69,11 @@ from weavr.grid import IMD_DAY_START_HOUR_UTC  # noqa: E402
 from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
 from weavr.splits import (  # noqa: E402
     InsufficientTimeBlocksError,
+    iter_evaluation_folds,
     leave_one_year_out,
     seasonal_block_split,
 )
+from weavr.stores import open_multi_season, resolve_store_paths  # noqa: E402
 
 PRECIP_VARIABLE = "total_precipitation_24hr"
 PRECIP_M_TO_MM = 1000.0  # WeatherBench 2 precip is in meters; IMD's is in mm.
@@ -161,42 +163,117 @@ def score_lead(
     test_fraction: float,
     thresholds: tuple[float, ...],
     neighborhood_size: int,
-) -> dict:
+) -> list[dict]:
     n_samples = mean_forecast.sizes["sample"]
     sample_times = pd.DatetimeIndex(mean_forecast["sample"].values)
-
-    split_kind, train_mask, test_mask = train_test_masks(sample_times, test_fraction)
-
-    test_forecast = mean_forecast.isel(sample=test_mask)
-    test_obs = obs.isel(sample=test_mask)
-
     climatology_mean = climatology["rain"].mean(dim="time", skipna=True)
 
-    fss_by_threshold = {
-        t: float(V.fss(test_forecast, test_obs, threshold=t, neighborhood_size=neighborhood_size))
-        for t in thresholds
-    }
-    contingency = V.contingency_scores(test_forecast, test_obs, thresholds=thresholds)
+    folds = list(iter_evaluation_folds(sample_times, test_fraction=test_fraction))
+    rows: list[dict] = []
+    test_forecasts = []
+    test_obs_list = []
 
-    return {
-        "n_samples": n_samples,
-        "n_train": int(train_mask.sum()),
-        "n_test": int(test_mask.sum()),
-        "split": split_kind,
-        "rmse_mm": float(V.rmse(test_forecast, test_obs)),
-        "bias_mm": float(V.bias(test_forecast, test_obs)),
-        "acc": float(V.acc(test_forecast, test_obs, climatology_mean)),
-        "seeps": float(
-            V.seeps(test_forecast, test_obs, climatology["rain"], climatology_dim="time")
-        ),
-        "fss": fss_by_threshold,
-        "contingency": {t: {k: float(v) for k, v in s.items()} for t, s in contingency.items()},
-    }
+    for train_mask, test_mask, split_label in folds:
+        test_forecast = mean_forecast.isel(sample=test_mask)
+        test_obs = obs.isel(sample=test_mask)
+        test_forecasts.append(test_forecast)
+        test_obs_list.append(test_obs)
+
+        fss_by_threshold = {
+            t: float(
+                V.fss(
+                    test_forecast,
+                    test_obs,
+                    threshold=t,
+                    neighborhood_size=neighborhood_size,
+                )
+            )
+            for t in thresholds
+        }
+        contingency = V.contingency_scores(test_forecast, test_obs, thresholds=thresholds)
+
+        split_kind = (
+            "leave_one_year_out"
+            if split_label != "seasonal_block_split"
+            else "seasonal_block_split (single-season store; leave_one_year_out not usable)"
+        )
+        rows.append(
+            {
+                "n_samples": n_samples,
+                "n_train": int(train_mask.sum()),
+                "n_test": int(test_mask.sum()),
+                "split": split_kind,
+                "fold": split_label,
+                "rmse_mm": float(V.rmse(test_forecast, test_obs)),
+                "bias_mm": float(V.bias(test_forecast, test_obs)),
+                "acc": float(V.acc(test_forecast, test_obs, climatology_mean)),
+                "seeps": float(
+                    V.seeps(test_forecast, test_obs, climatology["rain"], climatology_dim="time")
+                ),
+                "fss": fss_by_threshold,
+                "contingency": {
+                    t: {k: float(v) for k, v in s.items()} for t, s in contingency.items()
+                },
+            }
+        )
+
+    if len(folds) > 1:
+        pooled_forecast = xr.concat(test_forecasts, dim="sample")
+        pooled_obs = xr.concat(test_obs_list, dim="sample")
+
+        fss_pooled = {
+            t: float(
+                V.fss(
+                    pooled_forecast,
+                    pooled_obs,
+                    threshold=t,
+                    neighborhood_size=neighborhood_size,
+                )
+            )
+            for t in thresholds
+        }
+        contingency_pooled = V.contingency_scores(
+            pooled_forecast, pooled_obs, thresholds=thresholds
+        )
+
+        rows.append(
+            {
+                "n_samples": n_samples,
+                "n_train": n_samples,
+                "n_test": int(pooled_forecast.sizes["sample"]),
+                "split": "leave_one_year_out",
+                "fold": "pooled",
+                "rmse_mm": float(V.rmse(pooled_forecast, pooled_obs)),
+                "bias_mm": float(V.bias(pooled_forecast, pooled_obs)),
+                "acc": float(V.acc(pooled_forecast, pooled_obs, climatology_mean)),
+                "seeps": float(
+                    V.seeps(
+                        pooled_forecast,
+                        pooled_obs,
+                        climatology["rain"],
+                        climatology_dim="time",
+                    )
+                ),
+                "fss": fss_pooled,
+                "contingency": {
+                    t: {k: float(v) for k, v in s.items()}
+                    for t, s in contingency_pooled.items()
+                },
+            }
+        )
+
+    return rows
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", default="data/baseline_2020_jjas.zarr")
+    parser.add_argument(
+        "--baseline-stores",
+        nargs="+",
+        default=None,
+        help="One or more baseline store paths (multi-season; default: 2018 + 2020 daily)",
+    )
+    parser.add_argument("--store", default=None, help="Legacy single store path")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
     parser.add_argument("--out-csv", default="results/tier0_baseline.csv")
     parser.add_argument("--results-dir", default="results")
@@ -204,24 +281,45 @@ def main() -> int:
     parser.add_argument("--neighborhood-size", type=int, default=NEIGHBORHOOD_SIZE)
     args = parser.parse_args()
 
+    store_paths = resolve_store_paths(
+        specified_paths=args.baseline_stores,
+        legacy_single_path=args.store,
+    )
     sources = {
-        name: xr.open_zarr(args.store, group=name, consolidated=True)
+        name: open_multi_season(store_paths, group=name)
         for name in FORECAST_SOURCE_NAMES
     }
-    obs = xr.open_zarr(args.store, group="imd_observed", consolidated=True).load()
+    obs = open_multi_season(store_paths, group="imd_observed").load()
     climatology = load_climatology(args.climatology).load()
 
-    print(f"Tier 0 baseline: equal-weight mean, scored against {args.store}'s imd_observed group")
+    print(
+        f"Tier 0 baseline: equal-weight mean, scored against {store_paths}'s imd_observed group"
+    )
     print(f"Climatology: {args.climatology} ({climatology.sizes['time']} JJAS days)")
     print("Scope: precipitation only -- no matching-resolution IMD temperature ground truth")
     print("CRPS/Brier: not computed -- no ensemble-shaped source in this store (deferred, Phase 2)")
 
-    rows = []
+    rows: list[dict] = []
     for lead_hours in LEAD_HOURS:
         mean_forecast, obs_aligned, contributing = equal_weight_mean_and_obs(
             sources, obs, PRECIP_VARIABLE, lead_hours
         )
-        result = score_lead(
+        sample_times = pd.DatetimeIndex(mean_forecast["sample"].values)
+        for _, test_mask, split_label in iter_evaluation_folds(
+            sample_times, test_fraction=args.test_fraction
+        ):
+            write_per_day_scores(
+                "tier0",
+                lead_hours,
+                per_day_scores(
+                    mean_forecast.isel(sample=test_mask),
+                    obs_aligned.isel(sample=test_mask),
+                    fold=split_label,
+                ),
+                out_dir=args.results_dir,
+            )
+
+        lead_results = score_lead(
             mean_forecast,
             obs_aligned,
             climatology,
@@ -229,33 +327,18 @@ def main() -> int:
             V.IMD_RAIN_THRESHOLDS_MM,
             args.neighborhood_size,
         )
-        result["lead_hours"] = lead_hours
-        result["sources"] = "+".join(contributing)
-        rows.append(result)
-        print(f"[lead {lead_hours:>3}h] {result}")
-
-        # Additive, step 04: the same test split, recorded day by day so the
-        # scorecard can bootstrap a confidence interval around any
-        # comparison involving Tier 0. The aggregated CSV above is
-        # untouched.
-        sample_times = pd.DatetimeIndex(mean_forecast["sample"].values)
-        _, _, test_mask = train_test_masks(sample_times, args.test_fraction)
-        write_per_day_scores(
-            "tier0",
-            lead_hours,
-            per_day_scores(
-                mean_forecast.isel(sample=test_mask),
-                obs_aligned.isel(sample=test_mask),
-                fold="test",
-            ),
-            out_dir=args.results_dir,
-        )
+        for result in lead_results:
+            result["lead_hours"] = lead_hours
+            result["sources"] = "+".join(contributing)
+            rows.append(result)
+            print(f"[lead {lead_hours:>3}h | fold {result['fold']}] {result}")
 
     out_path = Path(args.out_csv)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "lead_hours",
         "sources",
+        "fold",
         "split",
         "n_samples",
         "n_train",

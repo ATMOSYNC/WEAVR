@@ -11,6 +11,7 @@ from run_phase2_ensemble_baseline import (  # noqa: E402
     _exceedance_probability,
     _reconstruct_raw_source,
     _valid_time_to_imd_day,
+    score_precip_lead,
 )
 
 
@@ -125,3 +126,56 @@ class TestReconstructRawSource:
         np.testing.assert_allclose(
             ensemble.sortby("member").values, direct.sortby("member").values
         )
+
+
+class TestScorePrecipLead:
+    def test_single_season_returns_single_fold_row(self):
+        times = pd.date_range("2020-06-01", periods=10, freq="D")
+        coords = {
+            "sample": times,
+            "member": np.arange(4),
+            "latitude": [10.0, 11.0],
+            "longitude": [75.0, 76.0],
+        }
+        ensemble = xr.DataArray(
+            np.ones((10, 4, 2, 2)),
+            coords=coords,
+            dims=["sample", "member", "latitude", "longitude"],
+        )
+        obs = xr.DataArray(
+            np.ones((10, 2, 2)) * 1.5,
+            coords={"time": times, "latitude": [10.0, 11.0], "longitude": [75.0, 76.0]},
+            dims=["time", "latitude", "longitude"],
+        )
+
+        rows = score_precip_lead(ensemble, obs, thresholds=(7.5,), test_fraction=0.2)
+        assert len(rows) == 1
+        assert rows[0]["fold"] == "seasonal_block_split"
+
+    def test_multi_season_returns_fold_rows_and_pooled_row(self):
+        times = pd.date_range("2018-06-01", periods=10, freq="D").union(
+            pd.date_range("2020-06-01", periods=10, freq="D")
+        )
+        coords = {
+            "sample": times,
+            "member": np.arange(4),
+            "latitude": [10.0, 11.0],
+            "longitude": [75.0, 76.0],
+        }
+        ensemble = xr.DataArray(
+            np.ones((20, 4, 2, 2)),
+            coords=coords,
+            dims=["sample", "member", "latitude", "longitude"],
+        )
+        obs = xr.DataArray(
+            np.ones((20, 2, 2)) * 1.5,
+            coords={"time": times, "latitude": [10.0, 11.0], "longitude": [75.0, 76.0]},
+            dims=["time", "latitude", "longitude"],
+        )
+
+        rows = score_precip_lead(ensemble, obs, thresholds=(7.5,), test_fraction=0.2)
+        assert len(rows) == 3
+        assert [r["fold"] for r in rows] == ["2018", "2020", "pooled"]
+        assert rows[2]["split"] == "leave_one_year_out"
+        assert rows[2]["n_test"] == 20
+

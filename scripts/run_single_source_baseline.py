@@ -54,17 +54,23 @@ import csv
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_seeps_climatology import load_climatology  # noqa: E402
-from run_tier0_baseline import score_lead, train_test_masks  # noqa: E402
+from run_tier0_baseline import score_lead  # noqa: E402
 from run_tier1_regional_baseline import load_aligned_forecasts_and_obs  # noqa: E402
 
 from weavr import verify as V  # noqa: E402
 from weavr.climatology import climatological_ensemble  # noqa: E402
 from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
+from weavr.splits import iter_evaluation_folds  # noqa: E402
+from weavr.stores import (  # noqa: E402
+    open_multi_season,
+    resolve_store_paths,
+)
 
 PRECIP_VARIABLE = "total_precipitation_24hr"
 LEAD_HOURS = [24, 48, 72, 96, 120]
@@ -110,44 +116,23 @@ def write_climatology_per_day(
     lead_hours: int,
     thresholds: tuple[float, ...],
     results_dir: str,
+    fold: str = "test",
 ) -> None:
-    """Score the climatological reference on the same test days, as a method.
-
-    Every skill score in `docs/preregistration.md` is stated against
-    climatology (H3's Brier skill score explicitly), so climatology has to
-    appear in `results/per_day/` like any other method for the scorecard to
-    pair against it. The test year is excluded from the reference, which is
-    the whole point -- see `weavr.climatology`.
-
-    It is written here, in the single-source script, because this is where
-    the "what would you have said knowing nothing" baselines belong; it does
-    not depend on the lead time at all, but is written per lead so every
-    comparison has a same-shaped partner file.
-    """
+    """Score the climatological reference on the same test days, as a method."""
     test_obs = obs_aligned.isel(sample=test_mask)
     test_dates = pd.DatetimeIndex(test_obs["sample"].values)
     test_years = sorted(set(test_dates.year))
 
-    # Built one day at a time, deliberately. A 15-day window over a 14-year
-    # archive gives 434 members, so a single day's ensemble on the full
-    # 129x135 grid is already ~60 MB; materialising every test day at once
-    # exhausted memory on the first attempt here, and step 07's daily,
-    # two-season split has ~30x more test days. Looping keeps the footprint
-    # flat regardless of how many days are scored.
     frames = []
     for position, date in enumerate(test_dates):
         ensemble = climatological_ensemble(
             climatology, pd.DatetimeIndex([date]), exclude_years=test_years
         ).transpose("sample", "member", "latitude", "longitude")
-        # The climatological point forecast is the ensemble mean -- the
-        # honest deterministic answer from climate alone. Probabilities come
-        # from this same ensemble rather than from a second call per
-        # threshold, which would rebuild it once per IMD category.
         frames.append(
             per_day_scores(
                 ensemble.mean(dim="member", skipna=True),
                 test_obs.isel(sample=[position]),
-                fold="test",
+                fold=fold,
                 ensemble=ensemble,
                 thresholds=thresholds,
                 probabilities={
@@ -184,66 +169,142 @@ def score_lead_all_sources(
         sources, obs, PRECIP_VARIABLE, lead_hours
     )
     sample_times = pd.DatetimeIndex(obs_aligned["sample"].values)
-    _, train_mask, test_mask = train_test_masks(sample_times, test_fraction)
-    train_rmse = train_rmse_by_source(forecasts, obs_aligned, train_mask)
-    winner = best_single_member_on_train(train_rmse)
+    folds = list(iter_evaluation_folds(sample_times, test_fraction=test_fraction))
 
-    if results_dir is not None:
-        test_obs = obs_aligned.isel(sample=test_mask)
-        for name, da in forecasts.items():
+    fold_winners: dict[str, str] = {}
+    for train_mask, test_mask, split_label in folds:
+        train_rmse = train_rmse_by_source(forecasts, obs_aligned, train_mask)
+        winner = best_single_member_on_train(train_rmse)
+        fold_winners[split_label] = winner
+
+        if results_dir is not None:
+            test_obs = obs_aligned.isel(sample=test_mask)
+            for name, da in forecasts.items():
+                write_per_day_scores(
+                    name,
+                    lead_hours,
+                    per_day_scores(
+                        da.isel(sample=test_mask), test_obs, fold=split_label, thresholds=thresholds
+                    ),
+                    out_dir=results_dir,
+                )
             write_per_day_scores(
-                name,
+                "best_single_member_on_train",
                 lead_hours,
                 per_day_scores(
-                    da.isel(sample=test_mask), test_obs, fold="test", thresholds=thresholds
+                    forecasts[winner].isel(sample=test_mask),
+                    test_obs,
+                    fold=split_label,
+                    thresholds=thresholds,
                 ),
                 out_dir=results_dir,
             )
-        # The train-chosen baseline is a method in its own right: it is what
-        # docs/preregistration.md's H1 compares against, and it is not always
-        # the same source at every lead.
-        write_per_day_scores(
-            "best_single_member_on_train",
-            lead_hours,
-            per_day_scores(
-                forecasts[winner].isel(sample=test_mask),
-                test_obs,
-                fold="test",
-                thresholds=thresholds,
-            ),
-            out_dir=results_dir,
-        )
-        write_climatology_per_day(
-            obs_aligned, climatology, test_mask, lead_hours, thresholds, results_dir
-        )
+            write_climatology_per_day(
+                obs_aligned,
+                climatology,
+                test_mask,
+                lead_hours,
+                thresholds,
+                results_dir,
+                fold=split_label,
+            )
 
-    rows = []
-    scored: dict[str, dict] = {}
+    rows: list[dict] = []
+    scored_by_source: dict[str, list[dict]] = {}
     for name in FORECAST_SOURCE_NAMES:
-        result = score_lead(
+        lead_results = score_lead(
             forecasts[name], obs_aligned, climatology, test_fraction, thresholds, neighborhood_size
         )
-        result["lead_hours"] = lead_hours
-        result["source"] = name
-        result["train_rmse_mm"] = train_rmse[name]
-        result["selected_on_train"] = name == winner
-        scored[name] = result
-        rows.append(result)
+        scored_by_source[name] = lead_results
+        for res in lead_results:
+            fold_lbl = res.get("fold", "seasonal_block_split")
+            res["lead_hours"] = lead_hours
+            res["source"] = name
+            if fold_lbl in fold_winners:
+                winner_for_fold = fold_winners[fold_lbl]
+                matching_train = [f[0] for f in folds if f[2] == fold_lbl][0]
+                train_rmses = train_rmse_by_source(forecasts, obs_aligned, matching_train)
+                res["train_rmse_mm"] = train_rmses[name]
+                res["selected_on_train"] = (name == winner_for_fold)
+            else:
+                fold_train_rmses = [
+                    train_rmse_by_source(forecasts, obs_aligned, f[0])[name] for f in folds
+                ]
+                res["train_rmse_mm"] = float(np.mean(fold_train_rmses))
+                res["selected_on_train"] = False
+            rows.append(res)
 
-    best_row = dict(scored[winner])
-    best_row["source"] = "best_single_member_on_train"
-    best_row["selected_source"] = winner
-    # This row repeats the winner's scores under a stable label; the flag
-    # belongs to the raw-source row only, so filtering the CSV on
-    # selected_on_train returns one row per lead, not two.
-    best_row["selected_on_train"] = False
-    rows.append(best_row)
+    best_rows: list[dict] = []
+    test_best_forecasts = []
+    test_obs_list = []
+    for train_mask, test_mask, split_label in folds:
+        winner = fold_winners[split_label]
+        winner_row = [r for r in scored_by_source[winner] if r.get("fold") == split_label][0]
+        best_fold_row = dict(winner_row)
+        best_fold_row["source"] = "best_single_member_on_train"
+        best_fold_row["selected_source"] = winner
+        best_fold_row["selected_on_train"] = False
+        best_rows.append(best_fold_row)
+
+        test_best_forecasts.append(forecasts[winner].isel(sample=test_mask))
+        test_obs_list.append(obs_aligned.isel(sample=test_mask))
+
+    if len(folds) > 1:
+        pooled_best = xr.concat(test_best_forecasts, dim="sample")
+        pooled_obs = xr.concat(test_obs_list, dim="sample")
+        climatology_mean = climatology["rain"].mean(dim="time", skipna=True)
+        fss_pooled = {
+            t: float(
+                V.fss(
+                    pooled_best,
+                    pooled_obs,
+                    threshold=t,
+                    neighborhood_size=neighborhood_size,
+                )
+            )
+            for t in thresholds
+        }
+        contingency_pooled = V.contingency_scores(
+            pooled_best, pooled_obs, thresholds=thresholds
+        )
+        best_pooled_row = {
+            "lead_hours": lead_hours,
+            "source": "best_single_member_on_train",
+            "selected_source": "pooled",
+            "selected_on_train": False,
+            "fold": "pooled",
+            "split": "leave_one_year_out",
+            "n_samples": int(obs_aligned.sizes["sample"]),
+            "n_train": int(obs_aligned.sizes["sample"]),
+            "n_test": int(pooled_best.sizes["sample"]),
+            "train_rmse_mm": float(np.mean([r["train_rmse_mm"] for r in best_rows])),
+            "rmse_mm": float(V.rmse(pooled_best, pooled_obs)),
+            "bias_mm": float(V.bias(pooled_best, pooled_obs)),
+            "acc": float(V.acc(pooled_best, pooled_obs, climatology_mean)),
+            "seeps": float(
+                V.seeps(pooled_best, pooled_obs, climatology["rain"], climatology_dim="time")
+            ),
+            "fss": fss_pooled,
+            "contingency": {
+                t: {k: float(v) for k, v in s.items()}
+                for t, s in contingency_pooled.items()
+            },
+        }
+        best_rows.append(best_pooled_row)
+
+    rows.extend(best_rows)
     return rows
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", default="data/baseline_2020_jjas.zarr")
+    parser.add_argument(
+        "--baseline-stores",
+        nargs="+",
+        default=None,
+        help="One or more baseline store paths (multi-season; default: 2018 + 2020 daily)",
+    )
+    parser.add_argument("--store", default=None, help="Legacy single store path")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
     parser.add_argument("--out-csv", default="results/single_source_baseline.csv")
     parser.add_argument("--results-dir", default="results")
@@ -251,14 +312,15 @@ def main() -> int:
     parser.add_argument("--neighborhood-size", type=int, default=NEIGHBORHOOD_SIZE)
     args = parser.parse_args()
 
+    baseline_paths = resolve_store_paths(args.baseline_stores, args.store)
     sources = {
-        name: xr.open_zarr(args.store, group=name, consolidated=True)
+        name: open_multi_season(baseline_paths, group=name)
         for name in FORECAST_SOURCE_NAMES
     }
-    obs = xr.open_zarr(args.store, group="imd_observed", consolidated=True).load()
+    obs = open_multi_season(baseline_paths, group="imd_observed").load()
     climatology = load_climatology(args.climatology).load()
 
-    print(f"Single-source baseline, scored against {args.store}'s imd_observed group")
+    print(f"Single-source baseline, scored against {baseline_paths}'s imd_observed group")
     print(f"Sources scored alone: {', '.join(FORECAST_SOURCE_NAMES)}")
     print(
         f"Not scored (no {PRECIP_VARIABLE} in its archive, not zero-filled): "
@@ -280,7 +342,7 @@ def main() -> int:
         rows.extend(lead_rows)
         for row in lead_rows:
             print(
-                f"[lead {lead_hours:>3}h] {row['source']:<28} "
+                f"[lead {lead_hours:>3}h | fold {row.get('fold', 'n/a')}] {row['source']:<28} "
                 f"train_rmse={row['train_rmse_mm']:.2f}mm test_rmse={row['rmse_mm']:.2f}mm"
             )
 
@@ -289,6 +351,7 @@ def main() -> int:
     fieldnames = [
         "lead_hours",
         "source",
+        "fold",
         "selected_source",
         "selected_on_train",
         "split",
