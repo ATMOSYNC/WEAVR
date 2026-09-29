@@ -244,8 +244,18 @@ def build_forecast_group(
     return ds, info
 
 
-def build_imd_group(year: int, start: str, end: str) -> tuple[xr.Dataset, dict]:
-    ds = fetch_year(year, var_type="rain", cache_dir="data/imd_cache")
+def build_imd_group(
+    year: int, start: str, end: str, imd_nc_path: str | None = None
+) -> tuple[xr.Dataset, dict]:
+    if imd_nc_path:
+        ds = xr.open_dataset(imd_nc_path)
+        ds = ds.rename(
+            {"TIME": "time", "LATITUDE": "lat", "LONGITUDE": "lon", "RAINFALL": "rain"}
+        )
+        if ds["rain"].attrs.get("units") != "mm":
+            raise ValueError("IMD NetCDF rainfall must have units='mm'")
+    else:
+        ds = fetch_year(year, var_type="rain", cache_dir="data/imd_cache")
     ds = ds.sel(time=slice(start, end))
     ds = ds.rename({"lat": "latitude", "lon": "longitude"})
     ds = _clear_encoding(ds)
@@ -267,6 +277,7 @@ def build_imd_group(year: int, start: str, end: str) -> tuple[xr.Dataset, dict]:
         "variables": list(ds.data_vars),
         "n_days": int(ds.sizes.get("time", 0)),
         "missing_days": [str(d.date()) for d in missing_days],
+        "source_archive_path": imd_nc_path or "https://imdpune.gov.in/cmpg/Griddata/rainfall.php",
     }
     return ds, info
 
@@ -274,6 +285,11 @@ def build_imd_group(year: int, start: str, end: str) -> tuple[xr.Dataset, dict]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--year", type=int, choices=(2018, 2020), default=DEFAULT_YEAR)
+    parser.add_argument(
+        "--imd-nc-path",
+        default=None,
+        help="Use a yearly IMD 0.25-degree NetCDF file instead of the IMD server",
+    )
     parser.add_argument(
         "--out",
         default=None,
@@ -323,7 +339,12 @@ def main() -> int:
         for source in forecast_sources(args.year)
     ]
     jobs.append(
-        ("imd_observed", functools.partial(build_imd_group, args.year, args.start, args.end))
+        (
+            "imd_observed",
+            functools.partial(
+                build_imd_group, args.year, args.start, args.end, args.imd_nc_path
+            ),
+        )
     )
 
     for group_name, job in jobs:

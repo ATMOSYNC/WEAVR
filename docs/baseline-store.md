@@ -550,6 +550,36 @@ python scripts/build_lagged_ensemble_store.py --year 2018 --workers 4
 python scripts/validate_daily_stores.py --year 2018 --no-require-ifs-ens
 ```
 
+The official IMD binary endpoint timed out during this build. The yearly
+0.25-degree IMD rainfall NetCDF was taken from the [public Zenodo archive](https://zenodo.org/records/11195106),
+whose full ZIP matched its published MD5
+`cda7001f29fe8480a56d05026362ff3f`. The extracted
+`RF25_ind2018_rfp25.nc` has 365 daily records, the expected 129 x 135
+India grid, rainfall in millimetres, and missing values decoded as NaN.
+The baseline builder accepts that yearly file explicitly:
+
+```bash
+python scripts/build_baseline_store.py --year 2018 \
+    --imd-nc-path data/imd_cache/RF25_ind2018_rfp25.nc
+```
+
+The five 2018 baseline groups built successfully. Validation confirmed 122
+daily initializations or observation days from June 1 through September 30,
+no gaps, all five requested leads for each forecast, no all-NaN sample, and
+finite IMD land rainfall on every day. The IMD group has 26.6% finite cells
+on the full rectangular grid, reflecting the India land mask.
+
+For a real cross-season units check, the +24 h GraphCast daily rainfall was
+converted from metres to millimetres and averaged over cells with IMD land
+coverage. All 122 JJAS days were used in each year (the 2020 GraphCast chunks
+were read from the public archive because the owner's 2020 Zarr store is not
+in this checkout). In 2018, GraphCast averaged **7.324 mm/day** against IMD
+**6.532 mm/day** (ratio 1.121); in 2020, GraphCast averaged **8.187 mm/day**
+against IMD **7.844 mm/day** (ratio 1.044). Both are on the expected scale,
+with no factor-of-1000 unit discrepancy. This is a magnitude sanity check,
+not a skill score: the 00 UTC forecast and IMD's 03 UTC observation-day
+windows are not exactly aligned.
+
 The daily 00 UTC design uses 122 initializations (June 1 to September 30)
 and leads 24, 48, 72, 96, and 120 h. GraphCast's earlier archive begins in
 November 2017, so the +/-48 h lag window around JJAS 2018 lies inside it.
@@ -557,8 +587,11 @@ The lagged store includes GraphCast precipitation and temperature and Pangu
 temperature, matching the 2020 daily manifest. The first measured GraphCast
 chunk took 2.53 s; a serial extrapolation for its 610 daily
 initialization/lead chunks is about 26 minutes per variable. The builders
-batch and overlap requests, so the actual elapsed time is measured from the
-finished manifests rather than inferred from that serial bound.
+batch and overlap requests. The 2018 lagged GraphCast fetch deduplicated
+5,002 nominal lag/lead combinations to 1,735 unique pairs and fetched
+3,470 variable chunks in 35 batches over 18.3 minutes; writing the group
+followed the fetch. The Pangu timing and whole-store validation are recorded
+after its ongoing fetch completes.
 
 The [step 06 data handoff](step-06-data-handoff.md) confirms that the
 2020 full-member daily IFS-ENS store was deliberately skipped and applies
