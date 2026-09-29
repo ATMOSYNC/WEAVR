@@ -49,18 +49,32 @@ implementation by checking it can reproduce, or reasonably match, the UQM/
 EMOS files here) and for later verification work (the .m scripts show what
 scores the original project used).
 
-## Known gap: no calendar dates
+## Calendar dates: resolved (Step 03)
 
-The 334-sample axis is `Dimensions without coordinates: forecast` in the raw
-files — no timestamps. The original release paired the data with a
-calendar-date lookup table (`IMD_dates.mat`) that is **not** part of this
-download; the README says only "two monsoon seasons." Day-index comments
-inside `verif_hitmiss.m` (`6956:6978, 6980:7290`, IMD's own day-numbering
-convention, with a noted missing day for 24 June) confirm the seasons are
-real and contiguous-with-one-gap, but not which two years. Loaders below
-expose this axis as a plain `sample` index and stamp every returned
-`DataArray` with a `note` attribute repeating this caveat — do not assume
-`sample=0` is a specific date without recovering `IMD_dates.mat` first.
+The 334-sample axis was originally `Dimensions without coordinates: forecast`
+in the raw files — no timestamps in the netCDF headers, as the original release
+paired the data with a calendar-date lookup table (`IMD_dates.mat`) that was not
+part of the public download.
+
+**Resolution (`scripts/recover_heppi_dates.py` -> `docs/heppi-date-map.csv`):**
+The calendar dates have been recovered empirically against IMD's 15-year (2006–2020)
+daily 0.25° gridded rainfall climatology (`data/imd_seeps_climatology_jjas.zarr`)
+and full-year 2018/2019 records:
+- **JJAS 2018 (indices 0–119)**: Maps to 2018-06-02 .. 2018-09-30, with 2018-06-25 missing (120 days).
+- **JJAS 2019 (indices 181–302)**: Maps to 2019-06-01 .. 2019-09-30 (122 days).
+- **Confidence**: **242 of 242 (100.0%)** JJAS days match their hypothesized date as the
+  unique rank-1 lowest MAE among all 1,830 candidate days.
+- **Shift sensitivity**: Shifting by -1 day or +1 day drops matches to **0 / 241** and
+  **0 / 240** respectively, proving zero calendar ambiguity.
+- **Forecast alignment**: Pearson correlation of the NCMRWF ensemble mean with IMD observations
+  peaks at **r = 0.5946** at index offset 0 (vs. 0.4966 at -1, 0.4462 at +1, 0.3455 at -2, 0.3156 at +2),
+  confirming forecast index $i$ validates against observation index $i$.
+- **Post-monsoon indices (120–180 and 303–333)**: 303–333 match Oct 1–31, 2019 (31/31), while
+  120–180 match Oct–Nov 2018 (55/61 due to dry-season zero-rain ties across India).
+  Non-JJAS indices are honestly left unconfirmed (`confirmed=False`, `date=""`).
+- The full map is committed at `docs/heppi-date-map.csv`. When `date_map` is passed to
+  `load_imd_observed` or `load_ncmrwf_forecast`, a real `time` coordinate is attached
+  and unconfirmed samples are dropped by default (yielding the 242 confirmed JJAS days).
 
 ## Loading it
 

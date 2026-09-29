@@ -14,11 +14,12 @@ any regridding as a methodology reference for Phase 1 bias-correction work
 (compare against UQM/EMOS with a known-good pair) and later verification
 work, once its date caveat (below) is accounted for.
 
-Known gap: the original release paired these files with a calendar-date
-lookup (`IMD_dates.mat`) that is not part of this download. The `sample`
-dimension exposed here is therefore a plain index, not a calendar date —
-do not assume `sample=0` is any particular day without recovering that
-mapping first.
+Calendar dates: the original release lacked dates in its netCDF headers.
+`scripts/recover_heppi_dates.py` recovers the exact mapping against IMD
+observations (docs/heppi-date-map.csv). When a date map is passed to
+`load_imd_observed` or `load_ncmrwf_forecast`, a real `time` coordinate is
+attached to the `sample` dimension, and unconfirmed non-monsoon samples are
+dropped by default.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from weavr.grid import COMMON_LAT, COMMON_LON
@@ -53,6 +55,44 @@ class HeppiGridMismatchError(ValueError):
     """
 
 
+def load_date_map(csv_path: str | Path) -> pd.DataFrame:
+    """Load a HEPPI index-to-calendar date map produced by scripts/recover_heppi_dates.py."""
+    df = pd.read_csv(csv_path)
+    expected_cols = {"heppi_index", "date", "confirmed"}
+    if not expected_cols.issubset(df.columns):
+        raise ValueError(f"Date map missing required columns: {expected_cols - set(df.columns)}")
+    df["confirmed"] = df["confirmed"].astype(bool)
+    return df
+
+
+def _apply_date_map(
+    da: xr.DataArray,
+    date_map: pd.DataFrame | str | Path | None,
+    drop_unconfirmed: bool = True,
+) -> xr.DataArray:
+    """Attach calendar dates to a HEPPI DataArray along the sample dimension."""
+    if date_map is None:
+        return da
+    if isinstance(date_map, (str, Path)):
+        df = load_date_map(date_map)
+    else:
+        df = date_map
+
+    if len(df) != da.sizes["sample"]:
+        raise ValueError(
+            f"Date map length ({len(df)}) does not match sample count ({da.sizes['sample']})"
+        )
+
+    if drop_unconfirmed:
+        mask = df["confirmed"].values
+        da = da.isel(sample=mask)
+        dates = pd.to_datetime(df.loc[mask, "date"].values)
+    else:
+        dates = pd.to_datetime(df["date"].values)
+
+    return da.assign_coords(time=("sample", dates))
+
+
 def _assign_grid_coords(ds: xr.Dataset) -> xr.Dataset:
     lat = ds["IMD_lat"].values
     lon = ds["IMD_lon"].values
@@ -77,15 +117,32 @@ def _standardize(da: xr.DataArray, note: str) -> xr.DataArray:
     return da
 
 
-def load_imd_observed(path: str | Path) -> xr.DataArray:
-    """Load HEPPI's IMD observed rainfall as a (sample, lat, lon) DataArray."""
+def load_imd_observed(
+    path: str | Path,
+    date_map: pd.DataFrame | str | Path | None = None,
+    drop_unconfirmed: bool = True,
+) -> xr.DataArray:
+    """Load HEPPI's IMD observed rainfall as a (sample, lat, lon) DataArray.
+
+    If `date_map` is provided, attaches a real `time` coordinate to `sample`
+    and drops unconfirmed samples by default.
+    """
     ds = xr.open_dataset(path)
     ds = _assign_grid_coords(ds)
     da = ds["IMD_rainfall_observed"]
-    return _standardize(da, SAMPLE_DATE_CAVEAT).rename("rainfall_observed")
+    da_std = _standardize(da, SAMPLE_DATE_CAVEAT).rename("rainfall_observed")
+    if date_map is not None:
+        da_std = _apply_date_map(da_std, date_map, drop_unconfirmed=drop_unconfirmed)
+        da_std.attrs["note"] = "Recovered calendar dates attached from date map."
+    return da_std
 
 
-def load_ncmrwf_forecast(path_dir: str | Path, variant: str = "orig") -> xr.DataArray:
+def load_ncmrwf_forecast(
+    path_dir: str | Path,
+    variant: str = "orig",
+    date_map: pd.DataFrame | str | Path | None = None,
+    drop_unconfirmed: bool = True,
+) -> xr.DataArray:
     """Load an NCMRWF ensemble forecast variant as a (sample, member, lat, lon) DataArray.
 
     `variant` selects which of the three HEPPI forecast files to load:
@@ -93,6 +150,9 @@ def load_ncmrwf_forecast(path_dir: str | Path, variant: str = "orig") -> xr.Data
     "emos" (ensemble MOS applied) — the two bias-correction methods the
     original HEPPI project already ran, useful as a reference to validate
     weavr's own Phase 1 bias-correction implementation against.
+
+    If `date_map` is provided, attaches a real `time` coordinate to `sample`
+    and drops unconfirmed samples by default.
     """
     if variant not in FORECAST_VARIANTS:
         raise ValueError(f"unknown variant {variant!r}; choose from {sorted(FORECAST_VARIANTS)}")
@@ -101,4 +161,11 @@ def load_ncmrwf_forecast(path_dir: str | Path, variant: str = "orig") -> xr.Data
     ds = _assign_grid_coords(ds)
     da = ds[var_name].rename({"ens": "member"})
     note = f"{SAMPLE_DATE_CAVEAT} Bias-correction variant: {variant!r}."
-    return _standardize(da, note).rename(f"ncmrwf_{variant}_forecast")
+    da_std = _standardize(da, note).rename(f"ncmrwf_{variant}_forecast")
+    if date_map is not None:
+        da_std = _apply_date_map(da_std, date_map, drop_unconfirmed=drop_unconfirmed)
+        da_std.attrs["note"] = (
+            f"Recovered calendar dates attached from date map. "
+            f"Bias-correction variant: {variant!r}."
+        )
+    return da_std
