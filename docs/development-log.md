@@ -485,14 +485,14 @@ pip install -e ".[dashboard-api]"
 uvicorn dashboard.api:app --reload
 ```
 
-Then open `http://127.0.0.1:8000/` — [`dashboard/api.py`](dashboard/api.py)
+Then open `http://127.0.0.1:8000/` — [`dashboard/api.py`](../dashboard/api.py)
 serves both the JSON API (`/api/*`) and the static
-[`dashboard-web/`](dashboard-web/) frontend from this one process, so
+[`dashboard-web/`](../dashboard-web/) frontend from this one process, so
 there's nothing else to run and no CORS configuration needed.
 
 ### Parity with the Streamlit app
 
-All 4 real views ([`dashboard-web/js/charts/`](dashboard-web/js/charts/):
+All 4 real views ([`dashboard-web/js/charts/`](../dashboard-web/js/charts/):
 `weightMap.js`, `skillTrends.js`, `blendedMap.js`, `extremeProbability.js`)
 are built and were checked side by side against the live Streamlit app
 (`dashboard/app.py`) across all 5 real lead times, both skill-trends
@@ -558,11 +558,11 @@ skip a run on a PR by hand.
 ## Improvement plan
 
 The step-by-step plan for strengthening the evidence, the tail forecasts and
-the demo lives in [`Improvements/`](Improvements/):
-[`WEAVR-SIH-improvement-plan.md`](Improvements/WEAVR-SIH-improvement-plan.md)
-(what and why), [`EXECUTION-PLAN.md`](Improvements/EXECUTION-PLAN.md) (order),
-[`prompts/`](Improvements/prompts/) (one prompt per remaining step) and
-[`prompts/completed/`](Improvements/prompts/completed/) (steps 01–05, with
+the demo lives in [`Improvements/`](../Improvements/):
+[`WEAVR-SIH-improvement-plan.md`](../Improvements/WEAVR-SIH-improvement-plan.md)
+(what and why), [`EXECUTION-PLAN.md`](../Improvements/EXECUTION-PLAN.md) (order),
+[`prompts/`](../Improvements/prompts/) (one prompt per remaining step) and
+[`prompts/completed/`](../Improvements/prompts/completed/) (steps 01–05, with
 `DONE.md` summarising what they delivered).
 
 ## OpenStreetMap basemap
