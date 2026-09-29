@@ -351,7 +351,7 @@ statistical drift check instead.
 ## Daily cadence addition (2020)
 
 Step 05 of the improvement plan
-(`Improvements/prompts/stream-b-data-and-ops/05-daily-cadence-2020-stores.md`).
+(`Improvements/prompts/completed/05-daily-cadence-2020-stores.md`).
 
 The Phase 0/1 stores sample JJAS 2020 **weekly** -- 18 initialisations --
 because `build_baseline_store.py` feared "every 12-hourly init x every
