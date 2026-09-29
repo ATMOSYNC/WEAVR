@@ -27,6 +27,11 @@ const BASEMAP_MAP_LOAD_TIMEOUT_MS = 10000;
 const BASEMAP_MAP_CELLS_SOURCE = "weavr-cells";
 const BASEMAP_MAP_CELLS_LAYER = "weavr-cells-fill";
 const BASEMAP_MAP_CELL_OPACITY = 0.78;
+const BASEMAP_MAP_BOUNDARY_SOURCE = "weavr-boundary";
+const BASEMAP_MAP_BOUNDARY_LAYER = "weavr-boundary-line";
+const BASEMAP_MAP_OSM_ATTRIBUTION =
+  '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>';
+const BASEMAP_MAP_NO_BOUNDARY_NOTE = "No official boundary configured";
 const BASEMAP_MAP_OVERLAY_SOURCE = "weavr-overlay";
 const BASEMAP_MAP_OVERLAY_LAYER = "weavr-overlay-fill";
 const BASEMAP_MAP_OVERLAY_OPACITY = 0.75;
@@ -123,6 +128,36 @@ async function basemapMapIsAvailable() {
   }
 }
 
+/** MapLibre inserts attribution as HTML; the boundary file's text is data. */
+function basemapMapEscapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * The official boundary, if the user supplied one (GET /api/basemap/boundary).
+ * `{configured: false}` for a clean 404 (nothing supplied). A boundary that
+ * exists but is invalid, or a failed request, is reported as an error state
+ * rather than being mistaken for "not configured".
+ */
+async function basemapMapLoadBoundary() {
+  let response;
+  try {
+    response = await fetch("/api/basemap/boundary");
+  } catch (err) {
+    return { configured: false, error: "boundary request failed" };
+  }
+  if (response.status === 404) return { configured: false };
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    return { configured: false, error: body.detail || `boundary -> ${response.status}` };
+  }
+  return response.json();
+}
+
 function basemapMapPruneDetached() {
   basemapMapInstances.forEach((instance) => {
     if (!instance.container.isConnected) {
@@ -153,6 +188,12 @@ async function basemapMapCreate(container, options = {}) {
     tilesUrl
   );
 
+  const boundary = await basemapMapLoadBoundary();
+
+  // Always visible, never collapsed (OpenStreetMap's licence requires the
+  // credit), with a link to the copyright page, replacing style.json's plain text.
+  style.sources.basemap.attribution = BASEMAP_MAP_OSM_ATTRIBUTION;
+
   container.classList.add("basemap-map");
   if (options.height) container.style.height = options.height;
 
@@ -163,10 +204,21 @@ async function basemapMapCreate(container, options = {}) {
     zoom: 3.6,
     minZoom: 3,
     maxZoom: 10,
-    attributionControl: { compact: false },
+    attributionControl: false, // added below, expanded
     dragRotate: false,
     pitchWithRotate: false,
   });
+  map.addControl(
+    new maplibregl.AttributionControl({
+      compact: false,
+      // The OpenStreetMap credit comes from the style's source (set above);
+      // only the boundary's own source line is added here.
+      customAttribution:
+        boundary.configured && boundary.attribution
+          ? [basemapMapEscapeHtml(boundary.attribution)]
+          : [],
+    })
+  );
   map.touchZoomRotate.disableRotation();
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
 
@@ -189,6 +241,27 @@ async function basemapMapCreate(container, options = {}) {
     throw err;
   });
 
+  if (boundary.configured) {
+    // Drawn LAST (setCells inserts its layers beneath this one), as a thin
+    // line, so no basemap or forecast feature crosses it.
+    map.addSource(BASEMAP_MAP_BOUNDARY_SOURCE, { type: "geojson", data: boundary.geojson });
+    map.addLayer({
+      id: BASEMAP_MAP_BOUNDARY_LAYER,
+      type: "line",
+      source: BASEMAP_MAP_BOUNDARY_SOURCE,
+      paint: { "line-color": "#222222", "line-width": 1.4 },
+    });
+  } else {
+    // Say so plainly. The grid's own rectangle is NOT a national boundary and
+    // is never drawn as one.
+    const note = document.createElement("div");
+    note.className = "basemap-map-note";
+    note.textContent = boundary.error
+      ? `Boundary unavailable: ${boundary.error}`
+      : BASEMAP_MAP_NO_BOUNDARY_NOTE;
+    container.appendChild(note);
+  }
+
   let fitted = false;
   const instance = {
     container,
@@ -208,16 +281,20 @@ async function basemapMapCreate(container, options = {}) {
           return;
         }
         map.addSource(sourceId, { type: "geojson", data });
-        map.addLayer({
-          id: layerId,
-          type: "fill",
-          source: sourceId,
-          paint: {
-            "fill-color": ["get", "c"],
-            "fill-opacity": opacityExpression,
-            "fill-antialias": false,
+        map.addLayer(
+          {
+            id: layerId,
+            type: "fill",
+            source: sourceId,
+            paint: {
+              "fill-color": ["get", "c"],
+              "fill-opacity": opacityExpression,
+              "fill-antialias": false,
+            },
           },
-        });
+          // Keep the official boundary above the forecast cells.
+          map.getLayer(BASEMAP_MAP_BOUNDARY_LAYER) ? BASEMAP_MAP_BOUNDARY_LAYER : undefined
+        );
       };
       upsert(
         BASEMAP_MAP_CELLS_SOURCE,
@@ -242,6 +319,7 @@ async function basemapMapCreate(container, options = {}) {
     resize() {
       map.resize();
     },
+    boundaryConfigured: Boolean(boundary.configured),
     destroy() {
       if (instance.destroyed) return;
       instance.destroyed = true;

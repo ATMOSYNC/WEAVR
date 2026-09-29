@@ -574,4 +574,4 @@ The dashboard server now also serves the local basemap file at
 and the map libraries are vendored under `dashboard-web/vendor/`. The blended
 map and the extreme-probability map have a "Show geography" toggle (off by default) that draws the forecast
 grid over the local basemap; it falls back to the plain grid if the tile file
-or WebGL is unavailable.
+or WebGL is unavailable. The basemap draws no boundaries; an official outline you supply at `data/basemap/india-boundary.geojson` is drawn on top (see `docs/basemap-scope.md`), and `scripts/check_basemap_boundaries.py` verifies the tiles contribute none.

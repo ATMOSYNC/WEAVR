@@ -109,3 +109,56 @@ class TestStyle:
     def test_attribution_names_openstreetmap(self, style):
         attributions = [s.get("attribution", "") for s in style["sources"].values()]
         assert any("OpenStreetMap" in a for a in attributions)
+
+
+@pytest.fixture
+def boundary_file(tmp_path, monkeypatch):
+    path = tmp_path / "india-boundary.geojson"
+    monkeypatch.setattr(api, "BASEMAP_BOUNDARY_PATH", path)
+    return path
+
+
+class TestBoundary:
+    def test_not_configured_is_a_404_with_the_flag(self, boundary_file):
+        response = client.get("/api/basemap/boundary")
+
+        assert response.status_code == 404
+        assert response.json() == {"configured": False}
+
+    def test_a_valid_outline_is_returned_with_its_attribution(self, boundary_file):
+        boundary_file.write_text(json.dumps({
+            "type": "FeatureCollection",
+            "attribution": "Test source",
+            "features": [{"type": "Feature", "properties": {},
+                          "geometry": {"type": "LineString",
+                                       "coordinates": [[70, 10], [80, 20]]}}],
+        }))
+
+        body = client.get("/api/basemap/boundary").json()
+
+        assert body["configured"] is True
+        assert body["attribution"] == "Test source"
+        assert body["geojson"]["type"] == "FeatureCollection"
+
+    def test_missing_attribution_gets_a_neutral_default(self, boundary_file):
+        boundary_file.write_text(json.dumps(
+            {"type": "LineString", "coordinates": [[70, 10], [80, 20]]}
+        ))
+
+        assert client.get("/api/basemap/boundary").json()["attribution"]
+
+    @pytest.mark.parametrize("content", [
+        "not json",
+        json.dumps({"type": "FeatureCollection", "features": []}),
+        json.dumps({"type": "Point", "coordinates": [1, 2]}),
+        json.dumps({"type": "Feature", "geometry": None}),
+    ])
+    def test_an_invalid_file_is_an_error_not_silently_unconfigured(
+        self, boundary_file, content
+    ):
+        boundary_file.write_text(content)
+
+        response = client.get("/api/basemap/boundary")
+
+        assert response.status_code == 500
+        assert "invalid boundary file" in response.json()["detail"]

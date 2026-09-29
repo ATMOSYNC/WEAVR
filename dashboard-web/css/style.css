@@ -221,3 +221,17 @@ body {
     padding: 16px;
   }
 }
+
+.basemap-map-note {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  max-width: calc(100% - 64px); /* clear of the zoom buttons */
+  z-index: 2;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  pointer-events: none;
+}

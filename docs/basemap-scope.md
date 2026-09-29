@@ -246,3 +246,79 @@ An earlier test run reported errors after view switches; they came from the
 test harness replacing `requestAnimationFrame` without replacing
 `cancelAnimationFrame`, so timers survived `map.remove()`. With both replaced
 there were none. The same hidden-pane caveat as step 04 applies.
+
+## The official boundary, attribution and the border check (step 06)
+
+### Supplying the official boundary
+
+Put your official-depiction India boundary at
+**`data/basemap/india-boundary.geojson`** (a GeoJSON `FeatureCollection`,
+`Feature` or bare geometry made of lines or polygons; polygon outlines are
+drawn as lines). The path sits under the gitignored `data/`, next to the
+tiles, rather than in `dashboard-web/`, so a file whose licence is not yet
+confirmed is never committed and never served by the static mount. An optional
+top-level `"attribution"` member (any text) is shown in the map's attribution
+line; without one a neutral default is used.
+
+`GET /api/basemap/boundary` returns `{"configured": true, "attribution",
+"geojson"}`; with no file it returns `404 {"configured": false}`; a file that
+exists but is not valid outline GeoJSON is a `500` naming the reason, so a
+broken boundary is never mistaken for "not configured".
+
+### What the map shows
+
+| State | Result |
+|---|---|
+| No file | No outline. A small note inside the map, "No official boundary configured". The grid's own rectangle is never drawn as a border. |
+| Valid file | The outline is drawn as a thin dark line as the **topmost layer**, above the basemap and above the forecast cells (`setCells` inserts its layers beneath it). |
+| Invalid file or request failure | No outline; the note reads "Boundary unavailable: <reason>". |
+
+**Attribution** is always expanded (never collapsed to an icon), links to
+OpenStreetMap's copyright page, and appends the boundary's own attribution
+when configured. The boundary text is HTML-escaped before display.
+
+### The no-border check
+
+`python scripts/check_basemap_boundaries.py` (tests in
+`tests/test_check_basemap_boundaries.py`). The tile file *does* contain a
+`boundaries` layer, so the useful question is what the map can render:
+
+1. The style references only `earth`, `landcover`, `landuse`, `water` and
+   `roads` (no `boundaries`, `places`, `pois` or symbol layers); tested in
+   `tests/test_dashboard_basemap.py`.
+2. In real tiles sampled over **Kashmir and Arunachal Pradesh at zooms 3–10**
+   (65 tiles), each style layer must hold only what it should: no line
+   features in `earth`, `landcover`, `landuse` (an outline there would be a
+   border); `roads` lines of known road kinds only; no feature whose `kind`
+   looks like a boundary. The tiles are read with the `pmtiles` CLI and
+   decoded with a small protobuf reader inside the script, so **no new
+   dependency** was needed.
+
+**Result (2026-09-29): PASSED.** The samples held 232 `boundaries` features,
+1,378 `places` and 42 `pois` that the style never draws, against only
+polygons in `earth`/`landcover`/`landuse`, road lines in `roads` and
+polygons, lines and points in `water`. One thing the first run caught: the
+`roads` layer also carries `aeroway` (runways), which the style does not
+draw; the allowed-kinds list now includes it and the test checks that the
+style's own road filter uses only listed kinds.
+
+**Limit, stated plainly:** the `boundaries` layer is still inside
+`india.pmtiles`. Nothing here draws it, but anyone who re-styles the file
+could. The `pmtiles` CLI cannot drop a layer. If that matters for the static
+deploy, the file would have to be rebuilt with a tool that can filter layers.
+
+### Browser verification (fresh port, 2026-09-29)
+
+| Check | Result |
+|---|---|
+| No boundary configured, both map views | note visible, attribution visible and expanded, no boundary layer; layers are the basemap layers plus the two forecast layers |
+| Every line feature on screen at Kashmir (zoom 5.2), Kashmir wide, Arunachal and the national view | only `roads-major` highway lines; nothing else is a line |
+| Synthetic outline configured (removed afterwards) | drawn as the last layer, above the cells; a query at its west edge finds it; note gone; attribution shows `TEST <b>…` escaped, then the OpenStreetMap link |
+| Invalid boundary file | API 500 with the reason; map shows "Boundary unavailable: …"; no errors |
+| 375 px width, invalid-file state | attribution inside the map, note clear of the attribution and the zoom buttons, legend below the map, no horizontal scroll |
+
+The first mobile run found the note (bottom-left) overlapping the attribution
+when its text wrapped; it now sits top-left, clear of the zoom buttons.
+
+The synthetic outline was a test rectangle, not a boundary, and was deleted;
+`data/basemap/` holds only the tiles and their manifest.
