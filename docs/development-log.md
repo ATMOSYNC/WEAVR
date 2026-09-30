@@ -578,3 +578,36 @@ and the map libraries are vendored under `dashboard-web/vendor/`. The blended
 map and the extreme-probability map have a "Show geography" toggle (off by default) that draws the forecast
 grid over the local basemap; it falls back to the plain grid if the tile file
 or WebGL is unavailable. The basemap draws no boundaries; an official outline you supply at `data/basemap/india-boundary.geojson` is drawn on top (see `docs/basemap-scope.md`), and `scripts/check_basemap_boundaries.py` verifies the tiles contribute none.
+
+## Three defects in the example-grid export path, found by running it for real
+
+`scripts/export_dashboard_example_grids.py` had never been run against a real
+store, so the step 11/12/13 libraries it drives shipped with three defects
+that only appear on a real 129x135 / 122-sample grid. All three are fixed;
+the committed `dashboard/data/*.npz` are **not** regenerated yet, because
+step 07 has to re-emit them under two-season LOYO once the 2018 stores land
+(see `Improvements/prompts/07-regenerate-results-v2-with-loyo.md`).
+
+- `assign_regions` already returns a `(latitude, longitude)` DataArray, so
+  the `meshgrid(...).ravel().reshape(...)` round-trip raised
+  `AttributeError: 'DataArray' object has no attribute 'reshape'`. The script
+  could not run at all.
+- The snapshot was taken at `sample=-1`. The weekly IFS-ENS store covers 18
+  of the 122 aligned daily samples, so the last one is entirely NaN for
+  IFS-ENS: the blend silently lost one of its three inputs, and the
+  probability grid — which is driven by IFS-ENS alone — classified zero cells
+  and came out **100% `fallback` at probability 0**, a uniformly grey map that
+  still satisfied the existing "probabilities are in [0, 1]" checks. The
+  export now takes the last sample on which *every* source has data, and
+  raises if there is none, rather than serving a plausible-looking empty map.
+- The per-cell `method_*` arrays were written as pickled object arrays, which
+  `np.load` refuses without `allow_pickle=True` — so `load_probability_grid`
+  raised "Object arrays cannot be loaded" for *every* threshold. They are now
+  fixed-width unicode.
+
+Verified on the 2020 JJAS season: the export runs end to end, the snapshot
+lands on a real IFS-ENS initialisation (2020-09-28), all 17,415 cells at lead
+24 h use `csgd+gpd_tail` instead of falling back, and
+`load_probability_grid` serves both 115.6 mm and 204.5 mm without pickling.
+Regenerating and committing the two example grids is deliberately left to
+step 07's two-season pass.
