@@ -33,9 +33,20 @@ async function fetchBlendedMap(lead) {
   return fetchJson(`/api/blended-map?lead=${encodeURIComponent(lead)}`);
 }
 
-/** GET /api/extreme-probability?lead=<int> -> the real 129x135 P(rain > 204.5mm) grid. */
-async function fetchExtremeProbability(lead) {
-  return fetchJson(`/api/extreme-probability?lead=${encodeURIComponent(lead)}`);
+/**
+ * GET /api/extreme-probability?lead=<int>&threshold=<mm>
+ *   -> the real 129x135 P(rain > threshold) grid, with the real per-cell
+ *   `method` flags (csgd / csgd+gpd_tail / fallback).
+ *
+ * `threshold` is always sent explicitly, because the server's default is
+ * 204.5 and this view lets the reader pick between the two real IMD
+ * thresholds; omitting it would silently show 204.5 under a 115.6mm label.
+ */
+async function fetchExtremeProbability(lead, threshold) {
+  return fetchJson(
+    `/api/extreme-probability?lead=${encodeURIComponent(lead)}` +
+      `&threshold=${encodeURIComponent(threshold)}`
+  );
 }
 
 /** GET /api/colors -> the real IMD colour identities (dashboard/colors.py). */

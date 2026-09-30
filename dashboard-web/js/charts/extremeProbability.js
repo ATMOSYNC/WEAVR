@@ -15,13 +15,26 @@
  * has no closed form.
  *
  * 204.5mm is IMD's own real "extremely heavy rain" boundary
- * (weavr.verify.IMD_RAIN_THRESHOLDS_MM[-1]).
+ * (weavr.verify.IMD_RAIN_THRESHOLDS_MM[-1]); 115.6mm is the "very heavy"
+ * boundary below it. Both are offered as a real toggle, read from
+ * /api/colors's imd_rain_thresholds_mm rather than hardcoded, and the
+ * threshold is always sent explicitly to the API so the label can never
+ * disagree with the data.
  * docs/phase4-data-and-combiner-scope.md found the extremely_heavy bin is
  * never fittable at any lead in this project's real 2020 JJAS data.
  * Cells whose own forecast fell in a bin EMOS-CSG could not fit for real
  * are drawn with a second, distinct semi-transparent grey pass -- a
  * fallback cell's ~0 probability must not look identical to a genuinely
  * low-risk, real fitted cell.
+ *
+ * Step 12 adds a third per-cell method, `csgd+gpd_tail`: the point forecast
+ * was too rare to fit a bin, so its exceedance probability comes from a
+ * pooled generalised-Pareto tail fitted above the threshold instead. Those
+ * numbers come from a different estimator than their neighbours', so they
+ * get their own marking -- a centre dot, a texture rather than a colour --
+ * leaving the underlying probability colour readable underneath and
+ * staying legible in greyscale and for colourblind readers. The `csgd`
+ * cells that need no tail stay unmarked, as the plain fitted value.
  *
  * The probability colourscale (GET /api/colors's probability_colorscale,
  * dashboard.colors.PROBABILITY_COLORSCALE server-side) is a continuous
@@ -32,6 +45,14 @@
 
 const EXTREME_PROBABILITY_CELL_SIZE = 4;
 const EXTREME_PROBABILITY_FALLBACK_RGBA = "rgba(120, 120, 120, 0.75)";
+
+// The pooled-tail method's marking, and the same accent used for its legend
+// swatch and for the geography-mode overlay, so one cell reads the same way
+// in all three places.
+const EXTREME_PROBABILITY_TAIL_METHOD = "csgd+gpd_tail";
+const EXTREME_PROBABILITY_TAIL_DOT_RGBA = "rgba(20, 20, 20, 0.85)";
+const EXTREME_PROBABILITY_TAIL_DOT_SIZE = 2;
+const EXTREME_PROBABILITY_TAIL_GEOGRAPHY_COLOR = "#141414";
 
 // Geography mode. The colour scale's first two stops are dry (white) and
 // light (green, at 0.25), so a solid fill at low probability would wash the
@@ -44,9 +65,46 @@ const EXTREME_PROBABILITY_GEOGRAPHY_FALLBACK_COLOR = "#787878";
 
 // Remembered across lead changes so the choice survives a re-render.
 let extremeProbabilityGeographyOn = false;
+// Likewise for the threshold: re-picking a lead must not silently drop the
+// reader back to 204.5mm.
+let extremeProbabilityThreshold = null;
 
 const EXTREME_PROBABILITY_GEOGRAPHY_UNAVAILABLE =
   "Basemap unavailable -- showing the plain grid.";
+
+/** True when `grid` marks this cell as fitted with the pooled GPD tail. */
+function extremeProbabilityIsTailCell(grid, latIndex, lonIndex) {
+  return (
+    Array.isArray(grid.method) &&
+    grid.method[latIndex][lonIndex] === EXTREME_PROBABILITY_TAIL_METHOD
+  );
+}
+
+/**
+ * Real per-method cell counts at this lead, taken from the fetched `method`
+ * array -- not hardcoded, and not assumed. A committed grid that predates
+ * step 12 has no `method` array at all, in which case the server reports
+ * every cell as plain `csgd` and the tail legend entry is reported as
+ * unused rather than as a claim that tail cells exist.
+ */
+function extremeProbabilityMethodCounts(grid) {
+  const counts = { csgd: 0, tail: 0, fallback: 0 };
+  const latCount = grid.probability.length;
+  const lonCount = grid.probability[0].length;
+  for (let latIndex = 0; latIndex < latCount; latIndex++) {
+    for (let lonIndex = 0; lonIndex < lonCount; lonIndex++) {
+      if (grid.is_fallback[latIndex][lonIndex]) counts.fallback += 1;
+      else if (extremeProbabilityIsTailCell(grid, latIndex, lonIndex)) counts.tail += 1;
+      else counts.csgd += 1;
+    }
+  }
+  return counts;
+}
+
+/** "115.6mm" -- thresholds render without a trailing .0 anywhere they show. */
+function formatThreshold(threshold) {
+  return `${Number(threshold)}mm`;
+}
 
 /** Fill opacity for a cell of probability `p` in geography mode. */
 function extremeProbabilityOpacity(p) {
@@ -67,10 +125,19 @@ const EXTREME_PROBABILITY_CAPTION =
   "censored-shifted-gamma has a real closed-form exceedance " +
   "probability, unlike BMA's mixture. This diverges from the " +
   "blended map's Tier 1 combiner, which has no predictive " +
-  "distribution to compute a probability from. 204.5mm is IMD's own " +
-  "real 'extremely heavy rain' boundary. Grey-hatched cells have no " +
-  "real fitted probability -- their own forecast fell in a " +
-  "rain-intensity bin EMOS-CSG could not fit for real at this lead " +
+  "distribution to compute a probability from. The two thresholds are " +
+  "IMD's own real rainfall boundaries, 115.6mm ('very heavy') and " +
+  "204.5mm ('extremely heavy'). Dotted cells take their probability from " +
+  "a pooled extreme-value tail rather than from EMOS-CSG directly: their " +
+  "own forecast landed in a rain-intensity bin with too few real training " +
+  "days to fit, so the probability above the threshold is extrapolated by " +
+  "a generalised-Pareto tail fitted to the pooled upper tail of all " +
+  "fittable bins, with one shared shape and per-zone scales. That " +
+  "extrapolation is the limit of this map -- it is a tail estimate " +
+  "borrowed from rarer, fittable bins, not a probability fitted to those " +
+  "cells' own rain, and it should be read as the least certain number " +
+  "here. Grey cells are the harder fallback: no real probability at all, " +
+  "because EMOS-CSG could not fit their bin for real at this lead " +
   "(docs/phase4-data-and-combiner-scope.md found the extremely_heavy " +
   "bin is never fittable at any lead in this project's real data).";
 
@@ -129,7 +196,7 @@ function renderExtremeProbabilityCanvas(container, grid, colorscale) {
   canvas.setAttribute("role", "img");
   canvas.setAttribute(
     "aria-label",
-    `P(rain > 204.5mm) map at lead ${grid.lead_hours}h`
+    `P(rain > ${formatThreshold(grid.threshold)}) map at lead ${grid.lead_hours}h`
   );
 
   const ctx = canvas.getContext("2d");
@@ -166,10 +233,30 @@ function renderExtremeProbabilityCanvas(container, grid, colorscale) {
     }
   }
 
+  // Layer 3: the pooled-tail cells' own marking -- a centred dot, so the
+  // probability colour underneath stays readable. Drawn after the grey
+  // fallback pass so a tail cell is never confused with a fallback one.
+  const dotInset =
+    (EXTREME_PROBABILITY_CELL_SIZE - EXTREME_PROBABILITY_TAIL_DOT_SIZE) / 2;
+  ctx.fillStyle = EXTREME_PROBABILITY_TAIL_DOT_RGBA;
+  for (let latIndex = 0; latIndex < latCount; latIndex++) {
+    const canvasRow = latCount - 1 - latIndex;
+    for (let lonIndex = 0; lonIndex < lonCount; lonIndex++) {
+      if (extremeProbabilityIsTailCell(grid, latIndex, lonIndex)) {
+        ctx.fillRect(
+          lonIndex * EXTREME_PROBABILITY_CELL_SIZE + dotInset,
+          canvasRow * EXTREME_PROBABILITY_CELL_SIZE + dotInset,
+          EXTREME_PROBABILITY_TAIL_DOT_SIZE,
+          EXTREME_PROBABILITY_TAIL_DOT_SIZE
+        );
+      }
+    }
+  }
+
   container.appendChild(canvas);
 }
 
-function renderExtremeProbabilityLegend(container, colorscale) {
+function renderExtremeProbabilityLegend(container, colorscale, grid, counts) {
   const wrapper = document.createElement("div");
   wrapper.style.marginTop = "12px";
   wrapper.style.maxWidth = "400px";
@@ -178,7 +265,7 @@ function renderExtremeProbabilityLegend(container, colorscale) {
   label.style.fontSize = "0.85rem";
   label.style.color = "var(--color-text-muted)";
   label.style.marginBottom = "4px";
-  label.textContent = "P(rain > 204.5mm)";
+  label.textContent = `P(rain > ${formatThreshold(grid.threshold)})`;
   wrapper.appendChild(label);
 
   const gradientStops = colorscale.map(([pos, hex]) => `${hex} ${pos * 100}%`).join(", ");
@@ -201,10 +288,26 @@ function renderExtremeProbabilityLegend(container, colorscale) {
   });
   wrapper.appendChild(ticks);
 
+  const tailNote = document.createElement("div");
+  tailNote.style.fontSize = "0.8rem";
+  tailNote.style.color = "var(--color-text-muted)";
+  tailNote.style.marginTop = "8px";
+  // The real count, and -- when the committed grid predates step 12 -- an
+  // honest "none in this grid" rather than a legend implying cells exist.
+  tailNote.innerHTML =
+    '<span class="legend-swatch" style="background:' +
+    EXTREME_PROBABILITY_TAIL_GEOGRAPHY_COLOR +
+    '"></span>pooled GPD tail' +
+    (counts.tail > 0
+      ? ` (${counts.tail} cell${counts.tail === 1 ? "" : "s"} at this lead; ` +
+        "probability extrapolated from the pooled upper tail)"
+      : " (no cells at this threshold use it)");
+  wrapper.appendChild(tailNote);
+
   const fallbackNote = document.createElement("div");
   fallbackNote.style.fontSize = "0.8rem";
   fallbackNote.style.color = "var(--color-text-muted)";
-  fallbackNote.style.marginTop = "8px";
+  fallbackNote.style.marginTop = "4px";
   fallbackNote.innerHTML =
     '<span class="legend-swatch" style="background:' +
     EXTREME_PROBABILITY_FALLBACK_RGBA +
@@ -214,17 +317,119 @@ function renderExtremeProbabilityLegend(container, colorscale) {
   container.appendChild(wrapper);
 }
 
+/**
+ * The real threshold control: one radio per threshold the server says the
+ * extreme-probability endpoint accepts
+ * (/api/colors's extreme_probability_thresholds_mm), so the options come
+ * from the server's own contract rather than being restated here. Calls
+ * `onChange` with the newly picked value; the caller re-renders.
+ */
+function buildExtremeProbabilityThresholdControl(
+  container,
+  thresholds,
+  current,
+  onChange
+) {
+  const group = document.createElement("div");
+  group.className = "threshold-toggle";
+  group.setAttribute("role", "radiogroup");
+  group.setAttribute("aria-label", "Rainfall threshold");
+
+  const legend = document.createElement("span");
+  legend.className = "threshold-toggle-legend";
+  legend.textContent = "Threshold";
+  group.appendChild(legend);
+
+  thresholds.forEach((value) => {
+    const label = document.createElement("label");
+    label.className = "threshold-toggle-option";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "extreme-probability-threshold";
+    input.value = String(value);
+    input.checked = value === current;
+    input.addEventListener("change", () => {
+      if (input.checked) onChange(value);
+    });
+    label.appendChild(input);
+    label.appendChild(
+      document.createTextNode(
+        Number(value) === thresholds[thresholds.length - 1]
+          ? ` ${formatThreshold(value)} (extremely heavy)`
+          : ` ${formatThreshold(value)} (very heavy)`
+      )
+    );
+    group.appendChild(label);
+  });
+
+  container.appendChild(group);
+  return group;
+}
+
 const ExtremeProbabilityView = {
   /** Fetches real data for `lead` and renders canvas + captions + legend + warning into `container`. */
   async render(container, lead) {
     container.innerHTML = '<p class="loading-state">Loading extreme-probability map…</p>';
 
-    let grid;
+    // Colours and the real IMD threshold list come first: the threshold
+    // decides which grid to fetch, and the control can only offer the
+    // server's own values.
     let colors;
     try {
-      [grid, colors] = await Promise.all([fetchExtremeProbability(lead), getColors()]);
+      colors = await getColors();
     } catch (err) {
       container.innerHTML = `<p class="error-state">Failed to load extreme-probability map: ${err.message}</p>`;
+      return;
+    }
+
+    // The control must offer exactly the thresholds
+    // /api/extreme-probability accepts. That is a strict subset of
+    // /api/colors's imd_rain_thresholds_mm, which carries IMD's lighter
+    // boundaries too and has no fitted grid behind it -- offering the whole
+    // tuple would offer requests the API rejects with 422.
+    const thresholds = (
+      colors.extreme_probability_thresholds_mm || colors.imd_rain_thresholds_mm || []
+    )
+      .slice()
+      .sort((a, b) => a - b);
+    if (thresholds.length === 0) {
+      container.innerHTML =
+        '<p class="error-state">The server reported no extreme-probability thresholds, so there is nothing to plot.</p>';
+      return;
+    }
+    // Default to the heaviest real boundary, which is what this view always
+    // showed before the toggle existed.
+    if (extremeProbabilityThreshold === null) {
+      extremeProbabilityThreshold = thresholds[thresholds.length - 1];
+    }
+
+    const renderUnavailable = (message) => {
+      container.innerHTML = "";
+      const note = document.createElement("p");
+      note.className = "error-state";
+      note.textContent = `No ${formatThreshold(extremeProbabilityThreshold)} data at lead ${lead}h: ${message}`;
+      container.appendChild(note);
+      // The control stays, so an unavailable threshold is one click away from
+      // being changed rather than a dead end.
+      buildExtremeProbabilityThresholdControl(
+        container,
+        thresholds,
+        extremeProbabilityThreshold,
+        (value) => {
+          extremeProbabilityThreshold = value;
+          this.render(container, lead);
+        }
+      );
+    };
+
+    let grid;
+    try {
+      grid = await fetchExtremeProbability(lead, extremeProbabilityThreshold);
+    } catch (err) {
+      // 404 means this threshold is genuinely not in the committed export --
+      // say so in the server's own words instead of quietly falling back to
+      // the other threshold under a mismatched label.
+      renderUnavailable(err.message);
       return;
     }
 
@@ -232,8 +437,19 @@ const ExtremeProbabilityView = {
 
     const subheader = document.createElement("h2");
     subheader.className = "view-subheader";
-    subheader.textContent = "Extreme-probability map: P(rain > 204.5mm)";
+    subheader.textContent =
+      `Extreme-probability map: P(rain > ${formatThreshold(grid.threshold)})`;
     container.appendChild(subheader);
+
+    buildExtremeProbabilityThresholdControl(
+      container,
+      thresholds,
+      grid.threshold,
+      (value) => {
+        extremeProbabilityThreshold = value;
+        this.render(container, lead);
+      }
+    );
 
     const caption = document.createElement("p");
     caption.className = "view-caption";
@@ -242,7 +458,9 @@ const ExtremeProbabilityView = {
 
     const title = document.createElement("p");
     title.className = "chart-title";
-    title.textContent = `P(rain > 204.5mm) at lead ${grid.lead_hours}h (sample: ${grid.sample_time})`;
+    title.textContent =
+      `P(rain > ${formatThreshold(grid.threshold)}) at lead ${grid.lead_hours}h ` +
+      `(sample: ${grid.sample_time})`;
     container.appendChild(title);
 
     const toggleLabel = document.createElement("label");
@@ -270,12 +488,14 @@ const ExtremeProbabilityView = {
     mapContainer.hidden = true;
     container.appendChild(mapContainer);
 
+    const counts = extremeProbabilityMethodCounts(grid);
     const maxProbability = extremeProbabilityMax(grid);
     const geographyNoteText =
       "Cells are drawn on an OpenStreetMap-derived basemap served from this " +
       "machine, with the same colours as the plain grid. Low probabilities " +
       "fade to transparent so the geography shows through; grey cells are the " +
-      "fallback cells. The highest probability at this lead is " +
+      "fallback cells, and near-black cells are the pooled-tail cells. The " +
+      "highest probability at this lead is " +
       `${(maxProbability * 100).toFixed(1)}%, so the map is pale by design ` +
       "-- it is not missing data. The basemap draws no national boundaries.";
 
@@ -295,8 +515,15 @@ const ExtremeProbabilityView = {
         longitude: grid.longitude,
         colorAt: (i, j) => interpolateProbabilityColor(colors.probability_colorscale, grid.probability[i][j]),
         opacityAt: (i, j) => extremeProbabilityOpacity(grid.probability[i][j]),
-        overlayColorAt: (i, j) =>
-          grid.is_fallback[i][j] ? EXTREME_PROBABILITY_GEOGRAPHY_FALLBACK_COLOR : null,
+        // Fallback wins over tail: a fallback cell has no real probability at
+        // all, so it must not be dressed up as a merely-uncertain one.
+        overlayColorAt: (i, j) => {
+          if (grid.is_fallback[i][j]) return EXTREME_PROBABILITY_GEOGRAPHY_FALLBACK_COLOR;
+          if (extremeProbabilityIsTailCell(grid, i, j)) {
+            return EXTREME_PROBABILITY_TAIL_GEOGRAPHY_COLOR;
+          }
+          return null;
+        },
       });
       canvasContainer.hidden = true;
       mapContainer.hidden = false;
@@ -323,20 +550,32 @@ const ExtremeProbabilityView = {
     toggle.addEventListener("change", applyMode);
     if (extremeProbabilityGeographyOn) applyMode();
 
-    renderExtremeProbabilityLegend(container, colors.probability_colorscale);
-
-    // Computed from the real fetched is_fallback array's true count --
-    // not hardcoded -- matching dashboard/views/extreme_probability.py's
-    // own st.warning() logic (only shown when n_fallback > 0).
-    const nFallback = grid.is_fallback.reduce(
-      (sum, row) => sum + row.filter(Boolean).length,
-      0
+    renderExtremeProbabilityLegend(
+      container,
+      colors.probability_colorscale,
+      grid,
+      counts
     );
-    if (nFallback > 0) {
+
+    // Both counts are the real fetched per-cell method flags' true counts --
+    // not hardcoded -- so a grid that uses no tail cells says so rather than
+    // implying any.
+    if (counts.tail > 0) {
       const warning = document.createElement("div");
       warning.className = "warning-banner";
       warning.textContent =
-        `${nFallback} gridpoint(s) at this lead are shown grey: their ` +
+        `${counts.tail} gridpoint(s) at this lead are dotted: their ` +
+        "exceedance probability is extrapolated by the pooled " +
+        "extreme-value tail rather than fitted to their own bin, so they " +
+        "are the least certain values on this map (see caption above).";
+      container.appendChild(warning);
+    }
+
+    if (counts.fallback > 0) {
+      const warning = document.createElement("div");
+      warning.className = "warning-banner";
+      warning.textContent =
+        `${counts.fallback} gridpoint(s) at this lead are shown grey: their ` +
         "forecast fell in a rain-intensity bin with too few real " +
         "training days to fit EMOS-CSG (see caption above).";
       container.appendChild(warning);

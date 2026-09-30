@@ -170,6 +170,12 @@ def colors() -> dict[str, Any]:
         "rain_bin_labels": list(RAIN_BIN_LABELS),
         "probability_colorscale": PROBABILITY_COLORSCALE,
         "imd_rain_thresholds_mm": list(IMD_RAIN_THRESHOLDS_MM),
+        # The subset /api/extreme-probability actually accepts. It is a strict
+        # subset of imd_rain_thresholds_mm (that tuple carries IMD's lighter
+        # boundaries too, which have no fitted extreme-probability grid), so
+        # the frontend's threshold control must offer these and not the whole
+        # tuple -- offering all of them would offer 422s.
+        "extreme_probability_thresholds_mm": list(ALLOWED_EXTREME_THRESHOLDS),
     }
 
 

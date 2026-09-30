@@ -202,6 +202,30 @@ body {
   cursor: pointer;
 }
 
+/* Threshold radio group (extreme-probability view). Kept as real radios in
+   a labelled group so it is keyboard- and screen-reader-navigable, with the
+   options visually grouped rather than stacked. */
+.threshold-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 8px 0 10px;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+.threshold-toggle-legend {
+  font-weight: 600;
+}
+
+.threshold-toggle-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
 /* Narrow screens: put the nav above the view instead of beside it, so the
    maps (and every other view) get the full width. */
 @media (max-width: 720px) {
