@@ -110,9 +110,13 @@ Every stage is a small, tested module in `src/weavr/`: `grid`, `ensemble`,
 
 To repair under-forecast extreme rainfall before blending or parametric fitting, WEAVR provides empirical quantile mapping calibrated against historical IMD gauge analyses (`fit_quantile_map`, `apply_quantile_mapping`). It zeroes dry/drizzle values below a data-driven wet-day threshold (0.1 mm), performs linear quantile interpolation across wet ranks, and preserves forecast extreme anomalies above historical training maximums via an additive upper-tail extrapolation rule.
 
+Evaluated over both daily JJAS seasons (LOYO, Tier 1 blend, paired moving-block bootstrap CIs), QM passes the pre-registered H7 test **on the SEDI branch only**: SEDI at 115.6 mm improves at 5 of 5 leads with the CI excluding zero, and Brier at 7.5 mm is not degraded. The pass is not free — threshold-weighted CRPS at 64.5 mm is significantly *worse* at every lead, and RMSE rises by roughly 4–7 mm depending on reference variant. See [tail repair results](docs/tail-repair-results.md) for the table and the per-variant trade-off.
+
 ### Tail repair: Extreme-value tail (`weavr.tail`)
 
 For rain bins where extreme events are too scarce to fit parametric EMOS-CSG (such as $\ge 204.5\text{ mm}$), WEAVR anchors probabilities on a pooled Generalized Pareto distribution (GPD) fitted across 15 years of IMD extremes (`weavr.tail`). The GPD shares a single shape parameter $\xi$ nationwide while allowing region-specific scale parameters $\sigma_r$. The tail is continuously spliced at threshold $u$ ($64.5\text{ mm}$) with the nearest fittable EMOS-CSG bin: $P(Y > y) = P_{\text{CSGD}}(Y > u) \cdot (1 + \xi (y - u)/\sigma_r)^{-1/\xi}$, eliminating false-zero fallback grey cells and providing calibrated probabilities for $115.6\text{ mm}$ and $204.5\text{ mm}$ extremes.
+
+Measured over both daily JJAS seasons, the spliced tail does eliminate every false zero-probability cell (193 → 0 at both 115.6 mm and 204.5 mm), but it does **not** improve SEDI — SEDI worsens at all 5 leads, as the extra tail mass produces more false alarms than hits. H7 is therefore not met by this arm alone; the zero-elimination is the result that matters. See [tail repair results](docs/tail-repair-results.md).
 
 ### Tier 2b: Combiner meta-blend (`weavr.stacking`)
 
