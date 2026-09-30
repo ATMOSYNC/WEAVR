@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from dashboard.api import app  # noqa: E402
+from dashboard.api import ALLOWED_EXTREME_THRESHOLDS, app  # noqa: E402
 from dashboard.colors import RAIN_BIN_COLORS  # noqa: E402
 from weavr.rain_bins import RAIN_BIN_LABELS  # noqa: E402
 from weavr.verify import IMD_RAIN_THRESHOLDS_MM  # noqa: E402
@@ -46,6 +46,30 @@ class TestColors:
         positions = [stop[0] for stop in body["probability_colorscale"]]
         assert positions[0] == 0.0
         assert positions[-1] == 1.0
+
+    def test_publishes_the_thresholds_the_extreme_probability_endpoint_accepts(self):
+        # The frontend's threshold control reads this, and it must be the
+        # endpoint's own allowed set -- not the whole IMD tuple. IMD_RAIN_
+        # THRESHOLDS_MM also carries 7.5 and 64.5, which /api/extreme-
+        # probability rejects with 422, so offering the whole tuple would put
+        # two dead options in front of the reader.
+        body = client.get("/api/colors").json()
+        allowed = body["extreme_probability_thresholds_mm"]
+
+        assert sorted(allowed) == sorted(ALLOWED_EXTREME_THRESHOLDS)
+        assert set(allowed) < set(IMD_RAIN_THRESHOLDS_MM), (
+            "the extreme-probability thresholds are a strict subset of IMD's "
+            "full threshold tuple"
+        )
+        # Every value it advertises is genuinely accepted by the endpoint.
+        for threshold in allowed:
+            response = client.get(
+                f"/api/extreme-probability?lead=24&threshold={threshold}"
+            )
+            assert response.status_code in (200, 404), (
+                f"threshold={threshold} must not be rejected as unsupported; "
+                "404 (no committed grid) is fine, 422 is not"
+            )
 
 
 class TestWeightMap:
