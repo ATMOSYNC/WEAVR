@@ -96,6 +96,32 @@ from weavr.verify import crps as ensemble_crps
 # days is fitting temporal noise, not a regime.
 MIN_TRAIN_DAYS_PER_BIN = 5
 
+# Cells drawn per Monte Carlo block by `sample_bma_mixture`. Each live
+# `(cells, n_samples)` float64 temporary is ~8 * cells * n_samples bytes and
+# several are alive at once, so this caps the transient cost of a block at a
+# few hundred MB for the default n_samples=500 regardless of how many cells a
+# (rain bin, region) group covers.
+MAX_CELLS_PER_CHUNK = 20_000
+
+# `weavr.verify.crps` delegates to `xskillscore.crps_ensemble`, whose working
+# set grows with cells * n_samples**2 -- it forms a pairwise member-difference
+# tensor. For one (rain bin, region) group of a real 129x135 grid that is
+# gigabytes at the default n_samples=500, and it was what the OOM killer was
+# terminating Tier 2 on. Scoring CRPS in cell blocks, with the block chosen so
+# the pairwise tensor stays under this budget, makes the default sample count
+# usable without changing any number: the members are independent per cell, so
+# the score of a block does not depend on which other cells are in it.
+MAX_CRPS_PAIRWISE_BYTES = 256 << 20
+
+
+def crps_chunk_cells(n_samples: int, budget: int = MAX_CRPS_PAIRWISE_BYTES) -> int:
+    """Cells per CRPS block that keeps the pairwise tensor inside `budget`."""
+    if n_samples <= 0:
+        raise ValueError("n_samples must be positive")
+    per_cell = 8 * n_samples * n_samples
+    return max(1, int(budget // per_cell))
+
+
 _TINY = 1e-6
 _CUBE_ROOT_POWER = 1.0 / 3.0
 
@@ -468,43 +494,31 @@ def renormalize_bma_for_present_sources(
     )
 
 
-def sample_bma_mixture(
+def _sample_bma_block(
     result: BmaFitResult,
     forecast_mean: dict[str, np.ndarray],
     forecast_spread: dict[str, np.ndarray | None],
     rng: np.random.Generator,
-    n_samples: int = 500,
+    n_samples: int,
 ) -> np.ndarray:
-    """Draws `n_samples` per prediction cell from the fitted (or fallback)
-    mixture -- the sampling step `score_bma` turns into a Monte Carlo CRPS
-    estimate (see this module's docstring for why no closed form exists).
+    """Draws from the fitted mixture for one flat block of cells.
 
-    Returns an array shaped `forecast's own shape + (n_samples,)`. A
-    result with no fitted components at all draws from a point mass at zero
-    (matching `weavr.emos.predict_csgd_params`'s own fallback behavior) --
-    checked via `not result.components` rather than `result.is_fallback`
-    directly, since `renormalize_bma_for_present_sources` can flag
-    `is_fallback=True` for a real, non-empty single-component mixture (only
-    one source survived a missing/late source at prediction time) that must
-    still be sampled from, not zeroed out.
+    `forecast_mean` / `forecast_spread` must be 1-D and aligned. Kept separate
+    from `sample_bma_mixture` so that the chunking there is the only place
+    that decides block boundaries.
     """
-    any_mean = next(iter(forecast_mean.values()))
-    shape = np.asarray(any_mean).shape
-
-    if not result.components:
-        return np.zeros(shape + (n_samples,))
-
     sources = list(result.weights.keys())
     weight_arr = np.array([result.weights[s] for s in sources])
     weight_arr = weight_arr / weight_arr.sum()
 
+    shape = (len(forecast_mean[sources[0]]),)
     component_choice = rng.choice(len(sources), size=shape + (n_samples,), p=weight_arr)
     samples = np.zeros(shape + (n_samples,))
 
     for index, source in enumerate(sources):
         component = result.components[source]
         p0, mean_ct, variance_ct = _component_predictive_params(
-            component, np.asarray(forecast_mean[source]), forecast_spread.get(source)
+            component, forecast_mean[source], forecast_spread.get(source)
         )
         mean_ct_safe = np.clip(mean_ct, _TINY, None)
         kappa = mean_ct_safe**2 / variance_ct
@@ -525,6 +539,155 @@ def sample_bma_mixture(
     return samples
 
 
+def sample_bma_mixture(
+    result: BmaFitResult,
+    forecast_mean: dict[str, np.ndarray],
+    forecast_spread: dict[str, np.ndarray | None],
+    rng: np.random.Generator,
+    n_samples: int = 500,
+    max_cells_per_chunk: int = MAX_CELLS_PER_CHUNK,
+) -> np.ndarray:
+    """Draws `n_samples` per prediction cell from the fitted (or fallback)
+    mixture -- the sampling step `score_bma` turns into a Monte Carlo CRPS
+    estimate (see this module's docstring for why no closed form exists).
+
+    Returns an array shaped `forecast's own shape + (n_samples,)`. A
+    result with no fitted components at all draws from a point mass at zero
+    (matching `weavr.emos.predict_csgd_params`'s own fallback behavior) --
+    checked via `not result.components` rather than `result.is_fallback`
+    directly, since `renormalize_bma_for_present_sources` can flag
+    `is_fallback=True` for a real, non-empty single-component mixture (only
+    one source survived a missing/late source at prediction time) that must
+    still be sampled from, not zeroed out.
+
+    Cells are drawn in chunks of at most `max_cells_per_chunk` so that peak
+    memory stays bounded by the chunk size instead of growing with the
+    (bin, region) group. A single unchunked draw of `C` cells keeps ~7
+    full-size `(C, n_samples)` temporaries alive at once -- component choice,
+    samples, the zero mask, the gamma draw, the cube, the masked draw and the
+    `where` output -- which is ~57 bytes per cell-draw. Over a real
+    129x135 grid that is gigabytes per group, and the step 07/11/12/13
+    evaluation runners were being killed by the OOM killer part-way through
+    Tier 2. Chunking changes the exact draw values (each chunk is seeded from
+    a child sequence) but not the distribution, and stays deterministic for a
+    given `max_cells_per_chunk`.
+    """
+    any_mean = next(iter(forecast_mean.values()))
+    shape = np.asarray(any_mean).shape
+
+    if not result.components:
+        return np.zeros(shape + (n_samples,))
+
+    if max_cells_per_chunk is None or max_cells_per_chunk <= 0:
+        max_cells_per_chunk = int(np.prod(shape)) or 1
+
+    n_cells = int(np.prod(shape)) if shape else 1
+
+    # `_sample_bma_block` works on flat 1-D cell axes, so both the chunked and
+    # the single-block path go through the same layout and only differ in how
+    # many cells a block holds.
+    flat_mean = {s: np.asarray(v).reshape(-1) for s, v in forecast_mean.items()}
+    flat_spread = {
+        s: (None if v is None else np.asarray(v).reshape(-1)) for s, v in forecast_spread.items()
+    }
+
+    if n_cells <= max_cells_per_chunk:
+        return _sample_bma_block(result, flat_mean, flat_spread, rng, n_samples).reshape(
+            shape + (n_samples,)
+        )
+
+    # Seed every chunk up front so the result depends only on the parent
+    # generator and the chunk layout, not on the order the work happens in.
+    n_chunks = -(-n_cells // max_cells_per_chunk)
+    chunk_seeds = rng.integers(0, 2**63 - 1, size=n_chunks)
+
+    out = np.empty((n_cells, n_samples), dtype=float)
+    for chunk_index, start in enumerate(range(0, n_cells, max_cells_per_chunk)):
+        stop = min(start + max_cells_per_chunk, n_cells)
+        block_mean = {s: v[start:stop] for s, v in flat_mean.items()}
+        block_spread = {
+            s: (None if v is None else v[start:stop]) for s, v in flat_spread.items()
+        }
+        out[start:stop] = _sample_bma_block(
+            result,
+            block_mean,
+            block_spread,
+            np.random.default_rng(int(chunk_seeds[chunk_index])),
+            n_samples,
+        )
+    return out.reshape(shape + (n_samples,))
+
+
+def score_bma_and_mean(
+    result: BmaFitResult,
+    forecast_mean: dict[str, xr.DataArray],
+    forecast_spread: dict[str, xr.DataArray | None],
+    obs: xr.DataArray,
+    rng: np.random.Generator | None = None,
+    n_samples: int = 500,
+    member_dim: str = "member",
+) -> tuple[xr.DataArray, xr.DataArray]:
+    """CRPS *and* the predictive mean of the fitted (or fallback) BMA mixture
+    against real `obs`, from a **single** Monte Carlo draw set.
+
+    Both numbers have to come from the same draws: `crps_mm`, `rmse_mm` and
+    `bias_mm` are all derived from one realisation of the fitted mixture, so
+    estimating them from two independent draw sets (by calling `score_bma` and
+    then `sample_bma_mixture` again) makes them mutually inconsistent, injects
+    extra Monte Carlo noise into the mean-based metrics, and doubles both the
+    runtime and the peak memory of the `(n_cells, n_samples)` sample array --
+    which is what actually exhausts RAM on a 17 GB machine.
+
+    Returns `(crps, predictive_mean)`, both unreduced `xr.DataArray`s shaped
+    like `obs`.
+    """
+    rng = rng if rng is not None else np.random.default_rng()
+
+    mean_arrays = {source: da.values for source, da in forecast_mean.items()}
+    spread_arrays = {
+        source: (da.values if da is not None else None) for source, da in forecast_spread.items()
+    }
+
+    samples = sample_bma_mixture(result, mean_arrays, spread_arrays, rng, n_samples=n_samples)
+    predictive_mean = xr.DataArray(samples.mean(axis=-1), dims=obs.dims, coords=obs.coords)
+    return _ensemble_crps_chunked(samples, obs, member_dim), predictive_mean
+
+
+def _ensemble_crps_chunked(
+    samples: np.ndarray, obs: xr.DataArray, member_dim: str
+) -> xr.DataArray:
+    """`weavr.verify.crps` over `samples`, blocked over the leading (cell)
+    axes so `xskillscore`'s pairwise member-difference tensor stays bounded.
+
+    `samples` is `obs`'s shape plus a trailing ensemble axis. Members are
+    independent per cell, so a cell's score does not depend on which other
+    cells share its block; the per-cell scores are then reduced exactly as
+    `ensemble_crps(dim=None)` reduces them, so the returned number is
+    unchanged -- this only caps peak memory.
+    """
+    n_samples = samples.shape[-1]
+    block = crps_chunk_cells(n_samples)
+    n_cells = int(np.prod(samples.shape[:-1])) if samples.ndim > 1 else 1
+
+    if n_cells <= block:
+        sample_da = xr.DataArray(samples, dims=(*obs.dims, member_dim), coords=obs.coords)
+        return ensemble_crps(sample_da, obs, member_dim=member_dim)
+
+    out = np.empty(samples.shape[:-1], dtype=float)
+    obs_flat = np.asarray(obs.values).reshape(-1)
+    flat = samples.reshape(-1, n_samples)
+    for start in range(0, n_cells, block):
+        stop = min(start + block, n_cells)
+        chunk_obs = xr.DataArray(obs_flat[start:stop], dims=("cell",))
+        chunk_da = xr.DataArray(flat[start:stop], dims=("cell", member_dim))
+        out.reshape(-1)[start:stop] = np.asarray(
+            ensemble_crps(chunk_da, chunk_obs, member_dim=member_dim).values
+        ).reshape(-1)
+    # `ensemble_crps(dim=None)` averages over every non-member axis; match it
+    # so callers see the same scalar they always have.
+    return xr.DataArray(float(out.mean()))
+
+
 def score_bma(
     result: BmaFitResult,
     forecast_mean: dict[str, xr.DataArray],
@@ -539,18 +702,18 @@ def score_bma(
     `xr.DataArray` of per-cell scores), so step 6 can call both
     combiners identically. Estimated via Monte Carlo sampling (see this
     module's docstring) and `weavr.verify.crps`'s ensemble-CRPS machinery.
+
+    Callers that also need the predictive mean should use
+    `score_bma_and_mean`, which shares one draw set between the two instead of
+    sampling twice.
     """
-    rng = rng if rng is not None else np.random.default_rng()
-
-    mean_arrays = {source: da.values for source, da in forecast_mean.items()}
-    spread_arrays = {
-        source: (da.values if da is not None else None) for source, da in forecast_spread.items()
-    }
-
-    samples = sample_bma_mixture(result, mean_arrays, spread_arrays, rng, n_samples=n_samples)
-    sample_da = xr.DataArray(
-        samples,
-        dims=(*obs.dims, member_dim),
-        coords=obs.coords,
+    crps, _predictive_mean = score_bma_and_mean(
+        result,
+        forecast_mean,
+        forecast_spread,
+        obs,
+        rng=rng,
+        n_samples=n_samples,
+        member_dim=member_dim,
     )
-    return ensemble_crps(sample_da, obs, member_dim=member_dim)
+    return crps
