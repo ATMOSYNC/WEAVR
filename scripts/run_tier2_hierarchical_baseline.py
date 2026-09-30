@@ -88,7 +88,13 @@ from weavr.bma import fit_hierarchical_bma, score_bma_and_mean  # noqa: E402
 from weavr.emos import csgd_crps, fit_emos_csg, predict_csgd_params  # noqa: E402
 from weavr.rain_bins import classify_rain_bin  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
-from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
+from weavr.score_io import (
+    # noqa: E402     guard_result_overwrites,
+    guard_result_overwrites,
+    per_day_scores,
+    resolve_result_paths,
+    write_per_day_scores,
+)
 from weavr.splits import (  # noqa: E402
     iter_evaluation_folds,
 )
@@ -464,15 +470,64 @@ def main() -> int:
     )
     parser.add_argument("--ifs-ensemble-store", default=None, help="Legacy single IFS store path")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
-    parser.add_argument("--out-csv", default="results/tier2_hierarchical_baseline.csv")
-    parser.add_argument("--results-dir", default="results")
-    parser.add_argument("--bin-out-csv", default="results/tier2_hierarchical_baseline_by_bin.csv")
     parser.add_argument(
-        "--region-out-csv", default="results/tier2_hierarchical_baseline_by_region.csv"
+        "--results-dir",
+        default="results",
+        help=(
+            "Directory for the per-day files, and the default parent for all "
+            "three CSVs below. Point this somewhere else to keep a scratch run "
+            "out of the committed results/."
+        ),
+    )
+    parser.add_argument(
+        "--out-csv",
+        default=None,
+        help="Domain-wide CSV path (default: <results-dir>/tier2_hierarchical_baseline.csv)",
+    )
+    parser.add_argument(
+        "--bin-out-csv",
+        default=None,
+        help="Per-bin CSV path (default: <results-dir>/tier2_hierarchical_baseline_by_bin.csv)",
+    )
+    parser.add_argument(
+        "--region-out-csv",
+        default=None,
+        help="Per-region CSV path (default: <results-dir>/..._by_region.csv)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Overwrite existing result CSVs. Without this the script refuses to "
+            "replace a file that already exists, so a scratch run cannot silently "
+            "clobber the committed results."
+        ),
     )
     parser.add_argument("--test-fraction", type=float, default=0.2)
     parser.add_argument("--n-monte-carlo", type=int, default=N_MONTE_CARLO_SAMPLES)
     args = parser.parse_args()
+
+    # All three CSVs default into --results-dir rather than each hardcoding
+    # "results/...". They used to default to results/ independently, so
+    # redirecting --out-csv and --results-dir to a scratch directory still
+    # wrote the per-bin and per-region files over the committed ones.
+    _paths = resolve_result_paths(
+        args.results_dir,
+        {
+            "out_csv": "tier2_hierarchical_baseline.csv",
+            "bin_out_csv": "tier2_hierarchical_baseline_by_bin.csv",
+            "region_out_csv": "tier2_hierarchical_baseline_by_region.csv",
+        },
+        {
+            "out_csv": args.out_csv,
+            "bin_out_csv": args.bin_out_csv,
+            "region_out_csv": args.region_out_csv,
+        },
+    )
+    args.out_csv = _paths["out_csv"]
+    args.bin_out_csv = _paths["bin_out_csv"]
+    args.region_out_csv = _paths["region_out_csv"]
+    guard_result_overwrites(_paths.values(), force=args.force)
     n_samples = args.n_monte_carlo
 
     baseline_paths = resolve_store_paths(

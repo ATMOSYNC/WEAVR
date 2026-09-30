@@ -90,6 +90,7 @@ from weavr.drift import (
     trailing_window_value,
 )
 from weavr.grid import IMD_DAY_START_HOUR_UTC
+from weavr.score_io import FORCE_HELP, guard_result_overwrites, resolve_result_paths
 
 PRECIP_VARIABLE = "total_precipitation_24hr"
 PRECIP_M_TO_MM = 1000.0
@@ -178,8 +179,29 @@ def rolling_verification_for_lead(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--store", default="data/baseline_2020_jjas.zarr")
-    parser.add_argument("--out-csv", default="results/daily_verification.csv")
+    parser.add_argument(
+        "--results-dir",
+        default="results",
+        help="Directory for the per-day files, and the default parent for the output CSV(s).",
+    )
+    parser.add_argument(
+        "--out-csv",
+        default=None,
+        help="Aggregated CSV path (default: <results-dir>/daily_verification.csv)",
+    )
+    parser.add_argument("--force", action="store_true", help=FORCE_HELP)
     args = parser.parse_args()
+    _paths = resolve_result_paths(
+        args.results_dir,
+        {
+            "out_csv": "daily_verification.csv",
+        },
+        {
+            "out_csv": args.out_csv,
+        },
+    )
+    args.out_csv = _paths["out_csv"]
+    guard_result_overwrites(_paths.values(), force=args.force)
 
     print(f"Rolling verification + drift detection against {args.store}")
     print(

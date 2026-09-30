@@ -66,7 +66,13 @@ from build_seeps_climatology import load_climatology  # noqa: E402
 
 from weavr import verify as V  # noqa: E402
 from weavr.grid import IMD_DAY_START_HOUR_UTC  # noqa: E402
-from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
+from weavr.score_io import (  # noqa: E402
+    FORCE_HELP,
+    guard_result_overwrites,
+    per_day_scores,
+    resolve_result_paths,
+    write_per_day_scores,
+)
 from weavr.splits import (  # noqa: E402
     InsufficientTimeBlocksError,
     iter_evaluation_folds,
@@ -275,11 +281,31 @@ def main() -> int:
     )
     parser.add_argument("--store", default=None, help="Legacy single store path")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
-    parser.add_argument("--out-csv", default="results/tier0_baseline.csv")
-    parser.add_argument("--results-dir", default="results")
+    parser.add_argument(
+        "--results-dir",
+        default="results",
+        help="Directory for the per-day files, and the default parent for the output CSV(s).",
+    )
+    parser.add_argument(
+        "--out-csv",
+        default=None,
+        help="Aggregated CSV path (default: <results-dir>/tier0_baseline.csv)",
+    )
+    parser.add_argument("--force", action="store_true", help=FORCE_HELP)
     parser.add_argument("--test-fraction", type=float, default=0.2)
     parser.add_argument("--neighborhood-size", type=int, default=NEIGHBORHOOD_SIZE)
     args = parser.parse_args()
+    _paths = resolve_result_paths(
+        args.results_dir,
+        {
+            "out_csv": "tier0_baseline.csv",
+        },
+        {
+            "out_csv": args.out_csv,
+        },
+    )
+    args.out_csv = _paths["out_csv"]
+    guard_result_overwrites(_paths.values(), force=args.force)
 
     store_paths = resolve_store_paths(
         specified_paths=args.baseline_stores,

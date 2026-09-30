@@ -65,7 +65,13 @@ from run_tier1_regional_baseline import load_aligned_forecasts_and_obs  # noqa: 
 
 from weavr import verify as V  # noqa: E402
 from weavr.climatology import climatological_ensemble  # noqa: E402
-from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
+from weavr.score_io import (  # noqa: E402
+    FORCE_HELP,
+    guard_result_overwrites,
+    per_day_scores,
+    resolve_result_paths,
+    write_per_day_scores,
+)
 from weavr.splits import iter_evaluation_folds  # noqa: E402
 from weavr.stores import (  # noqa: E402
     open_multi_season,
@@ -306,11 +312,31 @@ def main() -> int:
     )
     parser.add_argument("--store", default=None, help="Legacy single store path")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
-    parser.add_argument("--out-csv", default="results/single_source_baseline.csv")
-    parser.add_argument("--results-dir", default="results")
+    parser.add_argument(
+        "--results-dir",
+        default="results",
+        help="Directory for the per-day files, and the default parent for the output CSV(s).",
+    )
+    parser.add_argument(
+        "--out-csv",
+        default=None,
+        help="Aggregated CSV path (default: <results-dir>/single_source_baseline.csv)",
+    )
+    parser.add_argument("--force", action="store_true", help=FORCE_HELP)
     parser.add_argument("--test-fraction", type=float, default=0.2)
     parser.add_argument("--neighborhood-size", type=int, default=NEIGHBORHOOD_SIZE)
     args = parser.parse_args()
+    _paths = resolve_result_paths(
+        args.results_dir,
+        {
+            "out_csv": "single_source_baseline.csv",
+        },
+        {
+            "out_csv": args.out_csv,
+        },
+    )
+    args.out_csv = _paths["out_csv"]
+    guard_result_overwrites(_paths.values(), force=args.force)
 
     baseline_paths = resolve_store_paths(args.baseline_stores, args.store)
     sources = {

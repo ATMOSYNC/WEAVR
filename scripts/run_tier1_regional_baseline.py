@@ -92,7 +92,13 @@ from run_tier0_baseline import PRECIP_M_TO_MM, _align_to_imd_day  # noqa: E402
 
 from weavr import verify as V  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
-from weavr.score_io import per_day_scores, write_per_day_scores  # noqa: E402
+from weavr.score_io import (  # noqa: E402
+    FORCE_HELP,
+    guard_result_overwrites,
+    per_day_scores,
+    resolve_result_paths,
+    write_per_day_scores,
+)
 from weavr.splits import (  # noqa: E402
     iter_evaluation_folds,
 )
@@ -244,13 +250,47 @@ def main() -> int:
     parser.add_argument("--baseline-store", default=None, help="Legacy single baseline store path")
     parser.add_argument("--store", default=None, help="Legacy single store path")
     parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
-    parser.add_argument("--out-csv", default="results/tier1_regional_baseline.csv")
-    parser.add_argument("--results-dir", default="results")
-    parser.add_argument("--region-out-csv", default="results/tier1_regional_baseline_by_region.csv")
-    parser.add_argument("--weights-out-csv", default="results/tier1_regional_weights.csv")
+    parser.add_argument(
+        "--results-dir",
+        default="results",
+        help="Directory for the per-day files, and the default parent for the output CSV(s).",
+    )
+    parser.add_argument(
+        "--out-csv",
+        default=None,
+        help="Aggregated CSV path (default: <results-dir>/tier1_regional_baseline.csv)",
+    )
+    parser.add_argument(
+        "--region-out-csv",
+        default=None,
+        help="Per-region CSV path (default: <results-dir>/..._by_region.csv)",
+    )
+    parser.add_argument(
+        "--weights-out-csv",
+        default=None,
+        help="Fitted-weights CSV path (default: <results-dir>/tier1_regional_weights.csv)",
+    )
+    parser.add_argument("--force", action="store_true", help=FORCE_HELP)
     parser.add_argument("--test-fraction", type=float, default=0.2)
     parser.add_argument("--neighborhood-size", type=int, default=NEIGHBORHOOD_SIZE)
     args = parser.parse_args()
+    _paths = resolve_result_paths(
+        args.results_dir,
+        {
+            "out_csv": "tier1_regional_baseline.csv",
+            "region_out_csv": "tier1_regional_baseline_by_region.csv",
+            "weights_out_csv": "tier1_regional_weights.csv",
+        },
+        {
+            "out_csv": args.out_csv,
+            "region_out_csv": args.region_out_csv,
+            "weights_out_csv": args.weights_out_csv,
+        },
+    )
+    args.out_csv = _paths["out_csv"]
+    args.region_out_csv = _paths["region_out_csv"]
+    args.weights_out_csv = _paths["weights_out_csv"]
+    guard_result_overwrites(_paths.values(), force=args.force)
 
     legacy_path = args.baseline_store if args.baseline_store is not None else args.store
     baseline_paths = resolve_store_paths(
