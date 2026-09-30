@@ -61,6 +61,7 @@ from weavr.independence import (  # noqa: E402
     participation_ratio,
 )
 from weavr.regions import assign_regions  # noqa: E402
+from weavr.score_io import FORCE_HELP, guard_result_overwrites, resolve_result_paths
 from weavr.splits import iter_evaluation_folds  # noqa: E402
 from weavr.stores import (  # noqa: E402
     DEFAULT_BASELINE_DAILY_STORES,
@@ -103,9 +104,30 @@ def main() -> int:
     )
     parser.add_argument("--baseline-store", default=None, help="Legacy single baseline store path")
     parser.add_argument("--store", default=None, help="Legacy single store path")
-    parser.add_argument("--out-csv", default="results/independence_diagnostic.csv")
+    parser.add_argument(
+        "--results-dir",
+        default="results",
+        help="Directory for the per-day files, and the default parent for the output CSV(s).",
+    )
+    parser.add_argument(
+        "--out-csv",
+        default=None,
+        help="Aggregated CSV path (default: <results-dir>/independence_diagnostic.csv)",
+    )
+    parser.add_argument("--force", action="store_true", help=FORCE_HELP)
     parser.add_argument("--test-fraction", type=float, default=0.2)
     args = parser.parse_args()
+    _paths = resolve_result_paths(
+        args.results_dir,
+        {
+            "out_csv": "independence_diagnostic.csv",
+        },
+        {
+            "out_csv": args.out_csv,
+        },
+    )
+    args.out_csv = _paths["out_csv"]
+    guard_result_overwrites(_paths.values(), force=args.force)
 
     baseline_stores = resolve_store_paths(
         args.baseline_stores or args.baseline_store or args.store or DEFAULT_BASELINE_DAILY_STORES

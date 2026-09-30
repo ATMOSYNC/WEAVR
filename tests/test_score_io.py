@@ -1,10 +1,18 @@
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 
 from weavr import verify as V
-from weavr.score_io import per_day_scores, read_per_day_scores, write_per_day_scores
+from weavr.score_io import (
+    guard_result_overwrites,
+    per_day_scores,
+    read_per_day_scores,
+    resolve_result_paths,
+    write_per_day_scores,
+)
 
 
 def _forecast_and_obs(n_days=6, n_lat=4, n_lon=5, seed=0):
@@ -200,3 +208,80 @@ class TestWriteAndReadPerDayScores:
         forecast, obs = _forecast_and_obs()
         with pytest.raises(ValueError, match="non-empty"):
             write_per_day_scores("", 24, per_day_scores(forecast, obs), out_dir=tmp_path)
+
+
+class TestResolveResultPaths:
+    """Every result CSV must follow --results-dir, not hardcode 'results/'.
+
+    The bug these lock down: each output flag used to default to its own
+    literal "results/..." path, so redirecting --out-csv and --results-dir to
+    a scratch directory still wrote the per-bin and per-region CSVs over the
+    committed results.
+    """
+
+    FILENAMES = {
+        "out_csv": "tier2_hierarchical_baseline.csv",
+        "bin_out_csv": "tier2_hierarchical_baseline_by_bin.csv",
+        "region_out_csv": "tier2_hierarchical_baseline_by_region.csv",
+    }
+
+    def test_every_output_lands_in_the_given_directory(self, tmp_path):
+        paths = resolve_result_paths(tmp_path, self.FILENAMES)
+        assert set(paths) == set(self.FILENAMES)
+        for dest, path in paths.items():
+            assert Path(path).parent == tmp_path, dest
+            assert Path(path).name == self.FILENAMES[dest]
+
+    def test_an_explicit_path_wins_and_others_still_follow_results_dir(self, tmp_path):
+        elsewhere = tmp_path / "elsewhere" / "custom.csv"
+        paths = resolve_result_paths(
+            tmp_path,
+            self.FILENAMES,
+            {"bin_out_csv": str(elsewhere), "out_csv": None},
+        )
+        assert paths["bin_out_csv"] == str(elsewhere)
+        assert Path(paths["out_csv"]).parent == tmp_path
+        assert Path(paths["region_out_csv"]).parent == tmp_path
+
+    def test_nothing_resolves_under_a_bare_results_string(self, tmp_path):
+        paths = resolve_result_paths(tmp_path, self.FILENAMES)
+        assert not any(p.startswith("results/") for p in paths.values())
+
+
+class TestGuardResultOverwrites:
+    def test_is_silent_when_no_output_exists(self, tmp_path):
+        guard_result_overwrites(
+            [tmp_path / "a.csv", tmp_path / "nested" / "b.csv"]
+        )
+
+    def test_refuses_to_replace_an_existing_file(self, tmp_path):
+        existing = tmp_path / "committed.csv"
+        existing.write_text("reviewed numbers")
+        with pytest.raises(SystemExit) as excinfo:
+            guard_result_overwrites([existing, tmp_path / "absent.csv"])
+        message = str(excinfo.value)
+        assert "committed.csv" in message
+        assert "--force" in message
+
+    def test_names_every_offending_file(self, tmp_path):
+        first, second = tmp_path / "a.csv", tmp_path / "b.csv"
+        first.write_text("x")
+        second.write_text("y")
+        with pytest.raises(SystemExit) as excinfo:
+            guard_result_overwrites([first, second, tmp_path / "absent.csv"])
+        assert str(first) in str(excinfo.value)
+        assert str(second) in str(excinfo.value)
+        assert "absent.csv" not in str(excinfo.value)
+
+    def test_force_allows_an_intentional_replacement(self, tmp_path):
+        existing = tmp_path / "committed.csv"
+        existing.write_text("reviewed numbers")
+        guard_result_overwrites([existing], force=True)
+        assert existing.read_text() == "reviewed numbers"
+
+    def test_guard_never_deletes_or_truncates_what_it_protects(self, tmp_path):
+        existing = tmp_path / "committed.csv"
+        existing.write_text("reviewed numbers")
+        with pytest.raises(SystemExit):
+            guard_result_overwrites([existing])
+        assert existing.read_text() == "reviewed numbers"

@@ -42,6 +42,14 @@ from weavr import verify as V
 PER_DAY_SUBDIR = "per_day"
 SPATIAL_DIMS = ("latitude", "longitude")
 
+# Shared --force help so every scoring script offers the same escape hatch from
+# guard_result_overwrites in the same words.
+FORCE_HELP = (
+    "Overwrite existing result CSVs. Without this the script refuses to "
+    "replace a file that already exists, so a scratch run cannot silently "
+    "clobber the committed results."
+)
+
 
 def _spatial_mean(values: xr.DataArray, dims: Sequence[str]) -> np.ndarray:
     present = [d for d in dims if d in values.dims]
@@ -154,6 +162,65 @@ def write_per_day_scores(
     path = directory / f"{method}__lead{lead}.csv"
     per_day.to_csv(path, index=False)
     return path
+
+
+def resolve_result_paths(
+    results_dir: str | Path,
+    filenames: Mapping[str, str],
+    overrides: Mapping[str, str | None] | None = None,
+) -> dict[str, str]:
+    """Place every result CSV in one directory unless told otherwise.
+
+    `filenames` maps an argparse dest to the filename it defaults to, so all
+    of a script's outputs share the single `--results-dir` the caller chose.
+
+    Scripts used to hardcode `"results/..."` as each argparse default,
+    independently of one another. That made `--out-csv`/`--results-dir`
+    unreliable: pointing them at a scratch directory redirected the main CSV
+    and the per-day files, but the per-bin and per-region CSVs still resolved
+    to `results/` and overwrote the committed, reviewed numbers in place. A
+    silent wrong-number bug, which is worse than a crash.
+
+    An explicit path in `overrides` still wins, so a caller can scatter
+    outputs if it genuinely needs to.
+    """
+    directory = Path(results_dir)
+    resolved = {
+        dest: str(directory / name) for dest, name in filenames.items()
+    }
+    for dest, override in (overrides or {}).items():
+        if override:
+            resolved[dest] = str(override)
+    return resolved
+
+
+def guard_result_overwrites(
+    paths: Sequence[str | Path],
+    force: bool = False,
+) -> None:
+    """Refuse to replace existing result CSVs unless `force` is set.
+
+    `results/` holds committed, reviewed numbers. Overwriting them with a
+    differently-scoped run -- a single-season one, or a partial one that
+    fails halfway -- is the silent-wrong-number failure this project cares
+    about, so it raises `SystemExit` rather than warning.
+
+    `SystemExit` (not `ValueError`) because the intended response is "the
+    operator picks different paths or passes `--force`", which is what an
+    uncaught `SystemExit` in a script produces: a non-zero exit and a message.
+    """
+    if force:
+        return
+    existing = [str(p) for p in paths if Path(p).exists()]
+    if not existing:
+        return
+    listed = "\n  ".join(existing)
+    raise SystemExit(
+        f"Refusing to overwrite existing result file(s):\n  {listed}\n"
+        "These paths hold committed results. Write somewhere else "
+        "(--results-dir, or the per-file output flags), or pass --force if "
+        "replacing them is genuinely intended."
+    )
 
 
 def read_per_day_scores(out_dir: str | Path = "results") -> pd.DataFrame:
