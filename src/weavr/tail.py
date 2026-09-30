@@ -265,6 +265,24 @@ def nearest_fittable_bin(
     return None
 
 
+def _select_region(
+    region: str | np.ndarray, mask: np.ndarray, shape: tuple[int, ...]
+) -> str | np.ndarray:
+    """Pull the region labels belonging to `mask`, broadcasting a spatial grid.
+
+    `region` is normally a `(latitude, longitude)` grid while `mask` comes from
+    `f_arr`, which for a time series is `(sample, latitude, longitude)` -- two
+    orders of magnitude more entries. Masking the grid directly with that mask
+    raised `IndexError` on the first real multi-sample call, so the grid is
+    broadcast over sample first. A caller-supplied region that already matches
+    `mask` is passed through untouched.
+    """
+    if not isinstance(region, np.ndarray):
+        return region
+    reg = region if region.shape == shape else np.broadcast_to(region, shape)
+    return reg[mask]
+
+
 def exceedance_probability_with_tail(
     forecast_values: xr.DataArray | np.ndarray,
     ensemble_mean: xr.DataArray | np.ndarray,
@@ -334,7 +352,7 @@ def exceedance_probability_with_tail(
                 std_b = s_arr[mask]
                 pred_m, pred_s, pred_shift = predict_csgd_params(nearest_res, mean_b, std_b)
                 p_u = exceedance_probability_csgd(pred_m, pred_s, pred_shift, u)
-                reg_sub = region[mask] if isinstance(region, np.ndarray) else region
+                reg_sub = _select_region(region, mask, f_arr.shape)
                 p_tail = spliced_exceedance_probability(
                     p_exceed_u=np.asarray(p_u, dtype=float),
                     tail_fit=tail_fit,
