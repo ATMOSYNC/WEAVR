@@ -282,7 +282,11 @@ def main() -> int:
     }
     obs = open_multi_season(baseline_paths, group="imd_observed").load()
     climatology = load_climatology(args.climatology).load()
-    climatology_rain = climatology["rain"].mean(dim="time")
+    # The full climatological distribution, not its spatial mean: a quantile
+    # map is fitted by pairing forecast and reference samples, so collapsing
+    # ~1830 IMD JJAS days to one value per cell would leave every reference
+    # sample identical and make the fitted map degenerate.
+    climatology_rain = climatology["rain"]
     region_labels = assign_regions(obs["latitude"].values, obs["longitude"].values)
     region_names = sorted(np.unique(region_labels.values).tolist())
 
@@ -482,6 +486,17 @@ def main() -> int:
             def sig(ci) -> bool:
                 return bool(np.isfinite(ci.ci_lo) and np.isfinite(ci.ci_hi) and ci.ci_hi < 0.0)
 
+            def excludes_zero(ci) -> bool:
+                # Direction-agnostic: for a cost metric like RMSE the question
+                # is whether the CI clears zero at all, not which side it lands
+                # on. Reusing `sig` here would report a CI of [+3.76, +4.51] as
+                # "not significant" purely because it is an increase.
+                return bool(
+                    np.isfinite(ci.ci_lo)
+                    and np.isfinite(ci.ci_hi)
+                    and (ci.ci_hi < 0.0 or ci.ci_lo > 0.0)
+                )
+
             tw_improved = sig(tw_ci)
             sedi_improved = sig(sedi_ci)
             brier_worse = bool(np.isfinite(brier_ci.ci_lo) and brier_ci.ci_lo > 0.0)
@@ -495,7 +510,10 @@ def main() -> int:
                     "rmse_delta_mm": rmse_ci.estimate,
                     "rmse_ci_lo": rmse_ci.ci_lo,
                     "rmse_ci_hi": rmse_ci.ci_hi,
-                    "rmse_significant": sig(rmse_ci),
+                    "rmse_significant": excludes_zero(rmse_ci),
+                    "rmse_worse": bool(
+                        np.isfinite(rmse_ci.ci_lo) and rmse_ci.ci_lo > 0.0
+                    ),
                     "twcrps_64.5_delta": tw_ci.estimate,
                     "twcrps_64.5_ci_lo": tw_ci.ci_lo,
                     "twcrps_64.5_ci_hi": tw_ci.ci_hi,
