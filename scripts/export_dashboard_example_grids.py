@@ -129,8 +129,46 @@ def _weight_results_from_csv(
     }
 
 
+def latest_complete_sample_index(forecasts: dict[str, xr.DataArray]) -> int:
+    """Index of the last sample on which *every* forecast source has data.
+
+    The display snapshot cannot simply be `sample=-1`. The weekly IFS-ENS store
+    holds 18 initialisations, while the daily baseline/lagged stores hold 122,
+    so `align_all_sources` outer-joins onto 122 samples and leaves 104 of them
+    entirely NaN for IFS-ENS. Taking `sample=-1` therefore selects a timestep
+    where IFS-ENS is all-NaN: the blend silently loses one of its three inputs,
+    and `build_example_probability_grids` -- which is driven by IFS-ENS alone --
+    gets an empty array, so every cell is classified "fallback" with probability
+    0 and the extreme-probability map comes out uniformly grey.
+
+    Returns the largest index present in every source. Raises rather than
+    falling back to a partial timestep: a grid that looks real but is built
+    from missing data is the worst outcome here.
+    """
+    n_samples = min(int(ds.sizes["sample"]) for ds in forecasts.values())
+
+    def has_data(index: int) -> bool:
+        for ds in forecasts.values():
+            arr = ds.isel(sample=index)
+            if "member" in arr.dims:
+                arr = arr.mean(dim="member", skipna=True)
+            if not np.isfinite(np.asarray(arr.values, dtype=float)).any():
+                return False
+        return True
+
+    for index in range(n_samples - 1, -1, -1):
+        if has_data(index):
+            return index
+
+    raise ValueError(
+        "no sample on which every forecast source has data: the provided stores "
+        "have no initialisation in common, so no example grid can be built"
+    )
+
+
 def build_example_blend_grid(store_path: str, weights_csv: str, lead_hours: int) -> xr.DataArray:
-    """The real Tier 1 blend, for one lead time, at the most recent real sample."""
+    """The real Tier 1 blend, for one lead time, at the most recent sample on
+    which every source has data (see `latest_complete_sample_index`)."""
     sources = {
         name: xr.open_zarr(store_path, group=name, consolidated=True)
         for name in FORECAST_SOURCE_NAMES
@@ -147,7 +185,7 @@ def build_example_blend_grid(store_path: str, weights_csv: str, lead_hours: int)
     weight_grids = build_region_weight_grid(weight_results, region_labels, FORECAST_SOURCE_NAMES)
 
     blend = blend_with_region_weights(forecasts, weight_grids)
-    return blend.isel(sample=-1)
+    return blend.isel(sample=latest_complete_sample_index(forecasts))
 
 
 def _collect_exceedances_by_region(
@@ -224,16 +262,25 @@ def build_example_probability_grids(
         forecasts["ifs_ens"], obs_aligned, rain_bin_labels, all_train_mask, source="ifs_ens"
     )
 
-    ifs_mean_sample = forecasts["ifs_ens"].mean(dim="member", skipna=True).isel(sample=-1)
+    ifs_mean_all = forecasts["ifs_ens"].mean(dim="member", skipna=True)
+    # Not `sample=-1`: the weekly IFS-ENS store covers 18 of the 122 aligned
+    # samples, so the last one is all-NaN (see latest_complete_sample_index).
+    display_index = latest_complete_sample_index(forecasts)
+    ifs_mean_sample = ifs_mean_all.isel(sample=display_index)
     ifs_spread_sample = forecasts["ifs_ens"].std(dim="member", ddof=1, skipna=True).isel(
-        sample=-1
+        sample=display_index
     )
 
     # Region labels for each gridpoint (shape: lat x lon).
+    # assign_regions already returns a (latitude, longitude) DataArray, so the
+    # meshgrid/ravel/reshape round-trip this used to do was both redundant and
+    # broken: xr.DataArray has no .reshape(). The consumers below
+    # (_collect_exceedances_by_region masks a numpy array with it, and
+    # weavr.tail.exceedance_probability_with_tail indexes it as np.ndarray)
+    # want a plain numpy array.
     lat_vals = ifs_mean_sample["latitude"].values
     lon_vals = ifs_mean_sample["longitude"].values
-    lat_grid, lon_grid = np.meshgrid(lat_vals, lon_vals, indexing="ij")
-    region_labels = assign_regions(lat_grid.ravel(), lon_grid.ravel()).reshape(lat_grid.shape)
+    region_labels = np.asarray(assign_regions(lat_vals, lon_vals).values)
 
     # Fit pooled GPD on all available IMD observations.
     precip_var = next(
@@ -320,8 +367,14 @@ def main() -> int:
             probability_arrays[f"is_fallback_{slug}_lead_{lead_hours}"] = np.asarray(
                 probability_grid[f"is_fallback_{slug}"]
             )
+            # Cast to a fixed-width unicode dtype rather than leaving the
+            # labels as an object array: `np.save` can only read object arrays
+            # back with `allow_pickle=True`, and the dashboard loader (like
+            # `np.load`'s default) does not pass that, so an object-dtype
+            # `method_*` array makes `load_probability_grid` raise
+            # "Object arrays cannot be loaded" for *every* threshold.
             probability_arrays[f"method_{slug}_lead_{lead_hours}"] = np.asarray(
-                probability_grid[f"method_{slug}"]
+                probability_grid[f"method_{slug}"], dtype=str
             )
         # Backward-compatible legacy keys: point to the 204.5 mm results so that
         # existing code reading probability_lead_N / is_fallback_lead_N still works.
