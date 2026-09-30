@@ -179,10 +179,16 @@ def pooled_categorical(frame: pd.DataFrame, threshold: float, score: str) -> flo
     `csi` needs the first three count columns, `sedi` all four. The scorecard's
     own `_bootstrap_categorical_difference` slices the same way (`n_args = 3 if
     score == "csi" else 4`) -- keeping that convention is what lets the point
-    estimate here and the bootstrap replicates inside it agree.
+    estimate here and the bootstrap replicates inside it agree. The wrong
+    arity is rejected explicitly rather than allowed to raise a bare
+    TypeError from inside the scoring library.
     """
-    fn = _pooled_csi if score == "csi" else _pooled_sedi
-    n_args = 3 if score == "csi" else 4
+    if score == "csi":
+        fn, n_args = _pooled_csi, 3
+    elif score == "sedi":
+        fn, n_args = _pooled_sedi, 4
+    else:
+        raise ValueError(f"Unsupported categorical score: {score!r} (expected 'csi' or 'sedi')")
     counts = _categorical_from_counts(frame, threshold, score)[:n_args]
     return fn(*[float(np.sum(c)) for c in counts])
 
@@ -213,7 +219,12 @@ def deterministic_per_day(
     return frame.drop(columns=[c for c in frame.columns if c == "crps_mm"])
 
 
-def main() -> int:
+def parse_args(args: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments.
+
+    Split out of `main` so the argument surface can be tested directly --
+    `tests/test_run_tail_repair_qm.py` imports this by name.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--baseline-stores",
@@ -243,7 +254,11 @@ def main() -> int:
         default=VARIANTS,
         help="Reference variant(s) to evaluate (default: both)",
     )
-    args = parser.parse_args()
+    return parser.parse_args(args)
+
+
+def main() -> int:
+    args = parse_args()
 
     _paths = resolve_result_paths(
         args.results_dir,
