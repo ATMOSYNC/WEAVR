@@ -259,3 +259,77 @@ def test_exceedance_probability_with_tail() -> None:
     # For heavy forecast at threshold 115.6 (> u=64.5), method uses GPD tail
     assert methods[1] == "csgd+gpd_tail"
 
+
+
+def test_exceedance_probability_with_tail_broadcasts_spatial_region() -> None:
+    """A (lat, lon) region grid must work against (sample, lat, lon) forecasts.
+
+    The pipeline evaluates whole multi-season time series at once, so the GPD
+    branch indexes a 2-D region grid with a 3-D mask. Masking the grid directly
+    raised IndexError on the first real Step 12 run; this pins the broadcast.
+    """
+    fit = TailFit(
+        threshold_u=64.5,
+        shape_xi=0.15,
+        scale_by_region={"WC": 20.0, "CI": 15.0},
+    )
+    emos_by_bin = {
+        "light": CensoredShiftedGammaResult(
+            bin_label="light",
+            source="graphcast",
+            shift=1.0,
+            climatological_mean=10.0,
+            climatological_std=5.0,
+            coefficients={"a1": 1.0, "a2": 0.5, "a3": 1.0, "a4": 0.5},
+            is_fallback=False,
+        ),
+        "extremely_heavy": CensoredShiftedGammaResult(
+            bin_label="extremely_heavy",
+            source="graphcast",
+            shift=0.0,
+            climatological_mean=0.0,
+            climatological_std=0.0,
+            coefficients={},
+            is_fallback=True,
+        ),
+    }
+
+    # (sample, latitude, longitude); one extreme cell per sample.
+    f_vals = np.array(
+        [
+            [[20.0, 220.0], [80.0, 30.0]],
+            [[210.0, 20.0], [90.0, 20.0]],
+        ]
+    )
+    m_vals = np.array(
+        [
+            [[18.0, 210.0], [75.0, 28.0]],
+            [[205.0, 18.0], [85.0, 18.0]],
+        ]
+    )
+    s_vals = np.array(
+        [
+            [[5.0, 30.0], [15.0, 6.0]],
+            [[28.0, 5.0], [14.0, 5.0]],
+        ]
+    )
+    regions = np.array([["WC", "CI"], ["WC", "WC"]])  # (latitude, longitude)
+
+    probs, methods = exceedance_probability_with_tail(
+        f_vals, m_vals, s_vals, emos_by_bin, fit, regions, threshold=115.6
+    )
+
+    assert probs.shape == f_vals.shape
+    assert set(np.unique(methods)) <= {"csgd", "csgd+gpd_tail", "fallback"}
+
+    # The extreme cells fall back to the nearest fittable bin plus the GPD tail,
+    # and each region's own scale must reach the probability.
+    extreme = [(0, 0, 1), (0, 1, 0), (1, 0, 0)]
+    for idx in extreme:
+        assert methods[idx] == "csgd+gpd_tail", f"{idx} used {methods[idx]}"
+        assert probs[idx] > 0.0
+
+    # CI has the smaller scale, so the same tail is less likely there.
+    ci = probs[0, 0, 1]
+    wc = probs[0, 1, 0]
+    assert ci != wc
