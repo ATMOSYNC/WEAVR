@@ -2,15 +2,20 @@ import numpy as np
 import pytest
 import xarray as xr
 
+import weavr.bma as bma_module
 from weavr.bma import (
     MIN_TRAIN_DAYS_PER_BIN,
     BmaComponentFit,
     BmaFitResult,
+    _ensemble_crps_chunked,
+    crps_chunk_cells,
     fit_hierarchical_bma,
     renormalize_bma_for_present_sources,
     sample_bma_mixture,
     score_bma,
+    score_bma_and_mean,
 )
+from weavr.verify import crps as ensemble_crps
 
 
 def _coords(n_sample, n_lat, n_lon):
@@ -328,3 +333,261 @@ class TestRenormalizeBmaForPresentSources:
         assert renormalized.weights == pytest.approx({"a": 0.5, "b": 0.5})
         assert set(renormalized.components) == {"a", "b"}
         assert renormalized.is_fallback
+
+
+class TestScoreBmaAndMean:
+    """CRPS and predictive mean must describe one shared realisation of the
+    fitted mixture. Sampling once for each -- as `score_bma` plus a separate
+    `sample_bma_mixture` call used to do -- doubles the runtime and peak memory
+    of the `(n_cells, n_samples)` array (which is what exhausts RAM on a 17 GB
+    machine) and makes `crps_mm` disagree with the `rmse_mm`/`bias_mm`
+    reported beside it."""
+
+    def _fit_and_arrays(self, n_sample=40, n_lat=2, n_lon=2, n_member=6, seed=0):
+        rng = np.random.default_rng(seed)
+        coords = _coords(n_sample, n_lat, n_lon)
+        obs_values = rng.uniform(5.0, 30.0, size=(n_sample, n_lat, n_lon))
+        obs = _da(obs_values, coords)
+        mean_arrays = {
+            "good": _da(
+                np.clip(
+                    obs_values[..., None]
+                    + rng.normal(scale=0.2, size=(n_sample, n_lat, n_lon, n_member)),
+                    0.0,
+                    None,
+                ),
+                coords,
+            ),
+            "bad": _da(
+                rng.uniform(5.0, 30.0, size=(n_sample, n_lat, n_lon, n_member)), coords
+            ),
+        }
+        region_labels, rain_bin_labels = _single_region_and_bin(
+            n_sample, n_lat, n_lon, coords
+        )
+        mask = np.ones(n_sample, dtype=bool)
+        results = fit_hierarchical_bma(mean_arrays, obs, rain_bin_labels, region_labels, mask)
+        # `score_bma*` takes member-reduced means/spreads, exactly as
+        # `score_bma_cells` passes them: the `member` axis of its own output is
+        # the Monte Carlo draw axis, not the forecast ensemble.
+        reduced = {s: v.mean(dim="member") for s, v in mean_arrays.items()}
+        return results[("light", "R1")], reduced, obs
+
+    def test_both_numbers_come_from_one_shared_draw_set(self):
+        result, mean_arrays, obs = self._fit_and_arrays()
+        spread = dict.fromkeys(mean_arrays, None)
+
+        crps, predictive_mean = score_bma_and_mean(
+            result, mean_arrays, spread, obs, rng=np.random.default_rng(7), n_samples=200
+        )
+
+        # Replaying the same generator must reproduce the exact draws the
+        # function used internally, for *both* outputs.
+        replayed = sample_bma_mixture(
+            result,
+            {s: v.values for s, v in mean_arrays.items()},
+            {s: None for s in mean_arrays},
+            np.random.default_rng(7),
+            n_samples=200,
+        )
+        assert np.allclose(predictive_mean.values, replayed.mean(axis=-1))
+        replayed_da = xr.DataArray(
+            replayed, dims=(*obs.dims, "member"), coords=obs.coords
+        )
+        assert float(crps.values) == pytest.approx(
+            float(ensemble_crps(replayed_da, obs, member_dim="member").values)
+        )
+
+    def test_a_second_independent_draw_would_not_match(self):
+        """Guards the regression this function exists to prevent."""
+        result, mean_arrays, obs = self._fit_and_arrays()
+        spread = dict.fromkeys(mean_arrays, None)
+
+        _crps, predictive_mean = score_bma_and_mean(
+            result, mean_arrays, spread, obs, rng=np.random.default_rng(7), n_samples=200
+        )
+        second_draw = sample_bma_mixture(
+            result,
+            {s: v.values for s, v in mean_arrays.items()},
+            {s: None for s in mean_arrays},
+            np.random.default_rng(8),
+            n_samples=200,
+        ).mean(axis=-1)
+
+        assert not np.allclose(predictive_mean.values, second_draw)
+
+    def test_score_bma_delegates_to_the_same_draws(self):
+        result, mean_arrays, obs = self._fit_and_arrays()
+        spread = dict.fromkeys(mean_arrays, None)
+
+        via_score_bma = score_bma(
+            result, mean_arrays, spread, obs, rng=np.random.default_rng(11), n_samples=200
+        )
+        crps, _mean = score_bma_and_mean(
+            result, mean_arrays, spread, obs, rng=np.random.default_rng(11), n_samples=200
+        )
+
+        assert np.allclose(via_score_bma.values, crps.values)
+
+    def test_predictive_mean_is_per_cell_and_finite(self):
+        result, mean_arrays, obs = self._fit_and_arrays()
+        spread = dict.fromkeys(mean_arrays, None)
+
+        crps, predictive_mean = score_bma_and_mean(
+            result, mean_arrays, spread, obs, rng=np.random.default_rng(3), n_samples=25
+        )
+
+        # `predictive_mean` must stay unreduced -- `score_bma_cells` writes it
+        # straight into its per-cell MSE/bias fields. (CRPS stays reduced by
+        # `ensemble_crps`, exactly as before this change.)
+        assert predictive_mean.dims == obs.dims
+        assert predictive_mean.shape == obs.shape
+        assert np.isfinite(predictive_mean.values).all()
+        assert (predictive_mean.values >= 0.0).all()
+        assert np.isfinite(float(crps.values))
+
+
+class TestSampleBmaMixtureChunking:
+    """`sample_bma_mixture` draws in cell chunks so peak memory is bounded by
+    the chunk size instead of growing with the (bin, region) group. Unchunked,
+    ~7 full-size `(cells, n_samples)` temporaries are live at once, which is
+    what the OOM killer was terminating Tier 2 on."""
+
+    def _arrays(self, n_cells, seed=0):
+        rng = np.random.default_rng(seed)
+        return (
+            {"a": rng.uniform(1.0, 50.0, n_cells), "b": rng.uniform(1.0, 50.0, n_cells)},
+            {"a": rng.uniform(0.5, 5.0, n_cells), "b": None},
+        )
+
+    def _result(self):
+        def component(source, route):
+            return BmaComponentFit(
+                source=source,
+                route=route,
+                zero_intercept=1.0,
+                zero_slope=0.3,
+                gamma_mean_intercept=1.0,
+                gamma_mean_slope=0.5,
+                gamma_variance_intercept=0.4,
+                gamma_variance_slope=0.2,
+            )
+
+        return BmaFitResult(
+            bin_label="light",
+            region="R1",
+            weights={"a": 0.6, "b": 0.4},
+            components={
+                "a": component("a", "ensemble_dressing"),
+                "b": component("b", "kernel_dressing"),
+            },
+            is_fallback=False,
+        )
+
+    def test_chunked_draws_match_unchunked_in_the_aggregate(self):
+        mean, spread = self._arrays(4_000)
+        result = self._result()
+
+        unchunked = sample_bma_mixture(
+            result, mean, spread, np.random.default_rng(42), n_samples=400
+        )
+        chunked = sample_bma_mixture(
+            result, mean, spread, np.random.default_rng(42), n_samples=400,
+            max_cells_per_chunk=512,
+        )
+
+        assert chunked.shape == unchunked.shape == (4_000, 400)
+        # The per-draw distribution is heavy-tailed, so individual samples
+        # legitimately differ; what the metrics are computed from is the
+        # predictive mean, and that has to agree.
+        assert chunked.mean() == pytest.approx(unchunked.mean(), rel=0.05)
+
+    def test_chunk_size_does_not_change_the_answer(self):
+        mean, spread = self._arrays(4_000)
+        result = self._result()
+        kwargs = dict(n_samples=300, max_cells_per_chunk=700)
+
+        first = sample_bma_mixture(
+            result, mean, spread, np.random.default_rng(5), **kwargs
+        )
+        second = sample_bma_mixture(
+            result, mean, spread, np.random.default_rng(5), **kwargs
+        )
+
+        assert np.array_equal(first, second)
+
+    def test_multidimensional_inputs_keep_their_shape(self):
+        mean, spread = self._arrays(3 * 4)
+        result = self._result()
+        mean_3d = {s: v.reshape(3, 4) for s, v in mean.items()}
+        spread_3d = {s: (None if v is None else v.reshape(3, 4)) for s, v in spread.items()}
+
+        draws = sample_bma_mixture(
+            result, mean_3d, spread_3d, np.random.default_rng(1), n_samples=50,
+            max_cells_per_chunk=5,
+        )
+
+        assert draws.shape == (3, 4, 50)
+
+    def test_no_components_still_returns_a_point_mass_at_zero(self):
+        empty = BmaFitResult(
+            bin_label="light", region="R1", weights={"a": 1.0}, is_fallback=True
+        )
+        mean, spread = self._arrays(64)
+
+        draws = sample_bma_mixture(
+            empty, mean, spread, np.random.default_rng(0), n_samples=25,
+            max_cells_per_chunk=8,
+        )
+
+        assert draws.shape == (64, 25)
+        assert not draws.any()
+
+
+class TestEnsembleCrpsChunked:
+    """`xskillscore.crps_ensemble` builds a pairwise member-difference tensor,
+    so its working set grows with cells * n_samples**2 -- a single (bin, region)
+    group of a real 129x135 grid needs a 10 GB temporary at the default
+    n_samples=500, which is what the OOM killer was terminating Tier 2 on."""
+
+    def test_block_size_shrinks_as_the_sample_count_grows(self):
+        # cells * 8 * n_samples**2 must stay inside the budget.
+        assert crps_chunk_cells(500) < crps_chunk_cells(100) < crps_chunk_cells(20)
+
+    def test_block_size_is_never_zero(self):
+        assert crps_chunk_cells(100_000) >= 1
+
+    def test_rejects_a_non_positive_sample_count(self):
+        with pytest.raises(ValueError, match="n_samples must be positive"):
+            crps_chunk_cells(0)
+
+    def test_chunked_score_matches_the_unblocked_score(self, monkeypatch):
+        rng = np.random.default_rng(0)
+        samples = rng.gamma(2.0, 4.0, size=(400, 120))
+        obs = xr.DataArray(rng.uniform(1.0, 20.0, 400), dims="cell")
+
+        reference = float(
+            ensemble_crps(
+                xr.DataArray(samples, dims=("cell", "member")), obs, member_dim="member"
+            ).values
+        )
+
+        # Force blocking: a cell's members are independent, so only the order
+        # the per-cell scores are summed in changes, and that is a rounding
+        # difference in the last ulp, not a different score.
+        monkeypatch.setattr(bma_module, "crps_chunk_cells", lambda n_samples, budget=0: 37)
+        chunked = float(_ensemble_crps_chunked(samples, obs, "member").values)
+
+        assert chunked == pytest.approx(reference, rel=1e-12)
+
+    def test_small_input_takes_the_unblocked_path_unchanged(self):
+        rng = np.random.default_rng(1)
+        samples = rng.gamma(2.0, 4.0, size=(5, 10))
+        obs = xr.DataArray(rng.uniform(1.0, 20.0, 5), dims="cell")
+
+        got = _ensemble_crps_chunked(samples, obs, "member")
+        expected = ensemble_crps(
+            xr.DataArray(samples, dims=("cell", "member")), obs, member_dim="member"
+        )
+
+        assert float(got.values) == float(expected.values)

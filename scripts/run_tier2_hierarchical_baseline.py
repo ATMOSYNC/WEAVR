@@ -84,7 +84,7 @@ from run_tier1_regional_baseline import (  # noqa: E402
 )
 
 from weavr import verify as V  # noqa: E402
-from weavr.bma import fit_hierarchical_bma, sample_bma_mixture, score_bma  # noqa: E402
+from weavr.bma import fit_hierarchical_bma, score_bma_and_mean  # noqa: E402
 from weavr.emos import csgd_crps, fit_emos_csg, predict_csgd_params  # noqa: E402
 from weavr.rain_bins import classify_rain_bin  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
@@ -162,12 +162,18 @@ def align_all_sources(
     """Reindexes every source onto one shared `sample` coordinate (an outer
     join -- a source missing a particular sample gets NaN there, matching
     scripts/run_tier1_regional_baseline.py's own convention), then restricts
-    to samples with real IMD ground truth. `member` (present only on the
-    two ensemble sources) is untouched by the outer join, which only acts
-    on the shared `sample` dimension.
+    to samples with real IMD ground truth.
+
+    Only `sample` is aligned, never `member`: GraphCast's members are lagged
+    pseudo-ensemble offsets in hours (`-48 .. 48`) while IFS's are ensemble
+    member numbers (`1 .. 50`), so an outer join over `member` would union two
+    different units into one meaningless 55-long axis, pad GraphCast with 50
+    all-NaN members, and inflate the largest array in the run by 6x. Each
+    source's own member axis is meaningful on its own, and every consumer
+    (`score_bma_cells`, `fit_hierarchical_bma`) reads members per source.
     """
     graphcast_aligned, ifs_aligned, hres_aligned = xr.align(
-        graphcast_ensemble, ifs_ensemble, hres_forecast, join="outer"
+        graphcast_ensemble, ifs_ensemble, hres_forecast, join="outer", exclude="member"
     )
     forecasts = {
         "graphcast": graphcast_aligned,
@@ -398,14 +404,14 @@ def score_bma_cells(
         }
         obs_cells_da = xr.DataArray(obs_cells, dims="cell")
 
-        crps_values = score_bma(
+        # One draw set for both numbers: the CRPS and the predictive mean are
+        # both properties of the same realisation of the fitted mixture, and
+        # sampling twice doubled this loop's runtime and peak memory.
+        crps_values, predictive_mean_da = score_bma_and_mean(
             result, cell_mean_da, cell_spread_da, obs_cells_da, rng=rng,
             n_samples=n_samples,
         )
-        samples = sample_bma_mixture(
-            result, cell_mean, cell_spread, rng, n_samples=n_samples
-        )
-        predictive_mean = samples.mean(axis=-1)
+        predictive_mean = predictive_mean_da.values
 
         if per_cell_out is not None:
             per_cell_out["crps"][cell_mask] = crps_values.values
