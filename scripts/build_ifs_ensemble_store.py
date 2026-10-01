@@ -83,6 +83,21 @@ IFS_ENS_ZARR_PATH = archive_for("ifs_ens", 2020).path
 PRECIP_VARIABLE = "total_precipitation_24hr"
 N_MEMBERS = 50
 
+#: Minimum fraction of sampled values that must be non-zero for a written
+#: IFS-ENS store to be accepted.
+#:
+#: Both real seasons measure ~87% non-zero. The only failure this has to
+#: catch is the one that actually happened: a store that is entirely zero
+#: because it was never filled in. So the floor is set just above nothing,
+#: not near the observed value. A threshold near 87% would reject a
+#: legitimately dry field -- a store with 45% of its cells wet is unusual but
+#: not broken, and a guard that cries wolf on real data gets ignored.
+#:
+#: Known limit: a *partially* written store (say 1 of 122 timestamps
+#: committed) can sit above this floor. Catching that needs a cross-season
+#: comparison, which is not attempted here.
+MIN_NONZERO_FRACTION = 0.01
+
 
 def _load_manifest(path: Path) -> dict:
     if path.exists():
@@ -208,6 +223,60 @@ def fetch_and_stage_one_timestamp(
     return False
 
 
+def verify_written_store(
+    store_path: Path, min_nonzero_fraction: float = MIN_NONZERO_FRACTION
+) -> float:
+    """Fail loudly if the store just written is structurally valid but empty.
+
+    This exists because of a real failure. A 2020 IFS-ENS store was left at
+    3.4 MB with the correct shape (122x50x5x129x135), the correct dates and
+    the correct dtype -- and not one non-zero value in it. Every structural
+    check passed, because zeros are not NaN, not the wrong shape and not the
+    wrong length, so `validate_daily_stores.py` called it good. It was caught
+    only by noticing it was 500x smaller than the identically-shaped 2018
+    store, and by then a two-season Tier 2 run had already spent 2h15m of CPU
+    scoring the 2020 fold against a field of zeros.
+
+    So the guard is on *values* sampled across the time axis, not on
+    structure, and it is a canary for "this store was never filled in" rather
+    than a test of meteorological plausibility. A store that trips it is
+    deleted rather than left in place to be discovered downstream.
+
+    Returns the observed non-zero fraction. Raises `ValueError` after removing
+    the store if too little of it carries data.
+    """
+    written = xr.open_zarr(store_path)[PRECIP_VARIABLE]
+    n_time = written.sizes["time"]
+    sample_times = np.unique(np.linspace(0, n_time - 1, min(5, n_time), dtype=int))
+    nonzero_total = 0
+    finite_total = 0
+    for t in sample_times:
+        block = written.isel(time=int(t)).values
+        finite = np.isfinite(block)
+        finite_total += int(finite.sum())
+        nonzero_total += int((block[finite] > 0).sum())
+    nonzero_frac = nonzero_total / max(finite_total, 1)
+
+    if nonzero_frac < min_nonzero_fraction:
+        import shutil
+
+        shutil.rmtree(store_path, ignore_errors=True)
+        raise ValueError(
+            f"Refusing to keep {store_path}: only {nonzero_frac:.4%} of sampled "
+            f"values are non-zero (need >= {min_nonzero_fraction:.0%}). A store "
+            "with the right shape but no data scores as a plausible forecast "
+            "and poisons every downstream number, so it has been deleted rather "
+            "than left to be found later. The staging NetCDFs are intact -- "
+            "re-run this script to rebuild from them without re-fetching."
+        )
+
+    print(
+        f"  Verified written store: {nonzero_frac:.1%} of sampled values "
+        f"non-zero across {len(sample_times)} times"
+    )
+    return nonzero_frac
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--year", type=int, choices=(2018, 2020), default=2020)
@@ -245,13 +314,18 @@ def main() -> int:
         "--force", action="store_true", help="re-fetch timestamps already marked ok"
     )
     args = parser.parse_args()
+    # Both defaults are the *daily* store for either year. The 2020 branch
+    # used to default to the legacy weekly `data/ifs_ens_2020_jjas.zarr`,
+    # which was wrong twice over: #98 made the weekly IFS-ENS store an
+    # explicit opt-in fallback precisely so a two-season run could not
+    # silently bind to it, and the matching weekly baseline it also defaulted
+    # to does not exist on this machine, so a bare `--year 2020` died with
+    # FileNotFoundError before writing anything.
     args.out = args.out or os.environ.get("WEAVR_IFS_ENSEMBLE_STORE_PATH") or (
         f"data/ifs_ens_{args.year}_jjas_daily.zarr"
-        if args.year == 2018 else "data/ifs_ens_2020_jjas.zarr"
     )
     args.init_times_from = args.init_times_from or (
         f"data/baseline_{args.year}_jjas_daily.zarr"
-        if args.year == 2018 else "data/baseline_2020_jjas.zarr"
     )
     archive_path = archive_for("ifs_ens", args.year).path
 
@@ -378,6 +452,8 @@ def main() -> int:
             ds.to_zarr(store_path, append_dim="time")
         if (i + 1) % 10 == 0 or i == len(timestamps) - 1:
             print(f"  Written {i + 1}/{len(timestamps)} timestamps to final store")
+
+    verify_written_store(store_path)
 
     real_total_bytes = sum(
         xr.open_dataset(staging_path(staging_dir, ts))[PRECIP_VARIABLE].nbytes
