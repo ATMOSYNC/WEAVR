@@ -158,6 +158,30 @@ class BmaComponentFit:
     gamma_variance_intercept: float
     gamma_variance_slope: float
 
+    #: Upper bound on this component's predicted cube-root mean, set from the
+    #: largest *training* observation in cube-root space.
+    #:
+    #: The mean regressor is the only unbounded quantity in this fit. Every
+    #: other one is guarded -- `p0` is clipped into (0, 1), the variance into
+    #: `[max(intercept, _TINY), inf)` -- because `gamma_mean_intercept` and
+    #: `gamma_mean_slope` come straight from `np.linalg.lstsq` with no
+    #: constraint. When `forecast_ct` has near-zero spread within a single
+    #: (bin, region) training cell, that regression is ill-conditioned and
+    #: returns a large slope, so a test forecast slightly above the training
+    #: range predicts an enormous `mean_ct`. Since the density uses `mean_ct**3`
+    #: as the gamma scale, the predictive mean explodes.
+    #:
+    #: Measured on the two-season daily base: one (bin, region) per fold
+    #: produced this -- `heavy`xSI on the 2018 fold at CRPS 145mm with bias
+    #: +277mm, and `heavy`xNE1 on 2020 at CRPS 154mm with bias +197mm -- while
+    #: the other five regions in the same bin and lead were fine (17-40mm).
+    #: Observed daily accumulations top out near 400mm, so an RMSE of 667-748mm
+    #: in those rows is not a forecast error at all. Bounding the prediction at
+    #: the training range is the standard remedy and leaves well-posed fits
+    #: untouched, because a correctly conditioned regression already predicts
+    #: inside it.
+    max_mean_ct: float = float("inf")
+
 
 @dataclass
 class BmaFitResult:
@@ -243,6 +267,10 @@ def _fit_component(
     gamma_mean_intercept, gamma_mean_slope = _fit_least_squares_line(
         forecast_ct_wet, obs_ct_wet
     )
+    # The cap the prediction will be held to. Derived from this cell's own
+    # training observations, so it is as loose as the data allows and as tight
+    # as the data requires -- see `BmaComponentFit.max_mean_ct`.
+    max_mean_ct = float(obs_ct_wet.max())
     predicted_mean = gamma_mean_intercept + gamma_mean_slope * forecast_ct_wet
     residual_sq = (obs_ct_wet - predicted_mean) ** 2
 
@@ -265,6 +293,7 @@ def _fit_component(
         gamma_mean_slope,
         gamma_variance_intercept,
         gamma_variance_slope,
+        max_mean_ct=max_mean_ct,
     )
 
 
@@ -280,6 +309,9 @@ def _component_predictive_params(
     zero_logit = component.zero_intercept + component.zero_slope * forecast_ct
     p0 = np.clip(_sigmoid(zero_logit), 1e-8, 1 - 1e-8)
     mean_ct = component.gamma_mean_intercept + component.gamma_mean_slope * forecast_ct
+    # Held inside the training range and non-negative. See
+    # `BmaComponentFit.max_mean_ct` for the measurement that motivated it.
+    mean_ct = np.clip(mean_ct, _TINY, component.max_mean_ct)
 
     if component.route == "ensemble_dressing" and forecast_spread is not None:
         spread_ct = _cube_root(forecast_spread)
@@ -626,6 +658,7 @@ def score_bma_and_mean(
     rng: np.random.Generator | None = None,
     n_samples: int = 500,
     member_dim: str = "member",
+    probability_grids: dict[float, np.ndarray] | None = None,
 ) -> tuple[xr.DataArray, xr.DataArray]:
     """CRPS *and* the predictive mean of the fitted (or fallback) BMA mixture
     against real `obs`, from a **single** Monte Carlo draw set.
@@ -649,6 +682,14 @@ def score_bma_and_mean(
     }
 
     samples = sample_bma_mixture(result, mean_arrays, spread_arrays, rng, n_samples=n_samples)
+    if probability_grids is not None:
+        # P(Y > t) straight from the draws this function already made, so the
+        # Brier leg of the pre-registered H3 claim becomes computable without a
+        # second sampling pass. Sampling is the expensive part of Tier 2 and
+        # drawing again would both double the runtime and put Monte Carlo noise
+        # between a method's CRPS and its own exceedance probability.
+        for threshold in probability_grids:
+            probability_grids[threshold][:] = (samples > threshold).mean(axis=-1)
     predictive_mean = xr.DataArray(samples.mean(axis=-1), dims=obs.dims, coords=obs.coords)
     return _ensemble_crps_chunked(samples, obs, member_dim), predictive_mean
 

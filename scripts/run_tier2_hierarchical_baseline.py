@@ -84,7 +84,12 @@ from run_tier1_regional_baseline import (  # noqa: E402
 
 from weavr import verify as V  # noqa: E402
 from weavr.bma import fit_hierarchical_bma, score_bma_and_mean  # noqa: E402
-from weavr.emos import csgd_crps, fit_emos_csg, predict_csgd_params  # noqa: E402
+from weavr.emos import (  # noqa: E402
+    csgd_crps,
+    exceedance_probability_csgd,
+    fit_emos_csg,
+    predict_csgd_params,
+)
 from weavr.rain_bins import classify_rain_bin  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
 from weavr.score_io import (
@@ -266,6 +271,7 @@ def score_emos_source(
     n_samples: int = N_MONTE_CARLO_SAMPLES,
     member_dim: str = "member",
     per_cell_out: dict[str, np.ndarray] | None = None,
+    probability_grids: dict[float, np.ndarray] | None = None,
 ) -> dict[str, dict]:
     """Per-bin CRPS/RMSE/bias of one EMOS-CSG source's fitted results,
     scored at test time by looking up each test cell's own rain-bin label
@@ -294,6 +300,9 @@ def score_emos_source(
     if per_cell_out is not None:
         per_cell_out["crps"] = np.full(obs_v.shape, np.nan)
         per_cell_out["predictive_mean"] = np.full(obs_v.shape, np.nan)
+    if probability_grids is not None:
+        for threshold in probability_grids:
+            probability_grids[threshold][:] = np.nan
 
     per_bin: dict[str, dict] = {}
     for bin_label, result in results.items():
@@ -320,6 +329,16 @@ def score_emos_source(
         if per_cell_out is not None:
             per_cell_out["crps"][cell_mask] = crps_values
             per_cell_out["predictive_mean"][cell_mask] = predictive_mean
+        if probability_grids is not None:
+            # Analytic P(Y > t) for the fitted CSGD. This is what makes the
+            # Brier/BSS leg of H3 computable: Brier needs exceedance
+            # probabilities, and per-day files that carry only
+            # hits/misses/false_alarms/correct_negatives cannot reconstruct it,
+            # because a squared-probability error is not a ratio of counts.
+            for threshold, grid in probability_grids.items():
+                grid[cell_mask] = exceedance_probability_csgd(
+                    mean_cells, spread_cells, shift, threshold
+                )
 
         per_bin[bin_label] = {
             "n_test_cells": n_cells,
@@ -342,6 +361,7 @@ def score_bma_cells(
     n_samples: int = N_MONTE_CARLO_SAMPLES,
     member_dim: str = "member",
     per_cell_out: dict[str, np.ndarray] | None = None,
+    probability_grids: dict[float, np.ndarray] | None = None,
 ) -> dict[tuple[str, str], dict]:
     """Per (bin, region) CRPS/RMSE/bias of the fitted BMA mixture, scored at
     test time -- the same cell-lookup idea as `score_emos_source`, one
@@ -378,6 +398,9 @@ def score_bma_cells(
     if per_cell_out is not None:
         per_cell_out["crps"] = np.full(obs_v.shape, np.nan)
         per_cell_out["predictive_mean"] = np.full(obs_v.shape, np.nan)
+    if probability_grids is not None:
+        for threshold in probability_grids:
+            probability_grids[threshold][:] = np.nan
 
     per_cell: dict[tuple[str, str], dict] = {}
     for (bin_label, region), result in results.items():
@@ -413,10 +436,19 @@ def score_bma_cells(
         # One draw set for both numbers: the CRPS and the predictive mean are
         # both properties of the same realisation of the fitted mixture, and
         # sampling twice doubled this loop's runtime and peak memory.
+        cell_probability_grids = (
+            None
+            if probability_grids is None
+            else {t: np.full(cell_mask.sum(), np.nan) for t in probability_grids}
+        )
         crps_values, predictive_mean_da = score_bma_and_mean(
             result, cell_mean_da, cell_spread_da, obs_cells_da, rng=rng,
             n_samples=n_samples,
+            probability_grids=cell_probability_grids,
         )
+        if probability_grids is not None and cell_probability_grids is not None:
+            for threshold, values in cell_probability_grids.items():
+                probability_grids[threshold][cell_mask] = values
         predictive_mean = predictive_mean_da.values
 
         if per_cell_out is not None:
@@ -571,6 +603,7 @@ def main() -> int:
             graphcast_ensemble, ifs_ensemble, hres_forecast, obs
         )
 
+        grid_template = obs_aligned.transpose("sample", "latitude", "longitude")
         sample_times = pd.DatetimeIndex(obs_aligned["sample"].values)
         folds = list(iter_evaluation_folds(sample_times, test_fraction=args.test_fraction))
 
@@ -643,7 +676,12 @@ def main() -> int:
                 "tier1_bias_mm": float(V.bias(test_tier1, test_obs)),
             }
 
-            def _write_per_day(method: str, grids: dict[str, np.ndarray], fold_lbl: str) -> None:
+            def _write_per_day(
+                method: str,
+                grids: dict[str, np.ndarray],
+                fold_lbl: str,
+                probs: dict[float, np.ndarray] | None = None,
+            ) -> None:
                 template = obs_aligned.transpose("sample", "latitude", "longitude")
                 predictive_mean = xr.DataArray(
                     grids["predictive_mean"], coords=template.coords, dims=template.dims
@@ -651,6 +689,16 @@ def main() -> int:
                 crps_grid = xr.DataArray(
                     grids["crps"], coords=template.coords, dims=template.dims
                 ).isel(sample=test_mask)
+                probability_da = (
+                    None
+                    if probs is None
+                    else {
+                        threshold: xr.DataArray(
+                            values, coords=template.coords, dims=template.dims
+                        ).isel(sample=test_mask)
+                        for threshold, values in probs.items()
+                    }
+                )
                 per_day_writer.add(
                     method,
                     lead_hours,
@@ -659,11 +707,16 @@ def main() -> int:
                         test_obs,
                         fold=fold_lbl,
                         per_cell_scores={"crps_mm": crps_grid},
+                        probabilities=probability_da,
                     ),
                 )
 
             for source_key, results in emos_results.items():
                 emos_grids: dict[str, np.ndarray] = {}
+                emos_probs: dict[float, np.ndarray] = {
+                    t: np.full(grid_template.shape, np.nan)
+                    for t in V.IMD_RAIN_THRESHOLDS_MM
+                }
                 per_bin = score_emos_source(
                     results,
                     forecasts[source_key],
@@ -673,8 +726,11 @@ def main() -> int:
                     rng,
                     n_samples=n_samples,
                     per_cell_out=emos_grids,
+                    probability_grids=emos_probs,
                 )
-                _write_per_day(f"tier2_emos_{source_key}", emos_grids, split_label)
+                _write_per_day(
+                    f"tier2_emos_{source_key}", emos_grids, split_label, emos_probs
+                )
                 fold_emos_per_bin[source_key].append(per_bin)
                 domain_row.update(_domain_summary(per_bin, f"emos_{source_key}"))
                 for bin_label, stats in per_bin.items():
@@ -690,6 +746,10 @@ def main() -> int:
                     )
 
             bma_grids: dict[str, np.ndarray] = {}
+            bma_probs: dict[float, np.ndarray] = {
+                t: np.full(grid_template.shape, np.nan)
+                    for t in V.IMD_RAIN_THRESHOLDS_MM
+            }
             bma_per_cell = score_bma_cells(
                 bma_results,
                 forecasts,
@@ -700,8 +760,9 @@ def main() -> int:
                 rng,
                 n_samples=n_samples,
                 per_cell_out=bma_grids,
+                probability_grids=bma_probs,
             )
-            _write_per_day("tier2_bma", bma_grids, split_label)
+            _write_per_day("tier2_bma", bma_grids, split_label, bma_probs)
             fold_bma_cells.append(bma_per_cell)
             domain_row.update(_domain_summary(bma_per_cell, "bma"))
             for (bin_label, region), stats in bma_per_cell.items():
