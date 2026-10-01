@@ -180,24 +180,33 @@ and full-member IFS-ENS scope.
 ## Evidence and honesty
 
 WEAVR is built around reporting what the data shows, including the parts that
-do not flatter it. Measured on the 2020 monsoon season against IMD gauges:
+do not flatter it. Measured on two seasons (2018 + 2020) against IMD gauges,
+daily cadence, leave-one-year-out:
 
-- **No blend beats raw GraphCast on RMSE at 24–96 h.** Only Tier 2's EMOS
-  calibrations do, and those are single-source calibrations. The value of
-  blending has to be argued on other grounds, and the project's next steps
-  are aimed squarely at it.
+- **Tier 1 beats Tier 0 at every lead** on both RMSE and ACC. Regional weights
+  add value over equal weighting.
+- **GraphCast is the best single member** at every lead (RMSE 14.12–14.56 mm).
+  HRES is the worst (RMSE 17.58–19.68 mm). IFS-ENS mean is intermediate.
 - **The three sources are worth about 1.1 independent models.** Their errors
-  correlate at 0.62–0.90, which is why plain averaging fails and why adding a
-  genuinely different source matters more than re-weighting.
+  correlate at 0.74–0.84 on the daily two-season base, which is why plain
+  averaging fails and why adding a genuinely different source matters more
+  than re-weighting.
+- **The blend beats a single ensemble member, but not a single-source
+  calibration.** H1 passes twice: the blend beats the best single member on
+  RMSE at 3 of 5 leads and on CRPS at 5 of 5, every interval excluding zero.
+  H2 fails: the multi-source combiner does **not** beat the best single-source
+  EMOS on CRPS at any lead. Calibrating one good source appears to capture
+  most of what the mixture adds.
 - **Extremes are the open problem.** GraphCast detects no 115.6 mm event at
   any lead, and no source detects any 204.5 mm event. RMSE and warning skill
   point in opposite directions.
 - **A regime-conditioned tier was tested and rejected** against
   pre-declared criteria, and the no-go is documented.
-- **The test sets are small** (a single season), so most comparisons do not
-  yet have meaningful confidence intervals. More seasons are the next step.
+- **Two seasons, 244 test days** (122 × 2 folds), so comparisons now have
+  meaningful confidence intervals.
 
 Numbers, method and caveats:
+[v2 evidence base](docs/v2-evidence-base-results.md),
 [single-source and independence](docs/single-source-and-independence-results.md),
 [scorecard and significance](docs/scorecard-and-significance.md),
 [pre-registered claims](docs/preregistration.md).
