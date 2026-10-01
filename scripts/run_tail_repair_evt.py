@@ -580,6 +580,15 @@ def main() -> int:
                         "false_zero_cells": int(np.sum(probs == 0.0)),
                         "threshold_u": args.threshold_u,
                         "tail_shape_xi": float(tail_fit.shape_xi),
+                        "tail_shape_xi_se": (
+                            float(tail_fit.xi_se) if tail_fit.xi_se is not None else float("nan")
+                        ),
+                        "tail_shape_xi_ci_lo": (
+                            float(tail_fit.xi_ci[0]) if tail_fit.xi_ci is not None else float("nan")
+                        ),
+                        "tail_shape_xi_ci_hi": (
+                            float(tail_fit.xi_ci[1]) if tail_fit.xi_ci is not None else float("nan")
+                        ),
                         "fit_bins": ";".join(fitable),
                         "n_bins_total": len(RAIN_BIN_LABELS),
                     }

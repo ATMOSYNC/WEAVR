@@ -13,6 +13,11 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from run_scorecard import _pooled_sedi  # noqa: E402
+
+RUNNER_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts" / "run_tail_repair_evt.py"
+)
+
 from run_tail_repair_evt import (  # noqa: E402
     compute_sedi,
     expected_counts,
@@ -239,3 +244,43 @@ class TestMemberCountingBenchmark:
             n_train=8, n_test=8,
         )
         assert row["false_zero_cells"] == 0
+
+
+class TestShapeParameterIntervalIsReported:
+    """The shape parameter's interval must reach the results file.
+
+    `fit_pooled_gpd` has always returned `TailFit.xi_se` / `TailFit.xi_ci`, but
+    the runner wrote only `tail_shape_xi` and dropped them, so no interval was
+    ever reproducible from `main` -- and `docs/tail-repair-results.md` then
+    asserted, incorrectly, that the library had no interval to give. The row
+    dict is built inline inside the fold loop, so there is no schema object to
+    assert against; this checks the emitted keys directly, which is what stops
+    the same silent drop from recurring.
+    """
+
+    def test_runner_emits_the_xi_interval_columns(self) -> None:
+        source = Path(RUNNER_PATH).read_text()
+        for column in (
+            "tail_shape_xi_se",
+            "tail_shape_xi_ci_lo",
+            "tail_shape_xi_ci_hi",
+        ):
+            assert f'"{column}"' in source, f"{column} is no longer written to the CSV"
+
+    def test_library_really_does_provide_an_interval(self) -> None:
+        # Pins the premise of the fix: if this ever stops holding, the doc's
+        # corrected wording has to change again.
+        from weavr.tail import fit_pooled_gpd
+
+        rng = np.random.default_rng(0)
+        fit = fit_pooled_gpd(
+            {
+                "WC": rng.gamma(shape=2.0, scale=8.0, size=400) + 64.5,
+                "CI": rng.gamma(shape=2.0, scale=8.0, size=400) + 64.5,
+            },
+            threshold_u=64.5,
+            regions=("WC", "CI"),
+        )
+        assert fit.xi_se is not None and fit.xi_se > 0.0
+        assert fit.xi_ci is not None
+        assert fit.xi_ci[0] < fit.shape_xi < fit.xi_ci[1]

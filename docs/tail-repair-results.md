@@ -106,7 +106,18 @@ Fitted on both daily seasons, LOYO, at $u = 64.5\text{ mm}$:
 | 2018 (train on 2020) | 0.1191 | 0.1190 | 0.1192 | 0.1190 | 0.1179 |
 | 2020 (train on 2018) | 0.0989 | 0.0987 | 0.0987 | 0.0984 | 0.0979 |
 
-$\hat{\xi} \approx 0.10$–$0.12$, positive throughout and stable across lead times within a fold, which is the heavy-tailed Fréchet behaviour characteristic of tropical monsoon downpours. The modest fold-to-fold difference (≈0.02) reflects which season the pooled fit sees, not lead-time drift. **No confidence interval is reported for $\hat{\xi}$**: the MLE is not accompanied by a parametric or bootstrap interval in `src/weavr/tail.py`, and none is claimed here.
+Intervals are available in `results/tail_repair_evt.csv` (`tail_shape_xi_se`, `tail_shape_xi_ci_lo`, `tail_shape_xi_ci_hi`) but are not reproduced here yet — see the note below on why.
+
+$\hat{\xi} \approx 0.10$–$0.12$, positive throughout and stable across lead times within a fold, which is the heavy-tailed Fréchet behaviour characteristic of tropical monsoon downpours. The modest fold-to-fold difference (≈0.02) reflects which season the pooled fit sees, not lead-time drift.
+
+**On the interval for $\hat{\xi}$.** An earlier version of this file stated that no interval existed because `src/weavr/tail.py` did not provide one. That was wrong, and wrong in a way worth correcting precisely: `fit_pooled_gpd` does return an interval, as `TailFit.xi_se` and `TailFit.xi_ci`, computed from a finite-difference Hessian of the pooled negative log-likelihood at the optimum and covered by `tests/test_tail.py`. The interval was missing from the *report*, not from the library — the runner wrote `tail_shape_xi` and dropped the two interval columns. The runner now emits `tail_shape_xi_se`, `tail_shape_xi_ci_lo` and `tail_shape_xi_ci_hi` alongside it.
+
+Two caveats stand, and they are why no interval is quoted in the table above yet:
+
+- The Hessian is a **finite difference** (step $10^{-4}$) of a likelihood that L-BFGS-B has already optimised to within its own tolerance. It is a local curvature estimate, not a validated standard error.
+- It has **not been checked against a bootstrap** of the pooled fit. Given a few dozen exceedances per region, a parametric-interval comparison is the obvious check and has not been run.
+
+So the honest position is narrower than either "there is no interval" or "here is the interval": an interval is now available and reproducible, it is unvalidated, and the measured values will be filled in here when the runner is next executed on the final evidence base. Until then this file quotes no interval rather than quoting an unchecked one.
 
 All 5 rain bins (`dry`, `light`, `heavy`, `very_heavy`, `extremely_heavy`) fitted in every fold and lead — i.e. no `extremely_heavy` point-mass fallback remained.
 
