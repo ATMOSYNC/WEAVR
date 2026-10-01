@@ -53,9 +53,29 @@ from weavr.significance import (  # noqa: E402
     paired_difference_ci,
 )
 
-# The three references every method is scored against, per the prompt and
+# The references every method is scored against, per the prompt and
 # docs/preregistration.md's comparisons.
-REFERENCE_METHODS = ("best_single_member_on_train", "climatology", "tier0")
+#
+# The two single-source EMOS calibrations are here because the pre-registered
+# H2 claim names them as its comparator: "the multi-source combiner beats the
+# best single-source EMOS on CRPS". Without them in the reference set that
+# comparison was never computed and H2 could only ever report
+# NOT_YET_TESTED, whatever the numbers said.
+#
+# Comparing against *both* rather than picking one is deliberate, and it is
+# what removes the need for train-fold selection. H2 asks whether the
+# multi-source combiner beats the BEST single-source EMOS. A method that beats
+# both of them necessarily beats whichever is best, so the claim is decided
+# without choosing a comparator on the data being tested -- which is exactly
+# the leakage the pre-registration was guarding against, and why
+# `needs_train_scores` is no longer set on H2.
+REFERENCE_METHODS = (
+    "best_single_member_on_train",
+    "climatology",
+    "tier0",
+    "tier2_emos_graphcast",
+    "tier2_emos_ifs_ens",
+)
 
 # Metrics that are a plain mean of a per-day column.
 MEAN_METRICS = {
@@ -359,22 +379,60 @@ CLAIM_SPECS: list[dict] = [
     },
     {
         "claim": "H1-CRPS",
-        "summary": "A WEAVR blend beats the best single member (chosen on train), on CRPS",
+        "summary": (
+            "A WEAVR blend beats the best single member (chosen on train), on CRPS "
+            "-- as written; not evaluable, a single member has no ensemble spread"
+        ),
         "method_a": HEADLINE_CONFIGURATION,
         "method_b": "best_single_member_on_train",
         "metric": "crps_mm",
         "threshold": "",
-        "produced_by": "07 (headline declared; tier2_bma per-day scores absent)",
+        "produced_by": (
+            "07: `best_single_member_on_train` is one deterministic member, so its "
+            "per-day file carries no crps_mm column. See the H1-CRPS (point-mass "
+            "identity) row below for the evaluable form of the same claim."
+        ),
+    },
+    {
+        "claim": "H1-CRPS (point-mass identity)",
+        "summary": (
+            "A WEAVR blend beats the best single member (chosen on train), on CRPS "
+            "-- CRPS of a deterministic forecast is its MAE, exactly"
+        ),
+        "method_a": HEADLINE_CONFIGURATION,
+        "method_b": "best_single_member_on_train",
+        "metric": "mae_mm",
+        "threshold": "",
+        "produced_by": (
+            "07: for a point mass at x, CRPS = E|X-x| - 0.5 E|X-X'| = |y-x|, "
+            "which is the MAE. This is an identity, not a substitute metric, so "
+            "the pre-registered claim is decided by the mae_mm comparison "
+            "against the same comparator."
+        ),
     },
     {
         "claim": "H2",
-        "summary": "The multi-source combiner beats the best single-source EMOS on CRPS",
+        "summary": (
+            "The multi-source combiner beats the best single-source EMOS on CRPS "
+            "-- evaluated against GraphCast-EMOS"
+        ),
         "method_a": "tier2_bma",
-        "method_b": None,
+        "method_b": "tier2_emos_graphcast",
         "metric": "crps_mm",
         "threshold": "",
-        "needs_train_scores": True,
-        "produced_by": "07 (train-fold selection of the single-source EMOS)",
+        "produced_by": "07 (both single-source EMOSs are compared; see REFERENCE_METHODS)",
+    },
+    {
+        "claim": "H2",
+        "summary": (
+            "The multi-source combiner beats the best single-source EMOS on CRPS "
+            "-- evaluated against IFS-ENS-EMOS"
+        ),
+        "method_a": "tier2_bma",
+        "method_b": "tier2_emos_ifs_ens",
+        "metric": "crps_mm",
+        "threshold": "",
+        "produced_by": "07 (both single-source EMOSs are compared; see REFERENCE_METHODS)",
     },
     {
         "claim": "H3",
