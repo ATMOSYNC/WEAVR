@@ -76,6 +76,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
+from pathlib import Path
 
 import pandas as pd
 import xarray as xr
@@ -89,6 +91,7 @@ from weavr.drift import (
 )
 from weavr.grid import IMD_DAY_START_HOUR_UTC
 from weavr.score_io import FORCE_HELP, guard_result_overwrites, resolve_result_paths, write_rows_csv
+from weavr.stores import DEFAULT_BASELINE_DAILY_STORES, open_multi_season, resolve_store_paths
 
 PRECIP_VARIABLE = "total_precipitation_24hr"
 PRECIP_M_TO_MM = 1000.0
@@ -111,7 +114,7 @@ def _align_to_imd_day(da: xr.DataArray, lead_hours: int) -> xr.DataArray:
 
 
 def load_aligned(
-    store: str, source_name: str, lead_hours: int
+    store: str | Sequence[str], source_name: str, lead_hours: int
 ) -> tuple[xr.DataArray, xr.DataArray]:
     """One source's precipitation forecast and matching IMD obs, aligned by
     IMD day and dropped of any sample missing ground truth -- the same
@@ -120,22 +123,29 @@ def load_aligned(
     them (this script scores each source's own rolling skill separately,
     since a drift in one source shouldn't be masked by an unaffected one).
     """
+    paths = [store] if isinstance(store, (str, Path)) else list(store)
+    # `open_multi_season` rather than a bare `open_zarr`, so both daily seasons
+    # concatenate into one continuous series. That is the point of the v2 run:
+    # with the seasons joined, the rolling window actually crosses the 2018 ->
+    # 2020 GraphCast checkpoint change, which is what step 07 item 4 asks this
+    # script to test. Run per season instead, the two windows never meet and the
+    # checkpoint change is invisible by construction.
     fc = (
-        xr.open_zarr(store, group=source_name, consolidated=True)[PRECIP_VARIABLE]
+        open_multi_season(paths, group=source_name)[PRECIP_VARIABLE]
         .sel(prediction_timedelta=lead_hours)
         .load()
         * PRECIP_M_TO_MM
     )
     fc = _align_to_imd_day(fc, lead_hours)
 
-    obs = xr.open_zarr(store, group="imd_observed", consolidated=True)["rain"].load()
+    obs = open_multi_season(paths, group="imd_observed")["rain"].load()
     obs_aligned = obs.reindex(time=fc["sample"].values).rename(time="sample")
     has_obs = ~obs_aligned.isnull().all(dim=["latitude", "longitude"])
     return fc.isel(sample=has_obs.values), obs_aligned.isel(sample=has_obs.values)
 
 
 def rolling_verification_for_lead(
-    store: str, source_name: str, lead_hours: int
+    store: str | Sequence[str], source_name: str, lead_hours: int
 ) -> dict:
     """One (source, lead)'s real per-sample RMSE series, rolling value, and
     drift flag -- see this module's own docstring for the real granularity
@@ -176,7 +186,17 @@ def rolling_verification_for_lead(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", default="data/baseline_2020_jjas.zarr")
+    parser.add_argument(
+        "--stores",
+        nargs="+",
+        default=None,
+        help=(
+            "One or more baseline stores, concatenated into one series "
+            "(default: 2018 + 2020 daily, so the rolling window spans the "
+            "GraphCast checkpoint change)"
+        ),
+    )
+    parser.add_argument("--store", default=None, help="Legacy single store path")
     parser.add_argument(
         "--results-dir",
         default="results",
@@ -201,7 +221,13 @@ def main() -> int:
     args.out_csv = _paths["out_csv"]
     guard_result_overwrites(_paths.values(), force=args.force)
 
-    print(f"Rolling verification + drift detection against {args.store}")
+    stores = resolve_store_paths(
+        args.stores,
+        args.store,
+        DEFAULT_BASELINE_DAILY_STORES,
+        "data/baseline_2020_jjas.zarr",
+    )
+    print(f"Rolling verification + drift detection against {stores}")
     print(
         "NOTE: standing in each real weekly JJAS-2020 sample for one "
         "accumulated day -- see this script's own module docstring."
@@ -210,7 +236,7 @@ def main() -> int:
     rows = []
     for source_name in PRECIP_SOURCE_NAMES:
         for lead_hours in LEAD_HOURS:
-            row = rolling_verification_for_lead(args.store, source_name, lead_hours)
+            row = rolling_verification_for_lead(stores, source_name, lead_hours)
             rows.append(row)
             flag = "DRIFT" if row["is_drift"] else "ok"
             print(
