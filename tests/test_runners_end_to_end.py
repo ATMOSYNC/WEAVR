@@ -483,6 +483,41 @@ def _write_valid_results(root: Path, season_days: int) -> None:
     tier3 = domain.rename(columns={"emos_graphcast_crps_mm": "regime_crps_mm"})
     tier3.to_csv(root / "tier3_regime_conditioned_baseline.csv", index=False)
 
+    # Breakdown files. `by_bin` carries a combiner and a blank region for the
+    # EMOS rows; `by_region` carries a region and bin but NO combiner column.
+    # The gate has to cope with both shapes, and requiring the union of all
+    # their columns is how one of the two used to be silently skipped.
+    by_bin_rows = []
+    by_region_rows = []
+    for lead in (24, 48, 72, 96, 120):
+        for region, crps in (
+            ("WC", 32.0),
+            ("CI", 27.0),
+            ("NE1", 31.0),
+            ("SI", 28.0),
+            ("WI", 35.0),
+            ("NE2", 23.0),
+        ):
+            row = {
+                "lead_hours": lead,
+                "fold": "pooled",
+                "region": region,
+                "bin": "heavy",
+                "n_test_cells": 500,
+                "crps_mm": crps,
+                "rmse_mm": 55.0,
+                "is_fallback": False,
+            }
+            by_region_rows.append(dict(row))
+            by_bin_rows.append(dict(row, combiner="bma"))
+            by_bin_rows.append({**row, "region": "", "combiner": "emos_graphcast"})
+    pd.DataFrame(by_region_rows).to_csv(
+        root / "tier2_hierarchical_baseline_by_region.csv", index=False
+    )
+    pd.DataFrame(by_bin_rows).to_csv(
+        root / "tier2_hierarchical_baseline_by_bin.csv", index=False
+    )
+
 
 def test_result_gate_accepts_a_complete_two_fold_results_set(tmp_path):
     """The gate must PASS good output, not only reject bad.
@@ -500,6 +535,115 @@ def test_result_gate_accepts_a_complete_two_fold_results_set(tmp_path):
     gate.PER_DAY = results / "per_day"
     gate.SEASON_DAYS = 8
     assert gate.main() == 0, f"the gate rejected a valid results set: {gate.failures}"
+
+
+def _gate(results: Path, season_days: int = 8):
+    sys.path.insert(0, str(REPO / "scripts"))
+    import gate_step07_results as gate
+
+    gate.RESULTS = results
+    gate.PER_DAY = results / "per_day"
+    gate.SEASON_DAYS = season_days
+    gate.failures = []
+    gate.notes = []
+    return gate
+
+
+def test_result_gate_flags_a_degenerate_bin_region_fit(tmp_path):
+    """The failure the domain-level check cannot see.
+
+    Measured on the real run: `bma`/`heavy` reads CRPS 119.5mm for NE1 and
+    101.3mm for SI against a 33.6mm median for the same bin and lead, with
+    RMSE to 748mm. Those cell-days are ~0.2% of the total, so the domain CRPS
+    is 4.6mm and every headline verdict is unaffected.
+    """
+    results = tmp_path / "results"
+    _write_valid_results(results, season_days=8)
+    by_bin = results / "tier2_hierarchical_baseline_by_bin.csv"
+    frame = pd.read_csv(by_bin)
+    # Lead 24 only, as on the real run: the same two regions are healthy at
+    # every other lead, which is what makes this a fit failure rather than a
+    # property of the bin.
+    mask = (
+        (frame["combiner"] == "bma")
+        & (frame["bin"] == "heavy")
+        & (frame["fold"] == "pooled")
+        & (frame["lead_hours"] == 24)
+    )
+    frame.loc[mask & (frame["region"] == "NE1"), "crps_mm"] = 119.5
+    frame.loc[mask & (frame["region"] == "SI"), "crps_mm"] = 101.3
+    frame.to_csv(by_bin, index=False)
+
+    gate = _gate(results)
+    assert gate.main() == 1
+    flagged = [f for f in gate.failures if "quantile for the same bin" in f]
+    assert len(flagged) == 2, gate.failures
+    assert any("NE1" in f for f in flagged)
+    assert any("SI" in f for f in flagged)
+
+
+def test_result_gate_does_not_flag_a_uniformly_hard_bin(tmp_path):
+    """A bin that is hard for every region is hard, not degenerate.
+
+    This is the false-positive guard. A flat magnitude threshold would fire on
+    any `heavy` row, because a bin targeting 64.5-115.6mm sits around 25-30mm
+    CRPS by construction. The check compares a region against its own bin's
+    median, so a uniformly high bin passes.
+    """
+    results = tmp_path / "results"
+    _write_valid_results(results, season_days=8)
+    by_bin = results / "tier2_hierarchical_baseline_by_bin.csv"
+    frame = pd.read_csv(by_bin)
+    mask = (frame["bin"] == "heavy") & (frame["fold"] == "pooled")
+    frame.loc[mask, "crps_mm"] = 28.0
+    frame.loc[mask, "rmse_mm"] = 55.0
+    # every region identical -> no region is an outlier relative to the rest
+    frame.to_csv(by_bin, index=False)
+
+    gate = _gate(results)
+    assert gate.main() == 0, f"a uniformly hard bin was flagged: {gate.failures}"
+
+
+def test_result_gate_ignores_count_columns(tmp_path):
+    """`*_n_test_cells` is a count, not a millimetre value.
+
+    Regression: the first version of the magnitude check matched any column
+    starting with `emos_`/`bma_`, so `emos_graphcast_n_test_cells` (1,128,500
+    on the real run) tripped the 200mm bound and produced a false positive on
+    the very first real output it saw.
+    """
+    results = tmp_path / "results"
+    _write_valid_results(results, season_days=8)
+    domain = results / "tier2_hierarchical_baseline.csv"
+    frame = pd.read_csv(domain)
+    frame["emos_graphcast_n_test_cells"] = 1_128_500
+    frame.to_csv(domain, index=False)
+
+    gate = _gate(results)
+    assert gate.main() == 0, f"a count column tripped the magnitude bound: {gate.failures}"
+
+
+def test_result_gate_checks_by_region_which_has_no_combiner_column(tmp_path):
+    """`by_region` has no `combiner`; the check must still run on it.
+
+    Regression: requiring the union of `by_bin` and `by_region` columns made
+    the guard reject one file and skip the other, which looks checked but is
+    not.
+    """
+    results = tmp_path / "results"
+    _write_valid_results(results, season_days=8)
+    by_region = results / "tier2_hierarchical_baseline_by_region.csv"
+    frame = pd.read_csv(by_region)
+    assert "combiner" not in frame.columns, "fixture should mirror the real file"
+    mask = (frame["bin"] == "heavy") & (frame["fold"] == "pooled")
+    frame.loc[mask & (frame["region"] == "NE1") & (frame["lead_hours"] == 24), "crps_mm"] = 130.0
+    frame.to_csv(by_region, index=False)
+
+    gate = _gate(results)
+    assert gate.main() == 1
+    assert any("by_region" in f and "quantile for the same bin" in f for f in gate.failures), (
+        gate.failures
+    )
 
 
 def test_result_gate_rejects_a_single_fold_per_day_file(tmp_path):
