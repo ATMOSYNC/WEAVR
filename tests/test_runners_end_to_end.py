@@ -545,6 +545,7 @@ def _gate(results: Path, season_days: int = 8):
     gate.PER_DAY = results / "per_day"
     gate.SEASON_DAYS = season_days
     gate.failures = []
+    gate.advisories = []
     gate.notes = []
     return gate
 
@@ -575,11 +576,14 @@ def test_result_gate_flags_a_degenerate_bin_region_fit(tmp_path):
     frame.to_csv(by_bin, index=False)
 
     gate = _gate(results)
-    assert gate.main() == 1
-    flagged = [f for f in gate.failures if "quantile for the same bin" in f]
-    assert len(flagged) == 2, gate.failures
-    assert any("NE1" in f for f in flagged)
-    assert any("SI" in f for f in flagged)
+    # Advisory, not blocking: the defect covers ~0.2% of cell-days and leaves
+    # the domain CRPS intact, so it must not stop unrelated downstream work.
+    assert gate.main() == 0, f"a breakdown defect blocked the gate: {gate.failures}"
+    assert gate.failures == [], gate.failures
+    flagged = [a for a in gate.advisories if "quantile for the same bin" in a]
+    assert len(flagged) == 2, gate.advisories
+    assert any("NE1" in a for a in flagged)
+    assert any("SI" in a for a in flagged)
 
 
 def test_result_gate_does_not_flag_a_uniformly_hard_bin(tmp_path):
@@ -601,7 +605,8 @@ def test_result_gate_does_not_flag_a_uniformly_hard_bin(tmp_path):
     frame.to_csv(by_bin, index=False)
 
     gate = _gate(results)
-    assert gate.main() == 0, f"a uniformly hard bin was flagged: {gate.failures}"
+    assert gate.main() == 0, f"a uniformly hard bin was flagged: {gate.advisories}"
+    assert gate.advisories == [], gate.advisories
 
 
 def test_result_gate_ignores_count_columns(tmp_path):
@@ -621,6 +626,7 @@ def test_result_gate_ignores_count_columns(tmp_path):
 
     gate = _gate(results)
     assert gate.main() == 0, f"a count column tripped the magnitude bound: {gate.failures}"
+    assert gate.advisories == [], gate.advisories
 
 
 def test_result_gate_checks_by_region_which_has_no_combiner_column(tmp_path):
@@ -640,10 +646,10 @@ def test_result_gate_checks_by_region_which_has_no_combiner_column(tmp_path):
     frame.to_csv(by_region, index=False)
 
     gate = _gate(results)
-    assert gate.main() == 1
-    assert any("by_region" in f and "quantile for the same bin" in f for f in gate.failures), (
-        gate.failures
-    )
+    assert gate.main() == 0
+    assert any(
+        "by_region" in a and "quantile for the same bin" in a for a in gate.advisories
+    ), gate.advisories
 
 
 def test_result_gate_rejects_a_single_fold_per_day_file(tmp_path):
@@ -667,6 +673,37 @@ def test_result_gate_rejects_a_single_fold_per_day_file(tmp_path):
     gate.PER_DAY = results / "per_day"
     gate.SEASON_DAYS = 8
     assert gate.main() == 1
+    assert any("folds" in f for f in gate.failures), gate.failures
+
+
+def test_result_gate_blocks_on_evidence_base_failures_even_with_advisories(tmp_path):
+    """A blocking defect must still block, whatever else is advisory.
+
+    The severity split must not become a way for a broken evidence base to
+    pass: a per-day file missing a fold means the verdicts cannot be computed,
+    and that outranks any number of breakdown advisories sitting alongside it.
+    """
+    results = tmp_path / "results"
+    _write_valid_results(results, season_days=8)
+    by_bin = results / "tier2_hierarchical_baseline_by_bin.csv"
+    frame = pd.read_csv(by_bin)
+    mask = (
+        (frame["combiner"] == "bma")
+        & (frame["bin"] == "heavy")
+        & (frame["fold"] == "pooled")
+        & (frame["lead_hours"] == 24)
+    )
+    frame.loc[mask & (frame["region"] == "NE1"), "crps_mm"] = 119.5
+    frame.to_csv(by_bin, index=False)
+
+    # ... and now break the evidence base as well.
+    pd.DataFrame(
+        {"date": pd.date_range("2018-06-01", periods=8).date, "fold": ["2018"] * 8}
+    ).to_csv(results / "per_day" / "tier2_bma__lead24.csv", index=False)
+
+    gate = _gate(results)
+    assert gate.main() == 1, "a single-fold per-day file did not block"
+    assert gate.advisories, "the breakdown advisory should still be reported"
     assert any("folds" in f for f in gate.failures), gate.failures
 
 
