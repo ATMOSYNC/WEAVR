@@ -30,6 +30,7 @@ rewrite Tier 0's numbers.
 
 from __future__ import annotations
 
+import csv
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -227,7 +228,7 @@ class PerDayScoreWriter:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
-        if not self._flushed and not exc_info[0] is None:
+        if not self._flushed and exc_info[0] is not None:
             self.flush()
 
 
@@ -313,3 +314,42 @@ def read_per_day_scores(out_dir: str | Path = "results") -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
+
+
+def write_rows_csv(path: str | Path, rows: Sequence[Mapping[str, object]]) -> Path:
+    """Write a list of row dicts to `path`, tolerating heterogeneous keys.
+
+    The fieldnames come from the **union** of every row's keys, in first-seen
+    order, rather than from `rows[0]`. Deriving them from the first row alone
+    is a trap that fires only after all the expensive work is done: a runner
+    that appends per-fold rows and then pooled rows, where the pooled rows
+    carry an extra column, produces a perfectly valid first row and a later
+    row that `csv.DictWriter` rejects with "dict contains fields not in
+    fieldnames". That is exactly what killed a two-season Tier 2 run: after
+    two hours of BMA sampling, writing the per-bin CSV raised, the per-day
+    scores were still buffered in memory, and the whole run was lost.
+
+    Union semantics also mean a caller cannot lose a column by accident, and
+    a missing key is written as an empty field rather than crashing -- which
+    is the honest representation for a row that genuinely does not carry a
+    per-region or per-bin statistic.
+
+    Returns the path written.
+    """
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fieldnames: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
+
+    with out_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, restval="")
+        if fieldnames:
+            writer.writeheader()
+        writer.writerows(rows)
+    return out_path

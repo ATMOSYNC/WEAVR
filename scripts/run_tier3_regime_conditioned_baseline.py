@@ -59,7 +59,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
 from pathlib import Path
 
@@ -96,6 +95,7 @@ from weavr.score_io import (  # noqa: E402
     guard_result_overwrites,
     per_day_scores,
     resolve_result_paths,
+    write_rows_csv,
 )
 from weavr.splits import (  # noqa: E402
     InsufficientTimeBlocksError,
@@ -502,24 +502,16 @@ def main() -> int:
             domain_rows.append(pooled_domain_row)
 
     def _write_csv(path_str: str, rows: list[dict]) -> None:
-        out_path = Path(path_str)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
         if not rows:
             return
-        fieldnames = list(rows[0].keys())
-        for row in rows[1:]:
-            for key in row:
-                if key not in fieldnames:
-                    fieldnames.append(key)
-        with out_path.open("w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-        print(f"Wrote {out_path}")
+        print(f"Wrote {write_rows_csv(path_str, rows)}")
+
+    # Per-day first: it is the expensive artifact and the CSVs are cheap
+    # formatting. Tier 2 lost a two-hour run to this ordering once already.
+    per_day_writer.flush()
 
     _write_csv(args.out_csv, domain_rows)
     _write_csv(args.bin_out_csv, bin_rows)
-    per_day_writer.flush()
 
     return 0
 

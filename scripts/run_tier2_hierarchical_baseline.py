@@ -62,7 +62,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -94,6 +93,7 @@ from weavr.score_io import (
     guard_result_overwrites,
     per_day_scores,
     resolve_result_paths,
+    write_rows_csv,
 )
 from weavr.splits import (  # noqa: E402
     iter_evaluation_folds,
@@ -827,19 +827,25 @@ def main() -> int:
             domain_rows.append(pooled_domain_row)
 
     def _write_csv(path_str: str, rows: list[dict]) -> None:
-        out_path = Path(path_str)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        fieldnames = list(rows[0].keys()) if rows else []
-        with out_path.open("w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
+        out_path = write_rows_csv(path_str, rows)
         print(f"Wrote {out_path}")
+
+    # Flush the per-day scores FIRST.
+    #
+    # They are the expensive artifact -- two hours of EMOS/BMA scoring exists
+    # only in this writer's memory until now -- while the three CSVs below are
+    # cheap formatting of numbers already in hand. Writing them in this order
+    # means a formatting bug can no longer discard the run: that is not
+    # hypothetical, because the previous ordering did exactly that. The
+    # by-bin CSV raised `ValueError: dict contains fields not in fieldnames:
+    # 'rmse_mm'` -- the pooled rows carry an `rmse_mm` the per-fold rows do
+    # not, and the old fieldnames-from-`rows[0]` writer rejected them -- and
+    # the buffered per-day scores went with it.
+    per_day_writer.flush()
 
     _write_csv(args.out_csv, domain_rows)
     _write_csv(args.bin_out_csv, bin_rows)
     _write_csv(args.region_out_csv, region_rows)
-    per_day_writer.flush()
 
     return 0
 

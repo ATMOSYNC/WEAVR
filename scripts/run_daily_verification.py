@@ -75,9 +75,7 @@ weekly JJAS-2020 samples):
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
-from pathlib import Path
 
 import pandas as pd
 import xarray as xr
@@ -90,7 +88,7 @@ from weavr.drift import (
     trailing_window_value,
 )
 from weavr.grid import IMD_DAY_START_HOUR_UTC
-from weavr.score_io import FORCE_HELP, guard_result_overwrites, resolve_result_paths
+from weavr.score_io import FORCE_HELP, guard_result_overwrites, resolve_result_paths, write_rows_csv
 
 PRECIP_VARIABLE = "total_precipitation_24hr"
 PRECIP_M_TO_MM = 1000.0
@@ -219,13 +217,7 @@ def main() -> int:
                 f"[{source_name:>12} lead {lead_hours:>3}h] {flag:>5} -- {row['reason']}"
             )
 
-    out_path = Path(args.out_csv)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(rows[0].keys())
-    with out_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    out_path = write_rows_csv(args.out_csv, rows)
 
     n_drift = sum(1 for r in rows if r["is_drift"])
     print(f"\n{n_drift} of {len(rows)} (source, lead) cells flagged as drift.")

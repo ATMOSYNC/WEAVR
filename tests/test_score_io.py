@@ -13,6 +13,7 @@ from weavr.score_io import (
     read_per_day_scores,
     resolve_result_paths,
     write_per_day_scores,
+    write_rows_csv,
 )
 
 
@@ -359,3 +360,50 @@ class TestPerDayScoreWriter:
 
     def test_flush_is_a_noop_on_an_empty_run(self, tmp_path):
         assert PerDayScoreWriter(tmp_path).flush() == []
+
+
+class TestWriteRowsCsv:
+    """Regression: heterogeneous rows must not raise.
+
+    A two-season Tier 2 run lost two hours of BMA scoring to
+    `ValueError: dict contains fields not in fieldnames: 'rmse_mm'`. The
+    per-fold rows carried no `rmse_mm`; the pooled rows appended later did;
+    and the writer derived its fieldnames from `rows[0]` alone, so the
+    by-bin CSV raised *after* every expensive number had been computed.
+    """
+
+    def test_later_row_with_extra_key_is_written_not_raised(self, tmp_path):
+        rows = [
+            {"lead_hours": 24, "fold": "2018", "crps_mm": 4.2, "mse_mm2": 30.1},
+            {
+                "lead_hours": 24,
+                "fold": "pooled",
+                "crps_mm": 4.3,
+                "mse_mm2": 31.0,
+                "rmse_mm": 5.57,  # pooled rows carry this; per-fold rows do not
+            },
+        ]
+        out = write_rows_csv(tmp_path / "by_bin.csv", rows)
+        frame = pd.read_csv(out)
+
+        assert list(frame.columns) == ["lead_hours", "fold", "crps_mm", "mse_mm2", "rmse_mm"]
+        # The row lacking the key gets an empty field, not a crash and not a
+        # silent zero that would read as a real measurement.
+        assert np.isnan(frame.loc[0, "rmse_mm"])
+        assert frame.loc[1, "rmse_mm"] == pytest.approx(5.57)
+        assert len(frame) == 2
+
+    def test_fieldnames_follow_first_seen_order(self, tmp_path):
+        rows = [{"b": 1, "a": 2}, {"c": 3, "a": 4}]
+        out = write_rows_csv(tmp_path / "ordered.csv", rows)
+        header = out.read_text().splitlines()[0]
+        assert header == "b,a,c"
+
+    def test_empty_row_list_writes_headerless_file(self, tmp_path):
+        out = write_rows_csv(tmp_path / "empty.csv", [])
+        assert out.exists()
+        assert out.read_text() == ""
+
+    def test_creates_missing_parent_directory(self, tmp_path):
+        out = write_rows_csv(tmp_path / "nested" / "deep" / "x.csv", [{"a": 1}])
+        assert out.exists()
