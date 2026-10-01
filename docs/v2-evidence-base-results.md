@@ -79,6 +79,63 @@ probabilistic layer is skilful against climatology, and it is not.
 at lead 24, converging to a dead heat by lead 96. Since `tier2_bma` is the
 declared headline, this directly shapes the verdicts below.
 
+## 2b. v1 vs v2, and why the columns must not simply be compared
+
+| | v1 | v2 |
+|---|---|---|
+| cadence | weekly | daily |
+| seasons | 2020 only | 2018 + 2020 |
+| splits | `seasonal_block_split`, 1 fold | leave-one-year-out, 2 folds |
+| train days | 14 | 122 |
+| test days | 3–4 | 118–122 per fold, 236–244 pooled |
+| intervals | not computable | paired block bootstrap |
+
+| lead | tier0 RMSE v1 → v2 | tier1 RMSE v1 → v2 | BMA CRPS v1 → v2 |
+|---|---|---|---|
+| 24 h | 11.55 → 14.61 | 11.08 → 13.86 | 3.721 → 4.643 |
+| 48 h | 13.59 → 14.71 | 12.53 → 13.86 | 3.802 → 4.577 |
+| 72 h | 13.15 → 14.77 | 12.05 → 13.84 | 3.830 → 4.569 |
+| 96 h | 14.15 → 14.78 | 13.34 → 13.85 | 4.643 → 4.597 |
+| 120 h | 15.35 → 14.83 | 14.90 → 13.89 | 4.454 → 4.627 |
+
+**Every tier got worse on RMSE, and that is not a regression.** v1 scored 4
+test days, all in the last four weeks of September
+(2020-09-07/14/21/28), on a weekly cadence. v2 scores 122 days per fold
+across the whole season, including the early-season days that are harder to
+predict. The v1 numbers were flattered by the sample, and the v2 numbers are
+the honest ones. Tier 0 improving slightly at lead 120 h (15.35 → 14.83) is
+the one place v2 is better, and it is the longest lead, where v1 had the
+fewest test days.
+
+This is why the audit in §8 says a v1-vs-v2 table must *state* the cadence
+difference rather than set the columns side by side: read naively, the table
+above says the project regressed, and it did not.
+
+## 2c. Measured runtimes
+
+Single machine, 8 cores, the whole Tier 2 process single-threaded. Prompt item
+3 asks for this to be measured and written down.
+
+| stage | wall clock |
+|---|---|
+| IFS-ENS daily store rebuild (2020, from cached staging) | **30 s** |
+| pre-flight store check (17 store/variable checks) | **4 s** |
+| Tier 2, 5 leads × 2 folds (EMOS-CSG + BMA) | **2 h 09 m** |
+| Tier 3, 5 leads × 2 folds (regime-conditioned) | **2 h 09 m** |
+| independence diagnostic | **~1 min** |
+| daily verification, per season | **~10 s** |
+| scorecard, 2827 comparisons × 1000 bootstrap resamples | **~1 min** |
+| result gate | **~2 s** |
+| **full end-to-end rehearsal on miniature stores** | **~7 min** |
+
+The rehearsal figure is the important one: every runner can be executed for
+real, CLI and exit codes included, against schema-faithful stores at ~1/1000
+scale in about the time it takes to make coffee. Run it before any multi-hour
+regeneration, not after the next loss.
+
+Peak RSS was 2.6 GB for Tier 2 and 4.7 GB for Tier 3, both inside the memory
+budget the blocked CRPS and cell-blocked BMA work was built for.
+
 ## 3. Verdicts
 
 From `results/preregistration_verdicts.csv`. Claims H4–H11 belong to later
@@ -233,14 +290,54 @@ fixed threshold.
 
 ### Bin fittability under `MIN_TRAIN_DAYS_PER_BIN = 5`
 
-All five rain bins now fit in every fold and lead on the two-season base, with
-no point-mass fallback remaining — against the v1 weekly base, where
-`extremely_heavy` never reached 5 contributing days at any lead. The constant
-is unchanged. The phase 4 counts that produced the old claim were measured
-over 14 `seasonal_block_split` train days; the v2 training window is a whole
-season (~118–122 days). `docs/phase4-data-and-combiner-scope.md` is corrected
-to scope that claim, and the extreme-probability map caption inherits the
-correction.
+**Correction.** An earlier draft of this file said all five bins now fit in
+every fold and lead with no fallback remaining. That was wrong, and it
+conflated two different granularities. `scripts/measure_bin_fittability.py`
+measures the actual fit outcomes on the v2 train folds:
+
+| lead | dry | light | heavy | very_heavy | extremely_heavy |
+|---|---|---|---|---|---|
+| 24 h | 4/4 | 4/4 | 4/4 | 4/4 | **0/4** |
+| 48 h | 4/4 | 4/4 | 4/4 | 4/4 | **0/4** |
+| 72 h | 4/4 | 4/4 | 4/4 | 4/4 | **0/4** |
+| 96 h | 4/4 | 4/4 | 4/4 | 2/4 | **0/4** |
+| 120 h | 4/4 | 4/4 | 4/4 | 2/4 | **0/4** |
+
+Per bin, EMOS-CSG pooled over regions:
+
+| lead | dry | light | heavy | very_heavy | extremely_heavy |
+|---|---|---|---|---|---|
+| 24 h | 12/12 | 12/12 | 12/12 | 3/12 | **0/12** |
+| 48 h | 12/12 | 12/12 | 12/12 | 3/12 | **0/12** |
+| 72 h | 12/12 | 12/12 | 12/12 | 1/12 | **0/12** |
+| 96 h | 12/12 | 12/12 | 11/12 | 1/12 | **0/12** |
+| 120 h | 12/12 | 12/12 | 11/12 | 1/12 | **0/12** |
+
+So what actually changed against v1 is narrower than "everything now fits":
+
+- **`very_heavy` improved and `extremely_heavy` did not.** The pooled bin fit
+  clears 5 contributing days for `very_heavy` at every lead on the v2
+  training window; on v1's 14-day weekly window it fell back from 72 h.
+- **`extremely_heavy` still never fits**, at any lead, at either
+  granularity — pooled over regions or per (bin, region). More data did not
+  rescue it.
+- **BMA is strictly harder than EMOS-CSG** because it must fit six regions per
+  bin: `very_heavy` succeeds in only 1–3 of 12 bin×region×fold combinations
+  at longer leads.
+
+The v1 table in `docs/phase4-data-and-combiner-scope.md` counted
+`extremely_heavy` at 0–3 contributing days over 14 `seasonal_block_split`
+train days. The v2 training window is a whole season (~118–122 days), which
+is what rescues `very_heavy`. Phase 4 is corrected to scope its claim to that
+window.
+
+**Discrepancy to raise.** #74's EVT evaluation reports that "all 5 rain bins
+fitted in every fold and lead", which does not agree with the table above.
+The likely cause is that EVT fits per-cell EMOS-CSG with its own binning
+while Tier 2 fits per-bin EMOS-CSG and per-(bin, region) BMA, so the two are
+counting different things. Neither number is wrong; they are different
+questions, and this table is the one step 07 asks for. Worth reconciling with
+arvnd before either is quoted as "the" fittability result.
 
 ## 8. Audit: every text still quoting a v1 number
 
