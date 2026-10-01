@@ -23,16 +23,22 @@ scripts/gate_step07_results.py                 # evidence-base validator
 |---|---|
 | Tiers regenerated | 0, 1, 2, 3, single-source, Phase 2, independence, daily verification |
 | Test days per lead | 244 / 242 / 240 / 238 / 236 (leads 24→120h) |
-| Scorecard comparisons | 2827, 56.0% significant |
+| Scorecard comparisons | 3047, 58.9% significant |
 | Degenerate bootstraps | **0** |
-| Verdicts reached | **3** of 12 registered claims (2 PASS, 1 FAIL/INSUFFICIENT) |
+| Verdicts reached | **4** of 12 registered claims: H1 PASS x2, H2 FAIL, H3 FAIL |
 
-**The headline result is a split verdict, and the interesting half is the
-failure.** H1 passes twice over: the WEAVR blend beats the best single
-ensemble member on RMSE at 3 of 5 leads and on CRPS at 5 of 5. H2 fails: the
-multi-source combiner does **not** beat the best single-source EMOS
-calibration on CRPS. The declared headline, `tier2_bma`, is the weaker of the
-two probabilistic methods.
+**All three headline claims are now decided, and two of the three fail.** H1
+passes twice over: the blend beats the best single ensemble member on RMSE at
+3 of 5 leads and on CRPS at 5 of 5. H2 fails — the multi-source combiner does
+**not** beat the best single-source EMOS calibration on CRPS. H3 fails on both
+legs: at 64.5 mm the blend's Brier is 3.6× worse than climatology (BSS −2.6,
+where the claim needs > 0) and its SEDI is worse than the best member at every
+lead.
+
+So the blend is better than a single raw member (H1) and worse than a
+single-source calibration (H2) and than climatology on heavy-rain probability
+(H3). The declared headline, `tier2_bma`, is the weakest of the three
+configurations on the two probabilistic claims it was declared to win.
 
 ---
 
@@ -198,24 +204,50 @@ whichever is best, so the claim is decided without choosing a comparator on
 the data being tested. `needs_train_scores` is therefore cleared on H2, and
 that reasoning is recorded in `REFERENCE_METHODS` in `scripts/run_scorecard.py`.
 
-### H3 — **NOT_YET_TESTED** (Brier blocked; SEDI measurable and mixed)
+### H3 — **FAIL**
 
-The claim has two legs. The SEDI leg is measurable and **threshold-dependent**:
+`P(>=64.5mm)` has BSS > 0 vs climatology and higher SEDI than the best member.
+Both legs fail.
 
-- At **115.6 mm**, `tier2_bma` has higher SEDI than the best member at all 5
-  leads (e.g. lead 24: 0.583 vs 0.546, CI [−0.043, −0.032]) and higher than
-  climatology at all 5 leads (0.583 vs 0.412, CI [−0.208, −0.132]).
-- At **204.5 mm** the ordering reverses: BMA is worse than the best member at
-  4 of 5 leads, significantly so at leads 24, 48, 120.
+**Brier/BSS leg — fails at every threshold and every lead.** `tier2_bma` is
+*worse* than IMD climatology on Brier throughout, all significant:
 
-The Brier/BSS leg cannot be computed. Brier needs exceedance probabilities,
-and `tier2`'s per-day files carry only hits/misses/false alarms/correct
-negatives. Those reconstruct CSI, ETS and SEDI inside each bootstrap
-replicate — which is why the SEDI leg works — but **not** Brier, whose
-squared-probability error is not a ratio of counts. `climatology` does carry
-`brier_*` columns and Tier 2 does not, so no `tier2_bma`-vs-`climatology`
-Brier comparison exists to test. Closing this needs Tier 2 to pass
-`probabilities=` into `per_day_scores`, i.e. a re-run.
+| threshold | tier2_bma | climatology | BSS (needs > 0) |
+|---|---|---|---|
+| 7.5 mm | 0.1438 | 0.0429 | −2.35 |
+| 64.5 mm | 0.01238 | 0.00343 | **−2.61** |
+| 115.6 mm | 0.00257 | 0.00069 | −2.73 |
+| 204.5 mm | 0.00029 | 0.00007 | −2.90 |
+
+BSS at 64.5 mm is −2.61 to −2.63 across the five leads, where the claim needs
+it above 0. Climatology is a strong forecast for a rare event precisely
+because it is close to the base rate, and a 24–120 h probabilistic blend does
+not beat simply knowing how often 64.5 mm falls.
+
+**SEDI leg — fails at the claim's own threshold.** Against the best member:
+
+| threshold | tier2_bma better at | significant at |
+|---|---|---|
+| 7.5 mm | 5/5 leads | 5/5 |
+| 64.5 mm | **0/5** | 4/5 (worse) |
+| 115.6 mm | **0/5** | 3/5 (worse) |
+| 204.5 mm | 0/5 | 0/5 |
+
+The blend's SEDI advantage exists only at 7.5 mm — light rain. At the 64.5 mm
+threshold the claim names, it is worse at every lead and significantly so at
+four of five. Against climatology it is better at 7.5 mm and worse at all
+three higher thresholds.
+
+**Correction to an earlier draft of this file**, which reported this leg as
+"better at 115.6 mm and worse at 204.5 mm". That was wrong on both counts: the
+SEDI comparisons are computed at all four IMD thresholds, and the ordering is
+*better at 7.5 mm, worse at everything above it*. A favourable reading at a
+threshold the claim does not name was reported instead of the one it does.
+
+This leg was previously `NOT_YET_TESTED` because Tier 2's per-day files carried
+only hits/misses/false alarms/correct negatives, and a squared-probability
+error is not reconstructible from counts. Tier 2 now records exceedance
+probabilities per threshold, so the comparison exists and the claim is decided.
 
 ## 4. Tier 3: the regime-conditioned go/no-go failed
 
@@ -277,9 +309,27 @@ rather than blocking failures for exactly that reason. Median by-bin CRPS is
 8.3–8.4 mm and consistent across all three combiners, so the bulk of the
 breakdown is sound.
 
-**Unexplained.** Why `heavy`×NE1 and `heavy`×SI degenerate at lead 24 while
-`heavy`×WC and `heavy`×CI do not is not yet root-caused. The fitting code was
-deliberately not changed on the strength of numbers observed after the fact.
+**Still unresolved, and an earlier root-cause claim in this file's history was
+wrong.** The first attempt blamed `gamma_mean_intercept`/`gamma_mean_slope` as
+the only unbounded parameters, and `weavr.bma` now caps the predicted
+cube-root mean at the training maximum. That cap **provably does not bind here**
+— re-running Tier 2 with it in place reproduced `heavy`×SI to six decimal
+places (CRPS 145.263122, bias +277.369185), which is how the misdiagnosis was
+caught. The mean regressors are in fact well conditioned; measured on the
+2020-trained fold, `heavy`×SI has mean intercepts +3.31/+1.66/+2.13 against
++2.33 for healthy `heavy`×NE2.
+
+What *does* differ is the variance: `heavy`×SI's cube-root variance intercepts
+are 2.75/2.96/1.09 where `heavy`×NE2's are 0.58/1.16/1.10. Since the sampler
+draws `Gamma(kappa = mean_ct²/variance_ct, theta = variance_ct/mean_ct)` and
+then cubes, a fat gamma tail in cube-root space produces rare enormous draws
+whose sample mean dominates a 453-cell fold's pooled bias. That is the
+mechanism consistent with a +277 mm bias on a bin whose own scale is ~90 mm,
+but it is **not confirmed**, and no fix is claimed.
+
+The bound was kept because it is a legitimate guard that is inert on
+well-conditioned fits (asserted to 1e-9 in `tests/test_bma_mean_bound.py`),
+not because it fixed this.
 
 ### Bin-level CRPS scales with the bin
 
