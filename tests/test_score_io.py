@@ -7,6 +7,7 @@ import xarray as xr
 
 from weavr import verify as V
 from weavr.score_io import (
+    PerDayScoreWriter,
     guard_result_overwrites,
     per_day_scores,
     read_per_day_scores,
@@ -285,3 +286,76 @@ class TestGuardResultOverwrites:
         with pytest.raises(SystemExit):
             guard_result_overwrites([existing])
         assert existing.read_text() == "reviewed numbers"
+
+
+class TestPerDayScoreWriter:
+    """Regression cover for the fold-overwrite that step 07 hit.
+
+    `write_per_day_scores` names files by `(method, lead)`, so a LOYO runner
+    that called it once per fold kept only the last fold. The aggregate CSVs
+    stayed correct because folds were scored in memory, so nothing failed --
+    the 2018 fold's days simply never reached the scorecard, and every paired
+    CI built on them came back non-computable.
+    """
+
+    def _fold(self, dates, label):
+        return pd.DataFrame(
+            {
+                "date": dates,
+                "fold": label,
+                "n_cells": 17_415,
+                "mse_mm2": 1.0,
+                "mae_mm": 0.9,
+            }
+        )
+
+    def test_two_folds_survive_in_one_file(self, tmp_path):
+        writer = PerDayScoreWriter(tmp_path)
+        writer.add("tier0", 24, self._fold(pd.date_range("2018-07-01", periods=3), "2018"))
+        writer.add("tier0", 24, self._fold(pd.date_range("2020-07-01", periods=3), "2020"))
+        written = writer.flush()
+
+        assert [p.name for p in written] == ["tier0__lead24.csv"]
+        frame = pd.read_csv(written[0])
+        assert len(frame) == 6
+        assert sorted(frame["fold"].astype(str).unique()) == ["2018", "2020"]
+
+    def test_direct_writes_in_a_loop_would_have_lost_a_fold(self, tmp_path):
+        """Pins *why* the writer exists: the naive loop keeps one fold."""
+        folds = [
+            self._fold(pd.date_range("2018-07-01", periods=3), "2018"),
+            self._fold(pd.date_range("2020-07-01", periods=3), "2020"),
+        ]
+        for frame in folds:
+            write_per_day_scores("tier0", 24, frame, out_dir=tmp_path)
+
+        frame = pd.read_csv(tmp_path / "per_day" / "tier0__lead24.csv")
+        assert len(frame) == 3
+        assert set(frame["fold"].astype(str)) == {"2020"}
+
+    def test_add_after_flush_is_refused_rather_than_dropped(self, tmp_path):
+        writer = PerDayScoreWriter(tmp_path)
+        writer.add("tier0", 24, self._fold(pd.date_range("2018-07-01", periods=2), "2018"))
+        writer.flush()
+        with pytest.raises(RuntimeError):
+            writer.add("tier0", 24, self._fold(pd.date_range("2020-07-01", periods=2), "2020"))
+
+    def test_duplicate_dates_across_folds_are_rejected(self, tmp_path):
+        """Overlapping folds would double-count days in the paired CI."""
+        writer = PerDayScoreWriter(tmp_path)
+        dates = pd.date_range("2018-07-01", periods=3)
+        writer.add("tier0", 24, self._fold(dates, "2018"))
+        writer.add("tier0", 24, self._fold(dates, "2020"))
+        with pytest.raises(ValueError, match="duplicate dates"):
+            writer.flush()
+
+    def test_frame_without_a_fold_column_is_rejected(self, tmp_path):
+        writer = PerDayScoreWriter(tmp_path)
+        frame = self._fold(pd.date_range("2018-07-01", periods=2), "2018").drop(
+            columns=["fold"]
+        )
+        with pytest.raises(ValueError, match="fold"):
+            writer.add("tier0", 24, frame)
+
+    def test_flush_is_a_noop_on_an_empty_run(self, tmp_path):
+        assert PerDayScoreWriter(tmp_path).flush() == []

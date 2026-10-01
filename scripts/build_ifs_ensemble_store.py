@@ -77,7 +77,7 @@ from build_baseline_store import (  # noqa: E402
 )
 
 from weavr.archives import archive_for  # noqa: E402
-from weavr.grid import SourceTooCoarseError, regrid_to_common  # noqa: E402
+from weavr.grid import regrid_to_common  # noqa: E402
 
 IFS_ENS_ZARR_PATH = archive_for("ifs_ens", 2020).path
 PRECIP_VARIABLE = "total_precipitation_24hr"
@@ -356,24 +356,35 @@ def main() -> int:
         return 1
 
     print(f"\nCombining {len(timestamps)} timestamps from staging into final store...")
-    fetched_datasets = [xr.open_dataset(staging_path(staging_dir, ts)) for ts in timestamps]
-    combined = xr.concat(fetched_datasets, dim="time")
-    combined = _clear_encoding(combined)
-
-    try:
-        combined = regrid_to_common(combined)
-    except SourceTooCoarseError:
-        raise
+    # Write incrementally: loading all 122 NetCDFs (~24GB) into memory at once
+    # OOMs on a 16GB machine. Instead, regrid each timestamp and write it
+    # directly into the zarr store one time slice at a time using append_dim.
+    import shutil
 
     if store_path.exists():
-        import shutil
-
         shutil.rmtree(store_path)
-    combined.to_zarr(store_path, mode="w")
 
-    real_total_bytes = sum(d[PRECIP_VARIABLE].nbytes for d in fetched_datasets)
+    for i, ts in enumerate(timestamps):
+        ds = xr.open_dataset(staging_path(staging_dir, ts))
+        ds = regrid_to_common(ds)
+        ds = _clear_encoding(ds)
+        # Staging files carry `time` as a scalar coordinate, not a dimension.
+        # Without this, to_zarr creates a store with no `time` axis and the
+        # append_dim below has nothing to append along.
+        ds = ds.expand_dims("time")
+        if i == 0:
+            ds.to_zarr(store_path, mode="w")
+        else:
+            ds.to_zarr(store_path, append_dim="time")
+        if (i + 1) % 10 == 0 or i == len(timestamps) - 1:
+            print(f"  Written {i + 1}/{len(timestamps)} timestamps to final store")
+
+    real_total_bytes = sum(
+        xr.open_dataset(staging_path(staging_dir, ts))[PRECIP_VARIABLE].nbytes
+        for ts in timestamps
+    )
     summary = {
-        "n_timestamps": len(fetched_datasets),
+        "n_timestamps": len(timestamps),
         "n_lead_hours": len(args.lead_hours),
         "n_members": N_MEMBERS,
         "workers": args.workers,
@@ -386,7 +397,7 @@ def main() -> int:
 
     print("\n--- Summary ---")
     print(
-        f"Fetched {len(fetched_datasets)} timestamps this run in {total_elapsed / 60:.1f} min "
+        f"Fetched {len(timestamps)} timestamps this run in {total_elapsed / 60:.1f} min "
         f"({real_total_bytes / 1e9:.2f} GB from staging) -- "
         f"{summary['mean_seconds_per_timestamp']:.1f}s/timestamp average."
     )

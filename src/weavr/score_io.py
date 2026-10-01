@@ -164,6 +164,73 @@ def write_per_day_scores(
     return path
 
 
+class PerDayScoreWriter:
+    """Collect per-day frames across folds, then write one file per method/lead.
+
+    `write_per_day_scores` names a file by `(method, lead)` alone, so calling it
+    once per fold overwrites the previous fold: a two-season LOYO run kept only
+    the *last* fold's days, and the 2018 fold vanished from the evidence without
+    an error. The aggregate CSVs still looked right, because each fold was
+    scored in memory, so the loss only showed up as scorecard CIs that could not
+    be computed -- silently, on the numbers that decide the pre-registered
+    claims.
+
+    Buffering here makes the fold dimension structural rather than a convention
+    each runner has to remember: `add` as many folds as there are, `flush`
+    once. Forgetting `flush` writes nothing at all, which fails loudly, instead
+    of writing a plausible-looking half-complete file.
+
+    Use it as a context manager to make forgetting `flush` impossible.
+    """
+
+    def __init__(self, out_dir: str | Path = "results") -> None:
+        self.out_dir = out_dir
+        self._frames: dict[tuple[str, int], list[pd.DataFrame]] = {}
+        self._flushed = False
+
+    def add(self, method: str, lead: int, per_day: pd.DataFrame) -> None:
+        """Buffer one fold's rows for `(method, lead)`."""
+        if self._flushed:
+            raise RuntimeError(
+                "add() after flush(): the files are already written, so later "
+                "folds would be dropped. Move flush() to the end of the folds."
+            )
+        if not method:
+            raise ValueError("method must be a non-empty name; the scorecard pairs on it.")
+        if "fold" not in per_day.columns:
+            raise ValueError(
+                f"per-day frame for {method!r} lead {lead} has no 'fold' column; "
+                "the fold label is what keeps folds from overwriting each other."
+            )
+        self._frames.setdefault((method, lead), []).append(per_day)
+
+    def flush(self) -> list[Path]:
+        """Write every buffered `(method, lead)` and return the paths written."""
+        written: list[Path] = []
+        for (method, lead), frames in sorted(self._frames.items()):
+            combined = pd.concat(frames, ignore_index=True)
+            duplicates = combined["date"].duplicated().sum()
+            if duplicates:
+                raise ValueError(
+                    f"{method!r} lead {lead} produced {duplicates} duplicate dates "
+                    "across folds. Two folds must score disjoint days; otherwise "
+                    "the paired comparison would double-count them."
+                )
+            written.append(
+                write_per_day_scores(method, lead, combined, out_dir=self.out_dir)
+            )
+        self._frames.clear()
+        self._flushed = True
+        return written
+
+    def __enter__(self) -> PerDayScoreWriter:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if not self._flushed and not exc_info[0] is None:
+            self.flush()
+
+
 def resolve_result_paths(
     results_dir: str | Path,
     filenames: Mapping[str, str],

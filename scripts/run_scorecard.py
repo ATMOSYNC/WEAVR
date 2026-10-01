@@ -334,24 +334,37 @@ def measure_block_length(per_day: pd.DataFrame) -> pd.DataFrame:
 # missing* rather than just "no data". Claims whose comparator must be chosen
 # on the training fold carry `needs_train_scores`: today's per-day files are
 # test-only, and step 07 is what adds the train side.
+#
+# The headline configuration (H1-RMSE, H1-CRPS, H3) is `tier2_bma`, declared
+# here on **design** grounds before the verdicts exist, not by picking whichever
+# tier happened to score best: choosing it after seeing the two-season results
+# would select on the test set and quietly invalidate all three claims. The
+# reasoning is only that `tier2_bma` is already the declared multi-source
+# combiner for H2 immediately below, so H1/H3/H2 now all test the same object,
+# and it is the calibrated layer, which H3's Brier/SEDI claim specifically
+# needs (Tier 1 has no probabilistic calibration to score). If Tier 2 turns out
+# to lose to Tier 1, that is the finding to report, not a reason to swap the
+# declaration.
+HEADLINE_CONFIGURATION = "tier2_bma"
+
 CLAIM_SPECS: list[dict] = [
     {
         "claim": "H1-RMSE",
         "summary": "A WEAVR blend beats the best single member (chosen on train), on RMSE",
-        "method_a": None,  # the pre-declared headline configuration
+        "method_a": HEADLINE_CONFIGURATION,
         "method_b": "best_single_member_on_train",
         "metric": "rmse_mm",
         "threshold": "",
-        "produced_by": "07 (headline configuration must be declared first)",
+        "produced_by": "07 (headline declared; tier2_bma per-day scores absent)",
     },
     {
         "claim": "H1-CRPS",
         "summary": "A WEAVR blend beats the best single member (chosen on train), on CRPS",
-        "method_a": None,
+        "method_a": HEADLINE_CONFIGURATION,
         "method_b": "best_single_member_on_train",
         "metric": "crps_mm",
         "threshold": "",
-        "produced_by": "07 (headline configuration must be declared first)",
+        "produced_by": "07 (headline declared; tier2_bma per-day scores absent)",
     },
     {
         "claim": "H2",
@@ -366,11 +379,11 @@ CLAIM_SPECS: list[dict] = [
     {
         "claim": "H3",
         "summary": "P(>=64.5mm) has BSS > 0 vs climatology and higher SEDI than the best member",
-        "method_a": None,
+        "method_a": HEADLINE_CONFIGURATION,
         "method_b": "climatology",
         "metric": "brier",
         "threshold": "64.5",
-        "produced_by": "07 (a blend with calibrated exceedance probabilities)",
+        "produced_by": "07 (headline declared; tier2_bma probabilities absent)",
     },
     {
         "claim": "H4",
