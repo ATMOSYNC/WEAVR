@@ -163,3 +163,79 @@ def test_csgd_only_arm_uses_point_mass_fallback() -> None:
 
     # Well below the fitted bin's scale, the same bin saturates at 1.
     assert csgd_only_probabilities(forecasts, labels, emos_results, 64.5)[0, 0, 0] == 1.0
+
+
+class TestMemberCountingBenchmark:
+    """The IFS-ENS member-counting benchmark #74 recorded as NOT RUN.
+
+    `--ifs-ensemble-stores` existed on the runner but was never resolved into
+    paths, so `ifs_available` was decided on an argument nothing read, the
+    runner printed "enabled", and no benchmark row was ever emitted. The
+    benchmark is the comparison step 12 is measured *against*, so silently
+    omitting it makes the spliced tail look unopposed.
+    """
+
+    def test_probability_is_the_empirical_member_fraction(self):
+        import numpy as np
+        import xarray as xr
+        from run_tail_repair_evt import member_counting_probabilities
+
+        # (sample=2, member=4, lat=1, lon=2) -- the shape `load_ifs_ensemble`
+        # produces: one lead already selected, time renamed to `sample`.
+        # Members 1 and 2 exceed 5 mm at lon 70; no member does at lon 71.
+        members = np.array(
+            [
+                [[[10.0, 1.0]], [[10.0, 1.0]], [[1.0, 1.0]], [[1.0, 1.0]]],
+                [[[20.0, 2.0]], [[20.0, 2.0]], [[2.0, 2.0]], [[2.0, 2.0]]],
+            ]
+        )
+        ens = xr.DataArray(
+            members,
+            dims=("sample", "member", "latitude", "longitude"),
+            coords={
+                "sample": [0, 1],
+                "member": [1, 2, 3, 4],
+                "latitude": [10.0],
+                "longitude": [70.0, 71.0],
+            },
+        )
+        probs = member_counting_probabilities(
+            ens, 5.0, np.array([True, False])
+        )
+        # Sample 0: 2 of 4 members above 5 mm at lon 70, none at lon 71.
+        assert probs[0, 0, 0] == pytest.approx(0.5)
+        assert probs[0, 0, 1] == pytest.approx(0.0)
+        # Only the test sample is returned, so the result lines up with
+        # `test_obs` (one row per test day) rather than the full series.
+        assert probs.shape == (1, 1, 2)
+        assert not np.isnan(probs).any()
+
+    def test_benchmark_row_is_scored_with_the_shared_helpers(self):
+        import numpy as np
+        from run_tail_repair_evt import benchmark_row
+
+        probs = np.full((2, 2, 2), 0.25)
+        obs = np.array([[[0.0, 60.0], [0.0, 60.0]], [[0.0, 60.0], [0.0, 60.0]]])
+        row = benchmark_row(
+            probs, obs, climatology_grid=np.full((2, 2), 0.1), threshold=50.0,
+            lead_hours=24, split_label="2018", split_kind="leave_one_year_out",
+            n_train=8, n_test=8,
+        )
+        assert row["arm"] == "raw_ifs_ens_member_counting"
+        # Half the cells are above the threshold and predicted 0.25.
+        assert row["brier"] == pytest.approx(0.5 * 0.25**2 + 0.5 * 0.75**2)
+        assert np.isfinite(row["sedi"])
+        assert row["false_zero_cells"] == 0
+
+    def test_no_false_zeros_when_members_exceed(self):
+        import numpy as np
+        from run_tail_repair_evt import benchmark_row
+
+        probs = np.full((2, 2, 2), 0.5)  # no exact zeros
+        obs = np.zeros((2, 2, 2))
+        row = benchmark_row(
+            probs, obs, climatology_grid=np.zeros((2, 2)), threshold=115.6,
+            lead_hours=24, split_label="2018", split_kind="leave_one_year_out",
+            n_train=8, n_test=8,
+        )
+        assert row["false_zero_cells"] == 0

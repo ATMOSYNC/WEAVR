@@ -81,6 +81,9 @@ from run_scorecard import (  # noqa: E402
 from run_tier2_hierarchical_baseline import (  # noqa: E402
     load_graphcast_ensemble as _tier2_load_graphcast_ensemble,
 )
+from run_tier2_hierarchical_baseline import (
+    load_ifs_ensemble as _tier2_load_ifs_ensemble,
+)
 
 from weavr.emos import (  # noqa: E402
     exceedance_probability_csgd,
@@ -100,6 +103,7 @@ from weavr.significance import paired_difference_ci  # noqa: E402
 from weavr.splits import iter_evaluation_folds  # noqa: E402
 from weavr.stores import (  # noqa: E402
     DEFAULT_BASELINE_DAILY_STORES,
+    DEFAULT_IFS_DAILY_STORES,
     DEFAULT_LAGGED_DAILY_STORES,
     open_multi_season,
     resolve_store_paths,
@@ -213,6 +217,111 @@ def expected_counts(probability: np.ndarray, obs_binary: np.ndarray) -> dict[str
     }
 
 
+def member_counting_probabilities(
+    ifs_ensemble: xr.DataArray, threshold: float, test_mask: np.ndarray
+) -> np.ndarray:
+    """`P(rain > threshold)` from the raw IFS-ENS members, nothing else.
+
+    This is the benchmark step 12 is measured *against*: the empirical
+    fraction of members exceeding the threshold, with no calibration applied.
+    It is the comparison a reader should ask for before believing the spliced
+    tail adds anything, and it could not be run until step 07 produced daily
+    full-member IFS-ENS stores for both seasons (#74 recorded it as NOT RUN for
+    exactly that reason).
+
+    Returns a `(sample, latitude, longitude)` grid containing **only the test
+    samples**, so it lines up with `test_obs` rather than with the full
+    two-season series. Returning the full grid with NaN padding is the trap
+    here: the shapes then differ by the fold size and the scoring step raises
+    deep inside a boolean mask.
+    """
+    exceed = (ifs_ensemble > threshold).mean(dim="member", skipna=True)
+
+    # `_align_to_imd_day` (inside `load_ifs_ensemble`) renames the time axis to
+    # `sample` and has already selected one lead; a raw store would still carry
+    # `time`/`prediction_timedelta`. Accept either, and drop any leftover
+    # singleton axis rather than assuming a particular caller's shape.
+    time_dim = "sample" if "sample" in exceed.dims else "time"
+    for dim in (d for d in exceed.dims if d not in (time_dim, "latitude", "longitude")):
+        if exceed.sizes[dim] == 1:
+            exceed = exceed.squeeze(dim, drop=True)
+        else:
+            raise ValueError(
+                f"member_counting_probabilities expects a single lead, but "
+                f"{ifs_ensemble.name or 'the ensemble'} still has "
+                f"{exceed.sizes[dim]} values along {dim!r}. Select one lead first."
+            )
+
+    grid = exceed.transpose(time_dim, "latitude", "longitude").values.astype(float)
+    mask = np.asarray(test_mask, dtype=bool)
+    if grid.shape[0] != mask.size:
+        raise ValueError(
+            f"IFS-ENS ensemble has {grid.shape[0]} samples but the fold mask has "
+            f"{mask.size}; they must describe the same days."
+        )
+    return grid[mask]
+
+
+def benchmark_row(
+    probs: np.ndarray,
+    obs_test: np.ndarray,
+    climatology_grid: np.ndarray,
+    threshold: float,
+    lead_hours: int,
+    split_label: str,
+    split_kind: str,
+    n_train: int,
+    n_test: int,
+) -> dict:
+    """Score one (lead, fold, threshold) of the member-counting benchmark.
+
+    Scored with the *same* helpers as the spliced-tail arms -- `expected_counts`
+    then `compute_sedi` -- so the comparison differs only in the forecast being
+    scored, never in how it is scored.
+    """
+    finite = np.isfinite(probs)
+    obs_binary = (obs_test > threshold).astype(float)
+    p = probs[finite]
+    o = obs_binary[finite]
+    # The climatological reference is a per-cell `(latitude, longitude)` grid,
+    # not a scalar, so it has to be broadcast up to the forecast's shape and
+    # then reduced with the same mask `finite` uses. Broadcasting (rather than
+    # collapsing the sample axis first) is what keeps it aligned: the grid
+    # repeats once per sample, exactly as the forecast does.
+    climatology_broadcast = np.broadcast_to(
+        np.asarray(climatology_grid, dtype=float), probs.shape
+    )
+    climatology_selected = climatology_broadcast[finite]
+    brier = float(np.mean((p - o) ** 2))
+    counts = expected_counts(probs, obs_binary)
+    sedi = compute_sedi(
+        float(np.sum(counts["hits"])),
+        float(np.sum(counts["misses"])),
+        float(np.sum(counts["false_alarms"])),
+        float(np.sum(counts["correct_negatives"])),
+    )
+    climat_brier = float(np.mean((climatology_selected - o) ** 2))
+    return {
+        "lead_hours": lead_hours,
+        "fold": split_label,
+        "split": split_kind,
+        "arm": "raw_ifs_ens_member_counting",
+        "threshold": threshold,
+        "n_train": n_train,
+        "n_test": n_test,
+        "brier": brier,
+        "climatology_brier": climat_brier,
+        "brier_skill_score": 1.0 - (brier / climat_brier) if climat_brier > 0 else float("nan"),
+        "sedi": sedi,
+        "rmse_of_mean_mm": float("nan"),
+        "false_zero_cells": int(np.sum(np.isfinite(probs) & (probs == 0.0))),
+        "threshold_u": float("nan"),
+        "tail_shape_xi": float("nan"),
+        "fit_bins": "",
+        "n_bins_total": 0,
+    }
+
+
 def compute_sedi(
     hits: float, misses: float, false_alarms: float, correct_negatives: float
 ) -> float:
@@ -310,7 +419,18 @@ def main() -> int:
     lagged_paths = resolve_store_paths(
         args.lagged_stores,
         None,
-        DEFAULT_LAGGED_DAILY_STORES,
+        DEFAULT_IFS_DAILY_STORES,
+    DEFAULT_LAGGED_DAILY_STORES,
+        None,
+    )
+    # The `--ifs-ensemble-stores` flag existed but was never resolved into
+    # paths, so `ifs_available` was decided on a non-None argument that nothing
+    # then read. That is why the runner announced the benchmark as "enabled"
+    # and emitted no rows for it.
+    ifs_paths = resolve_store_paths(
+        args.ifs_ensemble_stores,
+        None,
+        DEFAULT_IFS_DAILY_STORES,
         None,
     )
 
@@ -344,12 +464,28 @@ def main() -> int:
 
     for lead_hours in LEAD_HOURS:
         forecasts = load_graphcast_ensemble(lagged_paths, lead_hours)
+        ifs_ensemble = (
+            _tier2_load_ifs_ensemble(ifs_paths, lead_hours) if ifs_available else None
+        )
         ensemble_mean_all = forecasts.mean(dim="member", skipna=True)
         sample_values = ensemble_mean_all["sample"].values
         obs_aligned = obs["rain"].reindex(time=sample_values).rename(time="sample")
         has_obs = ~obs_aligned.isnull().all(dim=["latitude", "longitude"])
         forecasts = forecasts.isel(sample=has_obs.values)
         obs_aligned = obs_aligned.isel(sample=has_obs.values)
+        if ifs_ensemble is not None:
+            # The IFS series comes from a different store and is not filtered by
+            # `has_obs`, so at some leads it is longer than the sample set the
+            # forecasts were trimmed to (244 vs 242 at lead 48). Reindex onto the
+            # forecasts' own `sample` axis so the benchmark is scored on exactly
+            # the days the other arms were scored on, rather than raising a
+            # length mismatch several minutes into the run.
+            ifs_ensemble = ifs_ensemble.reindex(sample=forecasts["sample"].values)
+            if bool(np.isnan(ifs_ensemble).all()):
+                raise ValueError(
+                    "the IFS-ENS ensemble shares no days with the forecast "
+                    "sample set; check that both stores cover the same season."
+                )
 
         # Derived only after the IMD filter: two IMD days in this period fall
         # outside the grid, so every array built from these stays the same
@@ -451,7 +587,37 @@ def main() -> int:
                         for method in ("csgd", "csgd+gpd_tail", "fallback"):
                             row[f"cells_{method}"] = int(np.sum(methods == method))
                     metric_rows.append(row)
+
                     pooled_per_day.setdefault((arm, threshold, lead_hours), []).append(frame)
+
+                    # Raw IFS-ENS member-counting benchmark: the arm step 12 is
+                    # measured against. #74 recorded it NOT RUN because the daily
+                    # full-member IFS-ENS stores did not exist; step 07 built
+                    # them, so it runs here, scored with the same helpers as the
+                    # arms above so only the forecast differs, never the scoring.
+                    #
+                    # Its own loop variable: an earlier version reused
+                    # `threshold`, so this block ran before the enclosing arm's
+                    # `pooled_per_day.setdefault((arm, threshold, ...))` and
+                    # left that keyed only on the last threshold, which then
+                    # raised KeyError on the paired-CI pass.
+                    if ifs_available and ifs_ensemble is not None:
+                        for bench_threshold in EXTREME_THRESHOLDS:
+                            metric_rows.append(
+                                benchmark_row(
+                                    member_counting_probabilities(
+                                        ifs_ensemble, bench_threshold, test_mask
+                                    ),
+                                    test_obs.values,
+                                    climatology_probability[bench_threshold].values,
+                                    bench_threshold,
+                                    lead_hours,
+                                    split_label,
+                                    split_kind,
+                                    int(train_mask.sum()),
+                                    int(test_mask.sum()),
+                                )
+                            )
 
                 print(
                     f"[lead {lead_hours:>3}h | fold {split_label} | t={threshold:>5}mm] "
@@ -548,6 +714,13 @@ def main() -> int:
             f"({'eliminated' if no_zeros else 'REMAIN'}); "
             f"Brier improved at {improved}/5 leads; "
             f"SEDI improved at {int(subset['sedi_improved'].sum())}/5 leads"
+        )
+    benchmark_rows = [r for r in metric_rows if r["arm"] == "raw_ifs_ens_member_counting"]
+    if ifs_available and not benchmark_rows:
+        raise RuntimeError(
+            "IFS-ENS stores were supplied but the member-counting benchmark "
+            "produced no rows. The benchmark is either silently skipped or "
+            "broken; refusing to report the run as complete."
         )
     if not ifs_available:
         print(
