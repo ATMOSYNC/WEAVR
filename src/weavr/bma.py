@@ -747,6 +747,85 @@ def _cumulative_trapezoid(values: np.ndarray, grid: np.ndarray) -> np.ndarray:
     )
 
 
+def bma_predictive_quantiles(
+    result: BmaFitResult,
+    forecast_mean: dict[str, np.ndarray],
+    forecast_spread: dict[str, np.ndarray | None],
+    levels: np.ndarray | list[float],
+    grid: np.ndarray = BMA_CRPS_GRID_MM,
+    chunk_cells: int = 1024,
+) -> np.ndarray:
+    """Exact predictive quantiles per cell, by inverting the mixture CDF.
+
+    The alternative -- order statistics of `n_samples` draws -- understates the
+    upper quantiles, because 500 draws cannot reach the tail of `Y = X**3`.
+    Measured on the two-season base that understatement is 1-6% of the CRPS
+    built from those quantiles, which is larger than the 0.02-0.03 mm margins
+    Tier 2b's H10 verdict turns on. A verdict that fine cannot rest on an
+    estimator that coarse.
+
+    Inversion is a search per cell per level, so cells are chunked: the
+    comparison tensor is `(chunk, n_grid, n_levels)` booleans, about 32 MB at the
+    default chunk.
+
+    Returns shape `(*cells, n_levels)`, monotone non-decreasing along the last
+    axis, with the point mass at zero reproduced as a run of exact zeros.
+    """
+    levels_arr = np.sort(np.asarray(levels, dtype=float))
+    if np.any((levels_arr <= 0.0) | (levels_arr >= 1.0)):
+        raise ValueError(f"levels must be strictly in (0, 1), got {levels_arr}")
+
+    sources = _bma_sources(result)
+    cell_shape = np.asarray(forecast_mean[sources[0]], dtype=float).shape
+    n_cells = int(np.prod(cell_shape))
+    n_levels = levels_arr.size
+    out = np.empty(n_cells * n_levels, dtype=float)
+
+    flat_mean = {
+        s: np.asarray(forecast_mean[s], dtype=float).reshape(-1) for s in sources
+    }
+    flat_spread = {
+        s: (
+            None
+            if forecast_spread.get(s) is None
+            else np.asarray(forecast_spread[s], dtype=float).reshape(-1)
+        )
+        for s in sources
+    }
+
+    for start in range(0, n_cells, chunk_cells):
+        stop = min(start + chunk_cells, n_cells)
+        sub_mean = {s: v[start:stop] for s, v in flat_mean.items()}
+        sub_spread = {
+            s: (None if v is None else v[start:stop]) for s, v in flat_spread.items()
+        }
+        cdf = bma_mixture_cdf(result, sub_mean, sub_spread, grid)
+        cdf = cdf.reshape(stop - start, grid.size)
+
+        # First grid point at or above each level, then linear interpolation in
+        # value between the bracketing pair -- the convention
+        # `weavr.stacking.cdf_at_threshold` uses, read in reverse.
+        reach = cdf[:, :, None] >= levels_arr[None, None, :]
+        idx = np.clip(reach.argmax(axis=1), 1, grid.size - 1)
+        rows = np.arange(stop - start)[:, None]
+        lo = cdf[rows, idx - 1]
+        span = cdf[rows, idx] - lo
+        safe = np.where(span > 1e-12, span, 1.0)
+        frac = np.where(
+            span > 1e-12, (levels_arr[None, :] - lo) / safe, 0.0
+        )
+        x_lo = grid[idx - 1]
+        x_hi = grid[idx]
+        values = np.maximum.accumulate(x_lo + frac * (x_hi - x_lo), axis=-1)
+        # Below the point mass at zero the quantile *is* zero, and interpolating
+        # toward it produces a negative value, because the CDF has already risen
+        # to p0 at the grid's first point. Same convention as the CSGD:
+        # `Q(tau) = 0` for `tau <= p0`.
+        values = np.where(levels_arr[None, :] <= cdf[:, :1], 0.0, values)
+        out.reshape(n_cells, n_levels)[start:stop] = np.clip(values, 0.0, None)
+    return out.reshape(cell_shape + (n_levels,))
+
+
 def bma_crps(
     result: BmaFitResult,
     forecast_mean: dict[str, np.ndarray],
