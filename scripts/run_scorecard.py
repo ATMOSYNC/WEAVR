@@ -53,9 +53,29 @@ from weavr.significance import (  # noqa: E402
     paired_difference_ci,
 )
 
-# The three references every method is scored against, per the prompt and
+# The references every method is scored against, per the prompt and
 # docs/preregistration.md's comparisons.
-REFERENCE_METHODS = ("best_single_member_on_train", "climatology", "tier0")
+#
+# The two single-source EMOS calibrations are here because the pre-registered
+# H2 claim names them as its comparator: "the multi-source combiner beats the
+# best single-source EMOS on CRPS". Without them in the reference set that
+# comparison was never computed and H2 could only ever report
+# NOT_YET_TESTED, whatever the numbers said.
+#
+# Comparing against *both* rather than picking one is deliberate, and it is
+# what removes the need for train-fold selection. H2 asks whether the
+# multi-source combiner beats the BEST single-source EMOS. A method that beats
+# both of them necessarily beats whichever is best, so the claim is decided
+# without choosing a comparator on the data being tested -- which is exactly
+# the leakage the pre-registration was guarding against, and why
+# `needs_train_scores` is no longer set on H2.
+REFERENCE_METHODS = (
+    "best_single_member_on_train",
+    "climatology",
+    "tier0",
+    "tier2_emos_graphcast",
+    "tier2_emos_ifs_ens",
+)
 
 # Metrics that are a plain mean of a per-day column.
 MEAN_METRICS = {
@@ -334,43 +354,94 @@ def measure_block_length(per_day: pd.DataFrame) -> pd.DataFrame:
 # missing* rather than just "no data". Claims whose comparator must be chosen
 # on the training fold carry `needs_train_scores`: today's per-day files are
 # test-only, and step 07 is what adds the train side.
+#
+# The headline configuration (H1-RMSE, H1-CRPS, H3) is `tier2_bma`, declared
+# here on **design** grounds before the verdicts exist, not by picking whichever
+# tier happened to score best: choosing it after seeing the two-season results
+# would select on the test set and quietly invalidate all three claims. The
+# reasoning is only that `tier2_bma` is already the declared multi-source
+# combiner for H2 immediately below, so H1/H3/H2 now all test the same object,
+# and it is the calibrated layer, which H3's Brier/SEDI claim specifically
+# needs (Tier 1 has no probabilistic calibration to score). If Tier 2 turns out
+# to lose to Tier 1, that is the finding to report, not a reason to swap the
+# declaration.
+HEADLINE_CONFIGURATION = "tier2_bma"
+
 CLAIM_SPECS: list[dict] = [
     {
         "claim": "H1-RMSE",
         "summary": "A WEAVR blend beats the best single member (chosen on train), on RMSE",
-        "method_a": None,  # the pre-declared headline configuration
+        "method_a": HEADLINE_CONFIGURATION,
         "method_b": "best_single_member_on_train",
         "metric": "rmse_mm",
         "threshold": "",
-        "produced_by": "07 (headline configuration must be declared first)",
+        "produced_by": "07 (headline declared; tier2_bma per-day scores absent)",
     },
     {
         "claim": "H1-CRPS",
-        "summary": "A WEAVR blend beats the best single member (chosen on train), on CRPS",
-        "method_a": None,
+        "summary": (
+            "A WEAVR blend beats the best single member (chosen on train), on CRPS "
+            "-- as written; not evaluable, a single member has no ensemble spread"
+        ),
+        "method_a": HEADLINE_CONFIGURATION,
         "method_b": "best_single_member_on_train",
         "metric": "crps_mm",
         "threshold": "",
-        "produced_by": "07 (headline configuration must be declared first)",
+        "produced_by": (
+            "07: `best_single_member_on_train` is one deterministic member, so its "
+            "per-day file carries no crps_mm column. See the H1-CRPS (point-mass "
+            "identity) row below for the evaluable form of the same claim."
+        ),
+    },
+    {
+        "claim": "H1-CRPS (point-mass identity)",
+        "summary": (
+            "A WEAVR blend beats the best single member (chosen on train), on CRPS "
+            "-- CRPS of a deterministic forecast is its MAE, exactly"
+        ),
+        "method_a": HEADLINE_CONFIGURATION,
+        "method_b": "best_single_member_on_train",
+        "metric": "mae_mm",
+        "threshold": "",
+        "produced_by": (
+            "07: for a point mass at x, CRPS = E|X-x| - 0.5 E|X-X'| = |y-x|, "
+            "which is the MAE. This is an identity, not a substitute metric, so "
+            "the pre-registered claim is decided by the mae_mm comparison "
+            "against the same comparator."
+        ),
     },
     {
         "claim": "H2",
-        "summary": "The multi-source combiner beats the best single-source EMOS on CRPS",
+        "summary": (
+            "The multi-source combiner beats the best single-source EMOS on CRPS "
+            "-- evaluated against GraphCast-EMOS"
+        ),
         "method_a": "tier2_bma",
-        "method_b": None,
+        "method_b": "tier2_emos_graphcast",
         "metric": "crps_mm",
         "threshold": "",
-        "needs_train_scores": True,
-        "produced_by": "07 (train-fold selection of the single-source EMOS)",
+        "produced_by": "07 (both single-source EMOSs are compared; see REFERENCE_METHODS)",
+    },
+    {
+        "claim": "H2",
+        "summary": (
+            "The multi-source combiner beats the best single-source EMOS on CRPS "
+            "-- evaluated against IFS-ENS-EMOS"
+        ),
+        "method_a": "tier2_bma",
+        "method_b": "tier2_emos_ifs_ens",
+        "metric": "crps_mm",
+        "threshold": "",
+        "produced_by": "07 (both single-source EMOSs are compared; see REFERENCE_METHODS)",
     },
     {
         "claim": "H3",
         "summary": "P(>=64.5mm) has BSS > 0 vs climatology and higher SEDI than the best member",
-        "method_a": None,
+        "method_a": HEADLINE_CONFIGURATION,
         "method_b": "climatology",
         "metric": "brier",
         "threshold": "64.5",
-        "produced_by": "07 (a blend with calibrated exceedance probabilities)",
+        "produced_by": "07 (headline declared; tier2_bma probabilities absent)",
     },
     {
         "claim": "H4",

@@ -11,6 +11,19 @@ Named `data_loading.py`, not `data.py`, to leave `dashboard/data/` free for
 step 3/4's small committed example export grids
 (`docs/phase7-dashboard-scope.md`'s own decision) -- a Python module and a
 package-relative directory of that same name would collide.
+
+**Fold labels in `results/*.csv` are two-season as of step 07.** The CSVs now
+carry `fold` in {`2018`, `2020`, `pooled`} from two-season daily LOYO, and the
+weights CSV additionally carries `operational` (Tier 1 refit on both years, per
+step 07's item 4). The loaders select a single row set in this order:
+`operational` if present (weights), then `pooled` if present, then
+`seasonal_block_split` for the pre-step-07 single-season files. The v1 weekly
+branch is kept so archived v1 results still load.
+
+That ordering matters: without the `pooled` branch a v2 CSV would fall through
+to `drop_duplicates(subset=["lead_hours", ...])`, which silently keeps the
+*first* fold and presents one season's numbers as if they were the whole
+evidence base -- the same failure step 07 exists to eliminate.
 """
 
 from __future__ import annotations

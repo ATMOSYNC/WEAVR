@@ -64,3 +64,9 @@ From the 2020 manifests:
 `_meta.init_cadence_days` in the lagged store's manifest records 7 (the
 default flag) even though it was built from the daily baseline store
 (`nominal_times_from` records that).
+
+> **v2 (2026-10-01).** The numbers in this file are v1 (weekly, 2020 only,
+> `n_train=14`, `n_test=3-4`) and are superseded by
+> [`docs/v2-evidence-base-results.md`](v2-evidence-base-results.md), which is
+> measured on the two-season daily LOYO base with real confidence intervals.
+> This file is retained as history.

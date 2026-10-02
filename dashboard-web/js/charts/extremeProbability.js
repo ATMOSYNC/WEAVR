@@ -128,18 +128,23 @@ const EXTREME_PROBABILITY_CAPTION =
   "distribution to compute a probability from. The two thresholds are " +
   "IMD's own real rainfall boundaries, 115.6mm ('very heavy') and " +
   "204.5mm ('extremely heavy'). Dotted cells take their probability from " +
-  "a pooled extreme-value tail rather than from EMOS-CSG directly: their " +
-  "own forecast landed in a rain-intensity bin with too few real training " +
-  "days to fit, so the probability above the threshold is extrapolated by " +
-  "a generalised-Pareto tail fitted to the pooled upper tail of all " +
-  "fittable bins, with one shared shape and per-zone scales. That " +
-  "extrapolation is the limit of this map -- it is a tail estimate " +
-  "borrowed from rarer, fittable bins, not a probability fitted to those " +
-  "cells' own rain, and it should be read as the least certain number " +
-  "here. Grey cells are the harder fallback: no real probability at all, " +
-  "because EMOS-CSG could not fit their bin for real at this lead " +
-  "(docs/phase4-data-and-combiner-scope.md found the extremely_heavy " +
-  "bin is never fittable at any lead in this project's real data).";
+  "a pooled extreme-value tail rather than from EMOS-CSG directly: above " +
+  "the splice point of 64.5mm the probability is extrapolated by a " +
+  "generalised-Pareto tail fitted to the pooled upper tail of the fittable " +
+  "bins, with one shared shape and per-zone scales. That extrapolation is " +
+  "the limit of this map -- it is a tail estimate borrowed from rarer, " +
+  "fittable bins, not a probability fitted to those cells' own rain, and " +
+  "it should be read as the least certain number here, and as " +
+  "experimental: measured on two seasons, the spliced tail removes every " +
+  "false zero-probability cell but makes the extremal dependence index " +
+  "worse at 5 of 5 leads (docs/tail-repair-results.md). It is calibrated " +
+  "for magnitude, not yet for spatial co-occurrence. On the current " +
+  "two-season base the tail is applied uniformly above 64.5mm rather than " +
+  "to specific unfittable cells, because dry, light, heavy and very_heavy " +
+  "bins now all fit; only extremely_heavy still never fits, at any lead " +
+  "(results/bin_fittability.csv). Grey cells are the harder fallback: no " +
+  "real probability at all, because EMOS-CSG could not fit their bin for " +
+  "real at this lead.";
 
 function hexToRgb(hex) {
   const value = hex.replace("#", "");

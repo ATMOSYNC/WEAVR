@@ -795,8 +795,7 @@ def test_tier2b_scores_every_arm_and_writes_all_three_csvs(stores, tmp_path):
     for f in per_day:
         day = pd.read_csv(f)
         # `.astype(str)` for the same reason as the generic test above: a
-        # column of only these two values is read back as int64, so comparing
-        # the raw set against `{"2018", "2020"}` fails on a perfectly good file.
+        # column of only these two values is read back as int64.
         folds = set(day["fold"].astype(str))
         assert folds == {"2018", "2020"}, f"{f.name} folds={sorted(folds)}"
         assert np.isfinite(day["crps_mm"].to_numpy()).any(), f"{f.name} has no finite CRPS"
@@ -815,10 +814,9 @@ def test_tier2b_h10_is_decided_not_skipped(stores, tmp_path):
     )
 
     paired = pd.read_csv(out / "tier2b_combined_paired.csv")
-    assert {"arm", "vs_parent", "crps_difference_mm", "ci_low", "ci_high", "beats_parent"} <= set(
-        paired.columns
-    )
-    # Every nominated lead must be judged against *both* parents separately.
+    assert {
+        "arm", "vs_parent", "crps_difference_mm", "ci_low", "ci_high", "beats_parent"
+    } <= set(paired.columns)
     for lead, group in paired.groupby("lead_hours"):
         assert set(group["vs_parent"]) == {"emos_csg", "bma"}, (
             f"lead {lead} compared against {sorted(set(group['vs_parent']))}; "
@@ -826,12 +824,33 @@ def test_tier2b_h10_is_decided_not_skipped(stores, tmp_path):
         )
 
 
+def test_tier2b_default_weight_is_the_fixed_one(stores, tmp_path):
+    """The fitted weight is opt-in, so a default run is the pre-registered 0.5.
+
+    The fit lost a lead to 0.5 on the measured evidence (3/5 vs 4/5), so making
+    it the default would put the weaker method in every future run.
+    """
+    out = tmp_path / "t2b_default_weight"
+    run_script(
+        "run_tier2b_combined.py", stores, out,
+        extra=["--n-samples", "60", "--train-stride", "1", "--n-resamples", "50"],
+    )
+    train = pd.read_csv(out / "tier2b_combined_train.csv")
+    assert np.allclose(train["vincentization_weight"], 0.5), (
+        f"default weights were {sorted(set(train['vincentization_weight']))}; "
+        "expected the pre-registered fixed 0.5 unless --fit-weight is passed"
+    )
+    # The fit is still recorded, so "we tried it" stays reproducible.
+    assert "vincentization_train_crps" in train.columns
+    assert "vincentization_weight_fitted" in train.columns
+
+
 def test_tier2b_line_pool_is_comparable_to_quantile_averaging(stores, tmp_path):
     """The linear pool must land in the same CRPS neighbourhood as Vincentization.
 
     These two differ only in the space they average in, and the plan keeps the
     linear pool as a comparison arm. If it came out orders of magnitude worse,
-    the cause would be the bisection inversion in `linear_pool_quantiles`
+    the cause would be the bracketed interpolation in `linear_pool_quantiles`
     rather than the pooling rule, and the arm would be quietly misleading.
     """
     out = tmp_path / "t2b_pool"

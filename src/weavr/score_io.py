@@ -30,6 +30,7 @@ rewrite Tier 0's numbers.
 
 from __future__ import annotations
 
+import csv
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -164,6 +165,73 @@ def write_per_day_scores(
     return path
 
 
+class PerDayScoreWriter:
+    """Collect per-day frames across folds, then write one file per method/lead.
+
+    `write_per_day_scores` names a file by `(method, lead)` alone, so calling it
+    once per fold overwrites the previous fold: a two-season LOYO run kept only
+    the *last* fold's days, and the 2018 fold vanished from the evidence without
+    an error. The aggregate CSVs still looked right, because each fold was
+    scored in memory, so the loss only showed up as scorecard CIs that could not
+    be computed -- silently, on the numbers that decide the pre-registered
+    claims.
+
+    Buffering here makes the fold dimension structural rather than a convention
+    each runner has to remember: `add` as many folds as there are, `flush`
+    once. Forgetting `flush` writes nothing at all, which fails loudly, instead
+    of writing a plausible-looking half-complete file.
+
+    Use it as a context manager to make forgetting `flush` impossible.
+    """
+
+    def __init__(self, out_dir: str | Path = "results") -> None:
+        self.out_dir = out_dir
+        self._frames: dict[tuple[str, int], list[pd.DataFrame]] = {}
+        self._flushed = False
+
+    def add(self, method: str, lead: int, per_day: pd.DataFrame) -> None:
+        """Buffer one fold's rows for `(method, lead)`."""
+        if self._flushed:
+            raise RuntimeError(
+                "add() after flush(): the files are already written, so later "
+                "folds would be dropped. Move flush() to the end of the folds."
+            )
+        if not method:
+            raise ValueError("method must be a non-empty name; the scorecard pairs on it.")
+        if "fold" not in per_day.columns:
+            raise ValueError(
+                f"per-day frame for {method!r} lead {lead} has no 'fold' column; "
+                "the fold label is what keeps folds from overwriting each other."
+            )
+        self._frames.setdefault((method, lead), []).append(per_day)
+
+    def flush(self) -> list[Path]:
+        """Write every buffered `(method, lead)` and return the paths written."""
+        written: list[Path] = []
+        for (method, lead), frames in sorted(self._frames.items()):
+            combined = pd.concat(frames, ignore_index=True)
+            duplicates = combined["date"].duplicated().sum()
+            if duplicates:
+                raise ValueError(
+                    f"{method!r} lead {lead} produced {duplicates} duplicate dates "
+                    "across folds. Two folds must score disjoint days; otherwise "
+                    "the paired comparison would double-count them."
+                )
+            written.append(
+                write_per_day_scores(method, lead, combined, out_dir=self.out_dir)
+            )
+        self._frames.clear()
+        self._flushed = True
+        return written
+
+    def __enter__(self) -> PerDayScoreWriter:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if not self._flushed and exc_info[0] is not None:
+            self.flush()
+
+
 def resolve_result_paths(
     results_dir: str | Path,
     filenames: Mapping[str, str],
@@ -246,3 +314,42 @@ def read_per_day_scores(out_dir: str | Path = "results") -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
+
+
+def write_rows_csv(path: str | Path, rows: Sequence[Mapping[str, object]]) -> Path:
+    """Write a list of row dicts to `path`, tolerating heterogeneous keys.
+
+    The fieldnames come from the **union** of every row's keys, in first-seen
+    order, rather than from `rows[0]`. Deriving them from the first row alone
+    is a trap that fires only after all the expensive work is done: a runner
+    that appends per-fold rows and then pooled rows, where the pooled rows
+    carry an extra column, produces a perfectly valid first row and a later
+    row that `csv.DictWriter` rejects with "dict contains fields not in
+    fieldnames". That is exactly what killed a two-season Tier 2 run: after
+    two hours of BMA sampling, writing the per-bin CSV raised, the per-day
+    scores were still buffered in memory, and the whole run was lost.
+
+    Union semantics also mean a caller cannot lose a column by accident, and
+    a missing key is written as an empty field rather than crashing -- which
+    is the honest representation for a row that genuinely does not carry a
+    per-region or per-bin statistic.
+
+    Returns the path written.
+    """
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fieldnames: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
+
+    with out_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, restval="")
+        if fieldnames:
+            writer.writeheader()
+        writer.writerows(rows)
+    return out_path
