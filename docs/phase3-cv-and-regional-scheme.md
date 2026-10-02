@@ -126,3 +126,9 @@ silently implying multi-season fitting already works.
 | Regional scheme | Sreekala & Babu 6-zone (WC/SI/WI/CI/NE1/NE2) | Single sound answer — Neal et al.'s scheme is temporal, not spatial, and doesn't fit Phase 3's need |
 | Zone boundaries | Documented lat/lon approximation of the 6 named zones | Exact k-means cluster result not reproducible here |
 | Season dimension | Present in the API, currently always "JJAS 2020" | Matches what the real store actually contains |
+
+> **v2 (2026-10-01).** The numbers in this file are v1 (weekly, 2020 only,
+> `n_train=14`, `n_test=3-4`) and are superseded by
+> [`docs/v2-evidence-base-results.md`](v2-evidence-base-results.md), which is
+> measured on the two-season daily LOYO base with real confidence intervals.
+> This file is retained as history.

@@ -167,3 +167,9 @@ successfully downloaded (61MB parquet, 287,773 real rows, 58 columns
 including a direct IMD-equivalent `imd_category`/`imd_label` classification
 this project uses as-is rather than re-deriving one from raw intensity
 fields).
+
+> **v2 (2026-10-01).** The numbers in this file are v1 (weekly, 2020 only,
+> `n_train=14`, `n_test=3-4`) and are superseded by
+> [`docs/v2-evidence-base-results.md`](v2-evidence-base-results.md), which is
+> measured on the two-season daily LOYO base with real confidence intervals.
+> This file is retained as history.

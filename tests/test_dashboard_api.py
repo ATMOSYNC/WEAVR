@@ -159,12 +159,37 @@ class TestExtremeProbability:
             for m in row:
                 assert m in valid_methods
 
-    def test_unexported_threshold_115_6_returns_404_not_silent_fallback(self):
-        # On the committed example export (which currently only contains 204.5mm),
-        # requesting 115.6 must NOT silently return 204.5 data; it must return 404.
-        response = client.get("/api/extreme-probability", params={"lead": 24, "threshold": 115.6})
-        assert response.status_code == 404
-        assert "115.6" in response.json()["detail"]
+    def test_committed_export_serves_both_supported_thresholds(self):
+        # Step 07 regenerated the example grids for 2020, so 115.6mm is now in
+        # the committed export and this endpoint serves it. Previously the grid
+        # carried only 204.5mm and ?threshold=115.6 returned 404 -- the gap
+        # #74 recorded as open on main.
+        for threshold in (115.6, 204.5):
+            response = client.get(
+                "/api/extreme-probability", params={"lead": 24, "threshold": threshold}
+            )
+            assert response.status_code == 200, f"{threshold}mm should now be served"
+            payload = response.json()
+            # The payload echoes the lead, not the threshold -- the threshold
+            # selects which exported grid is read.
+            assert payload["lead_hours"] == 24
+            # The API serialises to JSON, so the grids arrive as nested lists.
+            assert np.array(payload["probability"]).shape == (129, 135)
+            assert set(np.array(payload["method"]).ravel()) <= {
+                "csgd",
+                "csgd+gpd_tail",
+                "fallback",
+            }
+
+    def test_unexported_threshold_returns_404_not_silent_fallback(self):
+        # The invariant this pair of tests guards: a threshold the export does
+        # not contain must NOT silently fall back to another threshold's data.
+        # 35.5mm is a real IMD boundary that the export is not built for, so it
+        # is now the correct negative case -- 115.6mm, which used to serve this
+        # role, became valid once step 07 re-emitted the grids.
+        response = client.get("/api/extreme-probability", params={"lead": 24, "threshold": 35.5})
+        assert response.status_code in (404, 422)
+        assert "35.5" in response.json()["detail"]
 
     def test_threshold_115_6_returns_200_when_present_in_export(self, tmp_path, monkeypatch):
         test_npz = tmp_path / "multi_threshold.npz"

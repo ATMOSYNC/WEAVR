@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -168,9 +169,30 @@ class TestLoadSkillTrendsData:
         ]
         assert shared_cols, "expected tier2/tier3 to share emos/bma reference columns"
         for col in shared_cols:
-            assert raw_tier2[col].equals(raw_tier3[col]), (
-                f"{col} differs between tier2 and tier3 -- "
-                "load_skill_trends_data's no-duplicate assumption no longer holds"
+            # Numeric tolerance, not `.equals()`.
+            #
+            # These are the same fits scored by both runners, so the invariant
+            # is real and worth guarding -- but each assembles the number as a
+            # cell-count-weighted mean over (bin, region) groups, and the two
+            # runners visit those groups in a different order. The summation
+            # order therefore differs in the last bit: on the committed CSVs
+            # `emos_graphcast_crps_mm` differs by 8.9e-16 (relative 1.9e-16)
+            # while `bma_crps_mm` is bit-identical.
+            #
+            # `.equals()` turned that into a red test and implied the loader's
+            # no-duplicate assumption had broken, which it has not. A 1e-12
+            # tolerance still catches any divergence a reader would care about,
+            # by many orders of magnitude.
+            np.testing.assert_allclose(
+                raw_tier2[col].to_numpy(dtype=float),
+                raw_tier3[col].to_numpy(dtype=float),
+                rtol=1e-12,
+                atol=1e-15,
+                err_msg=(
+                    f"{col} differs between tier2 and tier3 beyond float noise "
+                    "-- load_skill_trends_data's no-duplicate assumption would "
+                    "no longer hold"
+                ),
             )
 
     def test_multiseason_csv_with_fold_column_picks_pooled_without_duplicates(self, tmp_path):

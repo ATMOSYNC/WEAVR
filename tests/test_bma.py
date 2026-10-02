@@ -8,6 +8,7 @@ from weavr.bma import (
     BmaComponentFit,
     BmaFitResult,
     _ensemble_crps_chunked,
+    bma_analytic_predictive_mean,
     crps_chunk_cells,
     fit_hierarchical_bma,
     renormalize_bma_for_present_sources,
@@ -373,7 +374,15 @@ class TestScoreBmaAndMean:
         reduced = {s: v.mean(dim="member") for s, v in mean_arrays.items()}
         return results[("light", "R1")], reduced, obs
 
-    def test_both_numbers_come_from_one_shared_draw_set(self):
+    def test_crps_comes_from_one_shared_draw_set_and_the_mean_is_analytic(self):
+        """CRPS is sampled; the predictive mean is computed exactly.
+
+        The mean used to be `samples.mean(axis=-1)`, and because the predictive
+        variable is `X**3` with a fat-tailed `X`, that estimator reported
+        327.6 mm where the truth is 62.2 mm. It is now
+        `E[X**3] = theta**3 kappa (kappa+1) (kappa+2)`, so only CRPS depends on
+        the generator.
+        """
         result, mean_arrays, obs = self._fit_and_arrays()
         spread = dict.fromkeys(mean_arrays, None)
 
@@ -381,8 +390,6 @@ class TestScoreBmaAndMean:
             result, mean_arrays, spread, obs, rng=np.random.default_rng(7), n_samples=200
         )
 
-        # Replaying the same generator must reproduce the exact draws the
-        # function used internally, for *both* outputs.
         replayed = sample_bma_mixture(
             result,
             {s: v.values for s, v in mean_arrays.items()},
@@ -390,31 +397,51 @@ class TestScoreBmaAndMean:
             np.random.default_rng(7),
             n_samples=200,
         )
-        assert np.allclose(predictive_mean.values, replayed.mean(axis=-1))
         replayed_da = xr.DataArray(
             replayed, dims=(*obs.dims, "member"), coords=obs.coords
         )
+        # CRPS must come from exactly the draws the function used.
         assert float(crps.values) == pytest.approx(
             float(ensemble_crps(replayed_da, obs, member_dim="member").values)
         )
-
-    def test_a_second_independent_draw_would_not_match(self):
-        """Guards the regression this function exists to prevent."""
-        result, mean_arrays, obs = self._fit_and_arrays()
-        spread = dict.fromkeys(mean_arrays, None)
-
-        _crps, predictive_mean = score_bma_and_mean(
-            result, mean_arrays, spread, obs, rng=np.random.default_rng(7), n_samples=200
-        )
-        second_draw = sample_bma_mixture(
+        # The mean must equal the analytic moment, not the sample mean.
+        analytic = bma_analytic_predictive_mean(
             result,
             {s: v.values for s, v in mean_arrays.items()},
             {s: None for s in mean_arrays},
-            np.random.default_rng(8),
-            n_samples=200,
-        ).mean(axis=-1)
+        )
+        assert np.allclose(predictive_mean.values, analytic)
+        # On this well-behaved fixture the two agree closely -- which is the
+        # point: they only diverge where the tail is heavy enough for 200 draws
+        # to be unreliable, and there the analytic one is the correct answer.
+        assert np.allclose(analytic, replayed.mean(axis=-1), rtol=0.02)
 
-        assert not np.allclose(predictive_mean.values, second_draw)
+    def test_the_predictive_mean_does_not_depend_on_the_generator(self):
+        """Two seeds give different draws, and now provably the same mean.
+
+        This is the regression the analytic mean exists to remove: the mean used
+        to move with the seed, so `bias_mm`, `mse_mm2` and `rmse_mm` were Monte
+        Carlo estimates, and in a heavy tail that is most of their value.
+        """
+        result, mean_arrays, obs = self._fit_and_arrays()
+        spread = dict.fromkeys(mean_arrays, None)
+
+        _crps_a, mean_a = score_bma_and_mean(
+            result, mean_arrays, spread, obs, rng=np.random.default_rng(7), n_samples=200
+        )
+        _crps_b, mean_b = score_bma_and_mean(
+            result, mean_arrays, spread, obs, rng=np.random.default_rng(8), n_samples=200
+        )
+        assert np.array_equal(mean_a.values, mean_b.values)
+
+    def test_a_sampled_mean_would_have_differed_between_seeds(self):
+        """The guard for the test above: the sampled estimator really did move."""
+        result, mean_arrays, obs = self._fit_and_arrays()
+        arrays = {s: v.values for s, v in mean_arrays.items()}
+        spread = {s: None for s in mean_arrays}
+        first = sample_bma_mixture(result, arrays, spread, np.random.default_rng(7), n_samples=200)
+        second = sample_bma_mixture(result, arrays, spread, np.random.default_rng(8), n_samples=200)
+        assert not np.allclose(first.mean(axis=-1), second.mean(axis=-1))
 
     def test_score_bma_delegates_to_the_same_draws(self):
         result, mean_arrays, obs = self._fit_and_arrays()
