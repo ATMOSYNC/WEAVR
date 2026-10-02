@@ -364,6 +364,15 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         "--train-stride", type=int, default=4,
         help="Subsample stride for the train-fold Vincentization weight grid.")
     parser.add_argument(
+        "--fit-weight", action="store_true",
+        help=(
+            "Fit the Vincentization weight on the train fold instead of using "
+            "the pre-registered fixed 0.5. Off by default: on the measured "
+            "evidence the fit was worse (3/5 leads beat both parents, against "
+            "4/5 for the fixed weight), so the extra freedom bought nothing."
+        ),
+    )
+    parser.add_argument(
         "--quantile-weight", type=float, default=None,
         help="Fixed Vincentization weight for the `quantile_avg_fixed` arm.",
     )
@@ -891,9 +900,16 @@ def main() -> int:
                 train_crps_grid = np.full(len(WEIGHT_GRID), np.inf)
                 fitted_w, best_w_crps, fitted = 0.5, float("nan"), False
 
+            # The pre-registered fixed weight is the default, not the fitted
+            # one. The train-fold grid search is kept and still reported in
+            # `tier2b_combined_train.csv`, because "we tried fitting it and it
+            # did not help" is a result worth keeping -- but the measured
+            # evidence says the fit wins one lead fewer than 0.5 does, and a
+            # fitted weight is one more thing that can differ between the
+            # number in the docs and the number a rerun produces.
             if args.quantile_weight is not None:
                 best_w, fitted = args.quantile_weight, True
-            elif fitted:
+            elif args.fit_weight and fitted:
                 best_w = fitted_w
             else:
                 best_w = 0.5

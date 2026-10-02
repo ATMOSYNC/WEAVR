@@ -52,7 +52,8 @@ folds and all five leads. Reproduce with `scripts/run_tier2b_combined.py`.
 |---|---|---|---|
 | `linear_pool` | **4.5525** | 0.613 | comparison only |
 | `quantile_avg_fixed` (w=0.5) | 4.5533 | **0.613** | combination |
-| `quantile_avg` (w fitted on train) | 4.5570 | 0.613 | combination, nominated |
+| `quantile_avg` (w fitted on train) | 4.5570 | 0.613 | combination |
+| **`quantile_avg_fixed` is recommended** | **4.5533** | **0.613** | **recommended combiner** |
 | `emos_csg` | 4.5657 | 0.627 | parent |
 | `per_bin` | 4.5785 | 0.625 | combination |
 | `bma` | 4.5918 | 0.624 | parent |
@@ -137,12 +138,17 @@ from the one currently on the slide.
 
 **Three qualifications that belong with the pass:**
 
-1. **Fitting the Vincentization weight did not help.** The pre-registered fixed
-   weight of 0.5 beat both parents at 4 of 5 leads; the train-fitted weight
-   (0.50-0.70 by lead and fold) managed 3 of 5. The fitted weight was chosen on
-   train CRPS, which is the honest procedure, but on this evidence the extra
-   freedom bought nothing and cost one lead. **Recommendation: use the fixed
-   w=0.5 and drop the fit.**
+1. **Fitting the Vincentization weight did not help, so the fit is off by
+   default.** The pre-registered fixed weight of 0.5 beat both parents at 4 of
+   5 leads; the train-fitted weight (0.50-0.70 by lead and fold) managed 3 of 5.
+   The fit was chosen on train CRPS, which is the honest procedure, but on this
+   evidence the extra freedom bought nothing and cost a lead.
+
+   `--fit-weight` still turns it on and the fitted weight is still recorded in
+   `tier2b_combined_train.csv`, because "we tried it and it did not help" is a
+   result worth keeping. But **w=0.5 is now the runner's default**, on two
+   grounds: it is the better method here, and it removes one more thing that can
+   differ between the number in this document and the number a rerun produces.
 2. **The margin is small.** 0.02-0.03 mm of daily CRPS against a 4.5 mm total.
    Real, reproducible and significant under the paired test, but not the
    magnitude of a method change.
