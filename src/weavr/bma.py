@@ -85,6 +85,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import xarray as xr
 from scipy import optimize
+from scipy.special import gammaincc
 from scipy.stats import gamma as gamma_dist
 
 from weavr.rain_bins import RAIN_BIN_LABELS
@@ -650,6 +651,103 @@ def sample_bma_mixture(
     return out.reshape(shape + (n_samples,))
 
 
+def _bma_sources(result: BmaFitResult) -> tuple[str, ...]:
+    """Sources in a stable order: the fitted components, else the weight keys.
+
+    A fallback cell has weights but no components, so the weight keys are the
+    only list that exists for every result. Iterating a dict's keys keeps the
+    order stable within a run, which matters because the mixture sums in that
+    order and the weights are floats.
+    """
+    if result.components:
+        return tuple(result.components)
+    return tuple(result.weights)
+
+
+def bma_analytic_predictive_mean(
+    result: BmaFitResult,
+    forecast_mean: dict[str, np.ndarray],
+    forecast_spread: dict[str, np.ndarray | None],
+) -> np.ndarray:
+    """Exact predictive mean of the mixture, with no Monte Carlo.
+
+    The mixture draws `X ~ Gamma(kappa, theta)` on the cube-root scale and then
+    cubes it, so the predictive variable is `Y = X**3` and its mean is
+    `E[X**3] = theta**3 * kappa * (kappa + 1) * (kappa + 2)` -- **not**
+    `(E[X])**3`. Jensen guarantees the two differ, and for the fat-tailed
+    components fitted here they differ a lot.
+
+    This exists because the mean was previously estimated as the mean of
+    `n_samples` draws. That estimator is unusable here: `Var(X**3)` is enormous,
+    so a 500-draw sample mean is dominated by a handful of draws and reported
+    327.6 mm where the true mean is 62.2 mm. On the `heavy` x SI cell at lead24
+    that turned a genuine +13.5 mm bias into a reported +277.4 mm, which then
+    looked like a fitted-component defect and sent two earlier root-cause
+    theories after the wrong culprit.
+
+    The parameters are exactly the ones `sample_bma_mixture` uses, so this is
+    the same distribution -- just not sampled.
+    """
+    if not result.components:
+        # A fallback cell's density is a point mass at zero, so its mean is zero
+        # -- `sample_bma_mixture` documents the same fallback.
+        return np.zeros(np.asarray(forecast_mean[_bma_sources(result)[0]], dtype=float).shape)
+    total = None
+    for index, source in enumerate(_bma_sources(result)):
+        component = result.components[source]
+        p0, mean_ct, variance_ct = _component_predictive_params(
+            component, forecast_mean[source], forecast_spread.get(source)
+        )
+        mean_ct_safe = np.clip(mean_ct, _TINY, None)
+        kappa = mean_ct_safe**2 / variance_ct
+        theta = variance_ct / mean_ct_safe
+        moment3 = theta**3 * kappa * (kappa + 1.0) * (kappa + 2.0)
+        weight = result.weights[source]
+        contribution = weight * (1.0 - p0) * moment3
+        total = contribution if total is None else total + contribution
+    if total is None:
+        return np.zeros((), dtype=float)
+    return total
+
+
+def bma_exceedance_probability(
+    result: BmaFitResult,
+    forecast_mean: dict[str, np.ndarray],
+    forecast_spread: dict[str, np.ndarray | None],
+    threshold: float,
+) -> np.ndarray:
+    """Exact `P(Y > threshold)` for the mixture, with no Monte Carlo.
+
+    `Y = X**3` is strictly increasing in `X`, so the exceedance event maps to
+    `X > threshold ** (1/3)` and the answer is the gamma survival function of
+    the cube-root threshold, summed over the mixture with the point mass at
+    zero folded in.
+
+    This replaces `(samples > threshold).mean(axis=-1)`. With 500 draws that
+    estimator quantises every probability to multiples of 1/500 and, in the
+    upper tail where the pre-registered H3 thresholds live, is dominated by
+    sampling noise -- so the heavy-rain probabilities that H3 is decided on
+    carried roughly +/-0.002 of Monte Carlo error per cell before any bootstrap.
+    """
+    sources = _bma_sources(result)
+    shape = np.asarray(forecast_mean[sources[0]], dtype=float).shape
+    if not result.components:
+        return np.zeros(shape, dtype=float)
+    total = np.zeros(shape, dtype=float)
+    cut = float(threshold) ** (1.0 / 3.0)
+    for source in _bma_sources(result):
+        component = result.components[source]
+        p0, mean_ct, variance_ct = _component_predictive_params(
+            component, forecast_mean[source], forecast_spread.get(source)
+        )
+        mean_ct_safe = np.clip(mean_ct, _TINY, None)
+        kappa = np.clip(mean_ct_safe**2 / variance_ct, _TINY, None)
+        theta = np.clip(variance_ct / mean_ct_safe, _TINY, None)
+        survival = gammaincc(kappa, cut / theta)
+        total = total + result.weights[source] * ((1.0 - p0) * survival)
+    return np.clip(total, 0.0, 1.0)
+
+
 def score_bma_and_mean(
     result: BmaFitResult,
     forecast_mean: dict[str, xr.DataArray],
@@ -682,15 +780,24 @@ def score_bma_and_mean(
     }
 
     samples = sample_bma_mixture(result, mean_arrays, spread_arrays, rng, n_samples=n_samples)
+
+    # The mean and the exceedance probabilities are computed exactly rather
+    # than from these draws. CRPS still comes from them -- it is a proper scoring
+    # rule and tolerates a finite sample -- but the mean does not, and the mean
+    # is what `bias_mm`, `mse_mm2` and `rmse_mm` are built from. Sampling the
+    # mean of `X**3` from 500 draws put 327.6 mm where the truth is 62.2 mm,
+    # which is how a +13.5 mm bias was reported as +277.4 mm and sent two
+    # earlier root-cause theories looking for a defect in the fit.
+    analytic_mean = bma_analytic_predictive_mean(result, mean_arrays, spread_arrays)
     if probability_grids is not None:
-        # P(Y > t) straight from the draws this function already made, so the
-        # Brier leg of the pre-registered H3 claim becomes computable without a
-        # second sampling pass. Sampling is the expensive part of Tier 2 and
-        # drawing again would both double the runtime and put Monte Carlo noise
-        # between a method's CRPS and its own exceedance probability.
         for threshold in probability_grids:
-            probability_grids[threshold][:] = (samples > threshold).mean(axis=-1)
-    predictive_mean = xr.DataArray(samples.mean(axis=-1), dims=obs.dims, coords=obs.coords)
+            probability_grids[threshold][:] = bma_exceedance_probability(
+                result, mean_arrays, spread_arrays, float(threshold)
+            )
+    predictive_mean = xr.DataArray(
+        np.broadcast_to(analytic_mean, samples.shape[:-1]).copy(),
+        dims=obs.dims, coords=obs.coords,
+    )
     return _ensemble_crps_chunked(samples, obs, member_dim), predictive_mean
 
 
