@@ -78,7 +78,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
 from pathlib import Path
 
@@ -94,10 +93,11 @@ from weavr import verify as V  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
 from weavr.score_io import (  # noqa: E402
     FORCE_HELP,
+    PerDayScoreWriter,
     guard_result_overwrites,
     per_day_scores,
     resolve_result_paths,
-    write_per_day_scores,
+    write_rows_csv,
 )
 from weavr.splits import (  # noqa: E402
     iter_evaluation_folds,
@@ -327,6 +327,7 @@ def main() -> int:
             else:
                 target_dict[f"{prefix}_{key}"] = value
 
+    per_day_writer = PerDayScoreWriter(args.results_dir)
     for lead_hours in LEAD_HOURS:
         forecasts, obs_aligned = load_aligned_forecasts_and_obs(
             sources, obs, PRECIP_VARIABLE, lead_hours
@@ -356,11 +357,10 @@ def main() -> int:
             test_equal_list.append(test_equal)
             test_obs_list.append(test_obs)
 
-            write_per_day_scores(
+            per_day_writer.add(
                 "tier1_regional",
                 lead_hours,
                 per_day_scores(test_tier1, test_obs, fold=split_label),
-                out_dir=args.results_dir,
             )
 
             tier1_result = score_blend(
@@ -527,18 +527,12 @@ def main() -> int:
                 )
 
     def _write_csv(path_str: str, rows: list[dict]) -> None:
-        out_path = Path(path_str)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        fieldnames = list(rows[0].keys()) if rows else []
-        with out_path.open("w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-        print(f"Wrote {out_path}")
+        print(f"Wrote {write_rows_csv(path_str, rows)}")
 
     _write_csv(args.out_csv, domain_rows)
     _write_csv(args.region_out_csv, region_rows)
     _write_csv(args.weights_out_csv, weight_rows)
+    per_day_writer.flush()
 
     return 0
 

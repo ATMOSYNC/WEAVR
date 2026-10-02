@@ -611,3 +611,9 @@ lands on a real IFS-ENS initialisation (2020-09-28), all 17,415 cells at lead
 `load_probability_grid` serves both 115.6 mm and 204.5 mm without pickling.
 Regenerating and committing the two example grids is deliberately left to
 step 07's two-season pass.
+
+> **v2 (2026-10-01).** The numbers in this file are v1 (weekly, 2020 only,
+> `n_train=14`, `n_test=3-4`) and are superseded by
+> [`docs/v2-evidence-base-results.md`](v2-evidence-base-results.md), which is
+> measured on the two-season daily LOYO base with real confidence intervals.
+> This file is retained as history.

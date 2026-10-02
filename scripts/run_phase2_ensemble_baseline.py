@@ -71,10 +71,10 @@ from weavr.ensemble import NoLaggedMembersError, build_lagged_ensemble  # noqa: 
 from weavr.grid import IMD_DAY_START_HOUR_UTC  # noqa: E402
 from weavr.score_io import (  # noqa: E402
     FORCE_HELP,
+    PerDayScoreWriter,
     guard_result_overwrites,
     per_day_scores,
     resolve_result_paths,
-    write_per_day_scores,
 )
 from weavr.splits import (  # noqa: E402,E501
     iter_evaluation_folds,
@@ -214,7 +214,7 @@ def score_precip_lead(
     test_fraction: float,
     per_day_method: str | None = None,
     lead_hours: int | None = None,
-    results_dir: str | None = None,
+    per_day_writer: PerDayScoreWriter | None = None,
 ) -> list[dict]:
     """Score one lagged-ensemble lead across evaluation folds (LOYO or single-season block)."""
     sample_times = pd.DatetimeIndex(ensemble_mm["sample"].values)
@@ -246,8 +246,8 @@ def score_precip_lead(
             for t in thresholds
         }
 
-        if per_day_method and lead_hours is not None and results_dir is not None:
-            write_per_day_scores(
+        if per_day_method and lead_hours is not None and per_day_writer is not None:
+            per_day_writer.add(
                 per_day_method,
                 lead_hours,
                 per_day_scores(
@@ -260,7 +260,6 @@ def score_precip_lead(
                         t: _exceedance_probability(test_ensemble, t) for t in thresholds
                     },
                 ),
-                out_dir=results_dir,
             )
 
         n_members = float(test_ensemble.notnull().sum(dim="member").mean())
@@ -392,6 +391,7 @@ def main() -> int:
     print("Scope: precipitation only scored -- no matching-resolution IMD temperature ground truth")
 
     rows = []
+    per_day_writer = PerDayScoreWriter(args.results_dir)
     for lead_hours in LEAD_HOURS:
         for group, var in SCORED_SOURCES:
             dense = open_multi_season(lagged_paths, group=group).load()
@@ -408,7 +408,7 @@ def main() -> int:
                 args.test_fraction,
                 per_day_method=f"phase2_lagged_{group}",
                 lead_hours=lead_hours,
-                results_dir=args.results_dir,
+                per_day_writer=per_day_writer,
             )
             for result in lead_results:
                 result["lead_hours"] = lead_hours
@@ -493,6 +493,8 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(temperature_rows)
     print(f"Wrote {temperature_out_path}")
+
+    per_day_writer.flush()
 
     return 0
 
