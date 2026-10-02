@@ -143,6 +143,76 @@ LOYO over both daily seasons, `csgd_only` (point-mass control) vs `csgd_gpd_tail
 
 ---
 
+## 4a. The IFS-ENS member-counting benchmark (was NOT RUN)
+
+This comparison could not be run before step 07: it needs **daily full-member
+IFS-ENS stores for both seasons**, which did not exist (#74 recorded it NOT RUN
+for exactly that reason). They exist now, so here is the number, and it is the
+one the spliced tail most needed to be measured against.
+
+`raw_ifs_ens_member_counting` is the empirical fraction of IFS-ENS members
+above the threshold -- no calibration, the thing a forecaster gets for free.
+
+| arm | false-zero cells @115.6 | @204.5 | BSS @115.6 | BSS @204.5 | SEDI @115.6 | SEDI @204.5 |
+|---|---|---|---|---|---|---|
+| `csgd_only` (point-mass control) | 116 | 116 | −0.036 | −0.018 | 0.281 | 0.294 |
+| `csgd_gpd_tail` (spliced EVT) | **0** | **0** | **−0.017** | **−0.006** | 0.201 | 0.155 |
+| `raw_ifs_ens_member_counting` | **2,087,404** | **2,116,864** | −0.302 | −0.263 | 0.316 | 0.245 |
+
+**Raw member counting assigns probability exactly 0.0 to about 2.09 million of
+roughly 2.12 million cell-days** -- essentially the entire domain at both
+thresholds. With 50 members, an exceedance at 115.6 mm or 204.5 mm requires at
+least one member to clear the bar, and at a daily accumulation of that
+magnitude over India that almost never happens. Its Brier skill score is
+*negative and worse than either calibrated arm* (−0.30 against −0.02).
+
+So the headline claim survives the comparison comfortably and for a stronger
+reason than the one originally claimed: the spliced tail is not merely better
+than member counting, it is the **only** arm that assigns a non-zero
+probability to almost any extreme cell-day. The control's 116 false zeros were
+what the step existed to remove; member counting has four orders of magnitude
+more of them.
+
+**What the benchmark does not rescue.** Two honest qualifications:
+
+- The tail is **still worse than climatology** on Brier at both thresholds
+  (BSS −0.017 and −0.006, i.e. negative). Being the least-bad probabilistic
+  forecast is not the same as being a good one.
+- Its SEDI is the **worst** of the three arms at 204.5 mm (0.155 against the
+  control's 0.294 and member counting's 0.245), and second-worst at 115.6 mm.
+  It removes the hard zeros and pays for it in spatial co-occurrence, which is
+  the same trade the H7 SEDI leg already reported.
+
+Net: the tail's justification is now evidence-based rather than assumed, and it
+is narrower than "the tail is good" -- it is "the tail is the only arm that
+gives a non-degenerate probability at these thresholds, it beats raw member
+counting on every measure, and it still loses to climatology and costs SEDI."
+
+## 4b. What was wrong with the benchmark before this run
+
+`--ifs-ensemble-stores` existed on the runner and was accepted, but the flag was
+never resolved into paths. `ifs_available` was decided on a non-`None`
+argument that nothing then read, the runner printed **"IFS-ENS member-counting
+benchmark: enabled"**, and no benchmark row was ever emitted. A reader had no
+way to tell the difference between "ran and produced nothing" and "enabled and
+ran".
+
+That is a worse failure than an absent feature, because the message claimed it.
+Fixed in this branch: the stores are resolved, the arm is computed, and the run
+now **raises** if the stores were supplied but the benchmark produced no rows,
+rather than reporting success.
+
+Reproduce with:
+
+```
+python scripts/run_tail_repair_evt.py \
+  --baseline-stores data/baseline_2018_jjas_daily.zarr data/baseline_2020_jjas_daily.zarr \
+  --lagged-stores   data/lagged_ensemble_inputs_2018_jjas_daily.zarr data/lagged_ensemble_inputs_2020_jjas_daily.zarr \
+  --ifs-ensemble-stores data/ifs_ens_2018_jjas_daily.zarr data/ifs_ens_2020_jjas_daily.zarr \
+  --climatology data/imd_seeps_climatology_jjas.zarr \
+  --results-dir results --force
+```
+
 ## 5. Honest Limitations
 
 - **Climatological Conditioning**: The GPD excess distribution describes the regional climatological tail behavior above $u$. Conditioning on the specific forecast lead and meteorological forcing enters solely through the splice anchor $P_{\text{CSGD}}(Y > u)$.
