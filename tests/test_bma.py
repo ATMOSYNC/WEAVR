@@ -9,6 +9,9 @@ from weavr.bma import (
     BmaFitResult,
     _ensemble_crps_chunked,
     bma_analytic_predictive_mean,
+    bma_crps,
+    bma_mixture_cdf,
+    bma_predictive_quantiles,
     crps_chunk_cells,
     fit_hierarchical_bma,
     renormalize_bma_for_present_sources,
@@ -16,6 +19,7 @@ from weavr.bma import (
     score_bma,
     score_bma_and_mean,
 )
+from weavr.stacking import predictive_quantiles_bma  # noqa: E402
 from weavr.verify import crps as ensemble_crps
 
 
@@ -397,13 +401,17 @@ class TestScoreBmaAndMean:
             np.random.default_rng(7),
             n_samples=200,
         )
-        replayed_da = xr.DataArray(
-            replayed, dims=(*obs.dims, "member"), coords=obs.coords
+        assert replayed.shape[-1] == 200
+        # CRPS is now integrated from the CDF, so it must NOT equal the sampled
+        # value -- and the gap is the point of the change.
+        assert crps.shape == obs.shape
+        exact = bma_crps(
+            result,
+            {s: v.values for s, v in mean_arrays.items()},
+            {s: None for s in mean_arrays},
+            obs.values,
         )
-        # CRPS must come from exactly the draws the function used.
-        assert float(crps.values) == pytest.approx(
-            float(ensemble_crps(replayed_da, obs, member_dim="member").values)
-        )
+        assert np.allclose(crps.values, exact)
         # The mean must equal the analytic moment, not the sample mean.
         analytic = bma_analytic_predictive_mean(
             result,
@@ -464,14 +472,19 @@ class TestScoreBmaAndMean:
             result, mean_arrays, spread, obs, rng=np.random.default_rng(3), n_samples=25
         )
 
-        # `predictive_mean` must stay unreduced -- `score_bma_cells` writes it
-        # straight into its per-cell MSE/bias fields. (CRPS stays reduced by
-        # `ensemble_crps`, exactly as before this change.)
+        # Both outputs must stay unreduced: `score_bma_cells` writes each one
+        # straight into a per-cell grid through a boolean mask.
         assert predictive_mean.dims == obs.dims
         assert predictive_mean.shape == obs.shape
         assert np.isfinite(predictive_mean.values).all()
         assert (predictive_mean.values >= 0.0).all()
-        assert np.isfinite(float(crps.values))
+        assert crps.shape == obs.shape, (
+            "CRPS must be per-cell. It used to be reduced to a scalar, which "
+            "made every cell of a (bin, region) group receive the group mean "
+            "and left the per-day BMA files with no within-group variation."
+        )
+        assert np.isfinite(crps.values).all()
+        assert (crps.values >= 0.0).all()
 
 
 class TestSampleBmaMixtureChunking:
@@ -618,3 +631,88 @@ class TestEnsembleCrpsChunked:
         )
 
         assert float(got.values) == float(expected.values)
+
+
+class TestBmaPredictiveQuantiles:
+    """Exact quantiles by inverting the CDF, replacing draw order statistics."""
+
+    LEVELS = np.linspace(0.01, 0.99, 99)
+
+    def _result(self, zero_intercept, zero_slope):
+        return BmaFitResult(
+            bin_label="x", region="R1", weights={"a": 1.0},
+            components={
+                "a": BmaComponentFit(
+                    "a", "kernel_dressing", zero_intercept, zero_slope,
+                    1.2, 0.4, 0.3, 0.0, max_mean_ct=6.0,
+                )
+            },
+        )
+
+    def test_monotone_and_non_negative(self):
+        q = bma_predictive_quantiles(
+            self._result(0.0, -1.0), {"a": np.full((4,), 3.0)}, {"a": None}, self.LEVELS
+        )
+        assert q.shape == (4, 99)
+        assert np.all(np.diff(q, axis=-1) >= -1e-9)
+        assert np.all(q >= 0.0)
+
+    def test_quantiles_below_the_point_mass_are_exactly_zero(self):
+        """`Q(tau) = 0` for `tau <= p0`, the same convention as the CSGD.
+
+        Interpolating toward the point mass instead produces a *negative*
+        quantile, because the CDF has already reached p0 at the grid's first
+        point.
+        """
+        dry = self._result(3.0, -2.0)
+        q = bma_predictive_quantiles(
+            dry, {"a": np.full((4,), 0.2)}, {"a": None}, self.LEVELS
+        )
+        cdf_at_zero = bma_mixture_cdf(
+            dry, {"a": np.full((4,), 0.2)}, {"a": None}, np.zeros(1)
+        )[:, 0]
+        for level_index, level in enumerate(self.LEVELS):
+            if level <= cdf_at_zero[0]:
+                assert q[0, level_index] == 0.0
+
+    def test_agrees_with_the_exact_cdf(self):
+        """Inversion is accurate to 2% of probability, above and below `p0`.
+
+        Two separate reasons the tolerance is needed, both inherent rather than
+        bugs:
+
+        * Below the point mass `Q(tau) = 0` and `F(0) = p0 > tau`, because the
+          CDF jumps at zero. `F(Q(tau))` legitimately exceeds `tau` there.
+        * Just above it the CDF is steep, and the inversion interpolates linearly
+          in *value*, so `F(Q(tau))` lands a little under `tau` -- measured at
+          0.011 at `tau = 0.21` against `p0 = 0.19`.
+        """
+        result = self._result(0.0, -1.0)
+        mean = {"a": np.full((4,), 3.0)}
+        spread = {"a": None}
+        q = bma_predictive_quantiles(result, mean, spread, self.LEVELS)
+        achieved = bma_mixture_cdf(result, mean, spread, q)
+        p0 = bma_mixture_cdf(result, mean, spread, np.zeros(1))[:, 0]
+        above = self.LEVELS[None, :] > p0[:, None]
+        target = np.broadcast_to(self.LEVELS, achieved.shape)
+        assert np.allclose(achieved[above], target[above], atol=0.02)
+        # Below `p0` the quantile is zero and the achieved level is `p0` itself.
+        below = ~above
+        assert np.allclose(achieved[below], np.broadcast_to(p0[:, None], achieved.shape)[below])
+
+    def test_is_not_the_order_statistics_of_a_finite_sample(self):
+        """The draw-based version is the thing this replaces; keep it visible.
+
+        Step 13's H10 verdict turns on 0.02-0.03 mm of CRPS, and draw-based
+        quantiles were off by 1-6%, so a regression back to sampling would be
+        larger than the margin it decides.
+        """
+        result = self._result(0.0, -1.0)
+        mean = {"a": np.full((4,), 3.0)}
+        spread = {"a": None}
+        exact = bma_predictive_quantiles(result, mean, spread, self.LEVELS)
+        sampled = predictive_quantiles_bma(
+            sample_bma_mixture(result, mean, spread, np.random.default_rng(0), n_samples=500),
+            self.LEVELS,
+        )
+        assert not np.allclose(exact[:, -1], sampled[:, -1])
