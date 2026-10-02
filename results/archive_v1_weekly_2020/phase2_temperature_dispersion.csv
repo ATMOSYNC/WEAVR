@@ -1,0 +1,11 @@
+source,variable,lead_hours,n_built,spread_k
+graphcast,2m_temperature,24,18,0.2965048242740399
+graphcast,2m_temperature,48,18,0.30775193303733833
+graphcast,2m_temperature,72,18,0.30822089688995463
+graphcast,2m_temperature,96,18,0.3169903785121855
+graphcast,2m_temperature,120,18,0.3440119822358134
+pangu,2m_temperature,24,18,0.4398710200985016
+pangu,2m_temperature,48,18,0.44611441003202834
+pangu,2m_temperature,72,18,0.455306409002331
+pangu,2m_temperature,96,18,0.4470826861925528
+pangu,2m_temperature,120,18,0.4622224604928042
