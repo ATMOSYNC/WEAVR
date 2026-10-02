@@ -664,6 +664,148 @@ def _bma_sources(result: BmaFitResult) -> tuple[str, ...]:
     return tuple(result.weights)
 
 
+#: Value grid the analytic CRPS is integrated on: 1 mm to 150 mm, then 5 mm to
+#: 1000 mm. Beyond the top of the grid the CDF is 1 while the step term is 0, so
+#: the integrand is already ~0 and truncation contributes nothing measurable.
+BMA_CRPS_GRID_MM = np.concatenate(
+    [np.arange(0.0, 150.0 + 1.0, 1.0), np.arange(155.0, 1000.0 + 5.0, 5.0)]
+)
+
+
+def bma_mixture_cdf(
+    result: BmaFitResult,
+    forecast_mean: dict[str, np.ndarray],
+    forecast_spread: dict[str, np.ndarray | None],
+    values: np.ndarray,
+) -> np.ndarray:
+    """Exact predictive CDF of the mixture, evaluated at `values`.
+
+    Each component's predictive variable is `X**3` with `X ~ Gamma(kappa,
+    theta)`, and cubing is strictly increasing, so
+    `P(X**3 <= v) = P(X <= v**(1/3)) = gamma.cdf(v**(1/3))` for `v >= 0`. The
+    component's own point mass at zero adds to that for every `v >= 0`, giving
+    `F(v) = p0 + (1 - p0) * gamma.cdf(v**(1/3))`, and the mixture CDF is the
+    weighted sum of those.
+
+    `values` is either a shared 1-D grid -- giving the shape `(*cells, G)` -- or
+    one value per cell with a trailing singleton axis (`obs[..., None]`), giving
+    the cells' own shape. `gamma_dist.cdf` broadcasts the two against each
+    other, so no reshaping is needed and neither calling convention can
+    double-count a rank.
+    """
+    values = np.asarray(values, dtype=float)
+    cut = np.cbrt(np.maximum(values, 0.0))
+    values_ndim = values.ndim
+    cell_shape = np.asarray(forecast_mean[_bma_sources(result)[0]], dtype=float).shape
+    cell_ndim = len(cell_shape)
+    shape = cell_shape
+    pad = (1,) * max(0, cell_ndim + 1 - values_ndim)
+    padded = cut.reshape(pad + cut.shape)
+    if not result.components:
+        # A fallback cell is a point mass at zero, so its CDF is 1 at every
+        # non-negative value.
+        # Same two calling conventions as the fitted path: a shared grid gives
+        # `(*cells, G)`, a per-cell value gives the cells' own shape.
+        out_shape = (
+            shape + values.shape if values_ndim <= cell_ndim
+            else np.broadcast_shapes(shape, values.shape)
+        )
+        return np.ones(out_shape, dtype=float)
+
+    total = None
+    for source in _bma_sources(result):
+        p0, mean_ct, variance_ct = _component_predictive_params(
+            result.components[source], forecast_mean[source], forecast_spread.get(source)
+        )
+        mean_ct_safe = np.clip(mean_ct, _TINY, None)
+        # Both operands need to end up at rank `ndim + 1`: the per-cell
+        # parameters get a *trailing* singleton so their cell axes stay leading,
+        # and the evaluation points get *leading* singletons so theirs stay
+        # trailing. NumPy aligns from the right, so a (ndim, ndim) parameter
+        # block cannot broadcast against a (G,) grid without this.
+        kappa = np.clip(mean_ct_safe**2 / variance_ct, _TINY, None).reshape(shape + (1,))
+        theta = np.clip(variance_ct / mean_ct_safe, _TINY, None).reshape(shape + (1,))
+        # `p0 +` is the point mass at zero, and it is not optional. A dry cell has
+        # p0 ~ 1, so dropping it leaves the CDF near 0 across the whole grid and
+        # CRPS integrates to ~294 mm instead of ~2.7 mm.
+        contribution = result.weights[source] * (
+            p0.reshape(shape + (1,))
+            + (1.0 - p0).reshape(shape + (1,))
+            * gamma_dist.cdf(padded, kappa, scale=theta)
+        )
+        total = contribution if total is None else total + contribution
+    return total
+
+
+def _cumulative_trapezoid(values: np.ndarray, grid: np.ndarray) -> np.ndarray:
+    """Running integral of `values` over `grid`; the output starts at 0."""
+    widths = np.diff(grid)
+    increments = 0.5 * (values[..., :-1] + values[..., 1:]) * widths
+    return np.concatenate(
+        [np.zeros(values.shape[:-1] + (1,), dtype=float), np.cumsum(increments, axis=-1)],
+        axis=-1,
+    )
+
+
+def bma_crps(
+    result: BmaFitResult,
+    forecast_mean: dict[str, np.ndarray],
+    forecast_spread: dict[str, np.ndarray | None],
+    obs: np.ndarray,
+    grid: np.ndarray = BMA_CRPS_GRID_MM,
+) -> np.ndarray:
+    """Exact per-cell CRPS, integrated from the mixture CDF rather than sampled.
+
+    Uses the split form `CRPS = int_0^y F^2 + int_y^inf (1 - F)^2`, in which
+    both integrands are continuous, and handles the single interval that
+    straddles `y` separately using the CDF evaluated exactly at `y`.
+
+    The one-sided form `int (F - 1{x >= y})^2` has a jump at `x = y`, and a plain
+    trapezoid across that interval is biased by about half a grid step -- enough
+    to score a point mass at zero against `obs = 3` as 2.5 instead of 3.0.
+    Splitting at `y` removes that bias entirely.
+
+    This replaces the sample-based CRPS for the same reason the predictive mean
+    was replaced: `Y = X**3` is heavy-tailed enough that 500 draws cannot
+    represent it. On `heavy` x SI the sampled CRPS reads 146.9 mm where this
+    value is 26.8 mm, a factor of 5.5 -- large enough that the Step 07 output
+    gate raised four advisories describing a degenerate fit that does not exist.
+    Every other region measured agrees with the exact value to 1.00x.
+
+    It is also **per-cell**, which the sampled version was not: CRPS used to be
+    reduced to a scalar before `score_bma_cells` assigned it into a per-cell
+    grid, so every cell in a (bin, region) group received the group average.
+    """
+    obs = np.asarray(obs, dtype=float)
+    cdf = bma_mixture_cdf(result, forecast_mean, forecast_spread, grid)
+    cdf_at_obs = bma_mixture_cdf(result, forecast_mean, forecast_spread, obs[..., None])[..., 0]
+
+    cum_f2 = _cumulative_trapezoid(cdf**2, grid)
+    cum_g2 = _cumulative_trapezoid((1.0 - cdf) ** 2, grid)
+
+    last = grid.size - 1
+    j = np.clip(np.searchsorted(grid, obs, side="right") - 1, 0, last)
+    j_up = np.minimum(j + 1, last)
+
+    j3 = j[..., None]
+    below_f2 = np.take_along_axis(cum_f2, j3, axis=-1)[..., 0]
+    below_g2 = np.take_along_axis(cum_g2, j3, axis=-1)[..., 0]
+    f_lo = np.take_along_axis(cdf, j3, axis=-1)[..., 0]
+    f_hi = np.take_along_axis(cdf, j_up[..., None], axis=-1)[..., 0]
+
+    g_lo = grid[j]
+    g_hi = grid[j_up]
+    left = below_f2 + 0.5 * (f_lo**2 + cdf_at_obs**2) * np.clip(obs - g_lo, 0.0, None)
+    right = (cum_g2[..., last] - below_g2) + 0.5 * (
+        (1.0 - cdf_at_obs) ** 2 + (1.0 - f_hi) ** 2
+    ) * np.clip(g_hi - obs, 0.0, None)
+    # An observation above the grid is entirely in the saturated region, where
+    # F is 1 and the second integral is zero, so the first integral grows by the
+    # full excess.
+    right = right + np.clip(obs - grid[last], 0.0, None)
+    return np.clip(left + right, 0.0, None)
+
+
 def bma_analytic_predictive_mean(
     result: BmaFitResult,
     forecast_mean: dict[str, np.ndarray],
@@ -779,31 +921,41 @@ def score_bma_and_mean(
         source: (da.values if da is not None else None) for source, da in forecast_spread.items()
     }
 
-    samples = sample_bma_mixture(result, mean_arrays, spread_arrays, rng, n_samples=n_samples)
+    # Every summary this function returns is exact, per-cell, and seed-free:
+    # CRPS from the CDF integral, the mean from E[X**3], and any exceedance
+    # probability from the gamma survival function. None needs draws.
+    #
+    # That is not an optimisation. `Y = X**3` is heavy-tailed enough that 500
+    # draws could not represent it -- the sampled mean read 327.6 mm against a
+    # true 62.2 mm, and the sampled CRPS read 146.9 mm against a true 26.8 mm,
+    # the latter enough for the Step 07 gate to report four advisories
+    # describing a degenerate fit that does not exist.
+    obs_values = obs.values if hasattr(obs, "values") else np.asarray(obs)
+    crps_values = bma_crps(result, mean_arrays, spread_arrays, obs_values)
 
-    # The mean and the exceedance probabilities are computed exactly rather
-    # than from these draws. CRPS still comes from them -- it is a proper scoring
-    # rule and tolerates a finite sample -- but the mean does not, and the mean
-    # is what `bias_mm`, `mse_mm2` and `rmse_mm` are built from. Sampling the
-    # mean of `X**3` from 500 draws put 327.6 mm where the truth is 62.2 mm,
-    # which is how a +13.5 mm bias was reported as +277.4 mm and sent two
-    # earlier root-cause theories looking for a defect in the fit.
-    analytic_mean = bma_analytic_predictive_mean(result, mean_arrays, spread_arrays)
     if probability_grids is not None:
         for threshold in probability_grids:
             probability_grids[threshold][:] = bma_exceedance_probability(
                 result, mean_arrays, spread_arrays, float(threshold)
             )
+
+    analytic_mean = bma_analytic_predictive_mean(result, mean_arrays, spread_arrays)
     predictive_mean = xr.DataArray(
-        np.broadcast_to(analytic_mean, samples.shape[:-1]).copy(),
+        np.broadcast_to(analytic_mean, crps_values.shape).copy(),
         dims=obs.dims, coords=obs.coords,
     )
-    return _ensemble_crps_chunked(samples, obs, member_dim), predictive_mean
+    return xr.DataArray(crps_values, dims=obs.dims, coords=obs.coords), predictive_mean
 
 
-def _ensemble_crps_chunked(
+def _ensemble_crps_chunked(  # noqa: D401
     samples: np.ndarray, obs: xr.DataArray, member_dim: str
 ) -> xr.DataArray:
+    """Retained only for the sampled path `sample_bma_mixture` users build.
+
+    `score_bma_and_mean` no longer calls this: it integrates the CDF instead.
+    Anything still scoring from draws can use it, but note it reduces to a
+    scalar and so cannot fill a per-cell grid.
+    """
     """`weavr.verify.crps` over `samples`, blocked over the leading (cell)
     axes so `xskillscore`'s pairwise member-difference tensor stays bounded.
 

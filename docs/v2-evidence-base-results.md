@@ -288,48 +288,90 @@ two-fold table. The comparison the prompt asks for is drawn from the two.
 
 ## 7. Open defects found while regenerating
 
-### The headline's per-(bin, region) fits include degenerate cases
+### Resolved: the "degenerate fits" were a Monte Carlo artefact
 
-`scripts/gate_step07_results.py` flags two, in both the by-bin and by-region
-tables:
+`scripts/gate_step07_results.py` used to flag two cells as degenerate, in both
+the by-bin and by-region tables:
 
-| bin | region | lead | CRPS | reference | RMSE |
-|---|---|---|---|---|---|
-| heavy | NE1 | 24 h | 119.5 mm | 27.9 mm (3.6×… 4.3×) | 666.8 mm |
-| heavy | SI | 24 h | 101.3 mm | 27.9 mm (3.6×) | 748.4 mm |
+| bin | region | lead | CRPS (was) | CRPS (now) | RMSE (was) | RMSE (now) |
+|---|---|---|---|---|---|---|
+| heavy | NE1 | 24 h | 119.5 mm | **48.5 mm** | 666.8 mm | **62.2 mm** |
+| heavy | SI | 24 h | 101.3 mm | **38.3 mm** | 748.4 mm | **50.0 mm** |
 
-Observed daily accumulations reach ~400 mm at most, so an RMSE of 667–748 mm
-is arithmetically impossible as a forecast error: the fitted mixture's scale
-has degenerated. Other regions in the same bin and lead are healthy
-(22–36 mm CRPS), so this is regional, not global.
+with biases of +135.7 mm and +173.0 mm against a `heavy` bin whose rainfall
+range is 64.5-115.6 mm by construction. **The gate now raises no advisories at
+all.**
 
-These cell-days are ~0.2% of the ~564,000 scored, so the cell-weighted domain
-CRPS is 4.6 mm and **no verdict above moves**. They are reported as advisories
-rather than blocking failures for exactly that reason. Median by-bin CRPS is
-8.3–8.4 mm and consistent across all three combiners, so the bulk of the
-breakdown is sound.
+**The cause was the estimator, not the fit.** The mixture draws
+`X ~ Gamma(kappa, theta)` on the cube-root scale and then cubes it, so the
+predictive variable is `Y = X**3`. Two consequences:
 
-**Still unresolved, and an earlier root-cause claim in this file's history was
-wrong.** The first attempt blamed `gamma_mean_intercept`/`gamma_mean_slope` as
-the only unbounded parameters, and `weavr.bma` now caps the predicted
-cube-root mean at the training maximum. That cap **provably does not bind here**
-— re-running Tier 2 with it in place reproduced `heavy`×SI to six decimal
-places (CRPS 145.263122, bias +277.369185), which is how the misdiagnosis was
-caught. The mean regressors are in fact well conditioned; measured on the
-2020-trained fold, `heavy`×SI has mean intercepts +3.31/+1.66/+2.13 against
-+2.33 for healthy `heavy`×NE2.
+1. `E[Y]` is `theta**3 kappa (kappa+1) (kappa+2)`, **not** `(E[X])**3`. Jensen
+   guarantees they differ.
+2. `Var(Y)` is large enough that 500 draws cannot represent it.
 
-What *does* differ is the variance: `heavy`×SI's cube-root variance intercepts
-are 2.75/2.96/1.09 where `heavy`×NE2's are 0.58/1.16/1.10. Since the sampler
-draws `Gamma(kappa = mean_ct²/variance_ct, theta = variance_ct/mean_ct)` and
-then cubes, a fat gamma tail in cube-root space produces rare enormous draws
-whose sample mean dominates a 453-cell fold's pooled bias. That is the
-mechanism consistent with a +277 mm bias on a bin whose own scale is ~90 mm,
-but it is **not confirmed**, and no fix is claimed.
+Every summary taken from those draws was biased, in the direction that makes the
+mixture look worse than it is:
 
-The bound was kept because it is a legitimate guard that is inert on
-well-conditioned fits (asserted to 1e-9 in `tests/test_bma_mean_bound.py`),
-not because it fixed this.
+| quantity | how it was computed | heavy x SI, lead 24 |
+|---|---|---|
+| predictive mean | mean of 500 draws | 327.6 mm (true **62.2 mm**) |
+| CRPS | mean of 500 draws | 101.3 mm (true **38.3 mm**) |
+| `P(Y > t)` | fraction of 500 draws | already accurate to ~0.0005 |
+
+`bias_mm`, `mse_mm2` and `rmse_mm` are all built from the predictive mean, which
+is where the +277.4 mm bias came from. **H3 was never affected** -- its
+exceedance probabilities were already accurate -- so H3 FAIL is a genuine result
+and not an artefact.
+
+`weavr.bma` now computes all three exactly: the mean from `E[X**3]`, the
+exceedance probability from the gamma survival function (exact, because cubing is
+monotone), and CRPS by integrating the mixture CDF. It also verified against
+brute-force quadrature on a 600,001-point grid: 28.8512 mm analytic against
+28.8511 mm exact at `obs = 30 mm`.
+
+### Three further defects fixed alongside
+
+- **CRPS was reduced to a scalar** before `score_bma_cells` assigned it into a
+  per-cell grid, so every cell of a `(bin, region)` group received the *group*
+  average, and the per-day BMA files had no within-group variation.
+- **CRPS is now per-cell**, matching `weavr.emos.score_csgd` and what
+  `score_bma_and_mean`'s docstring always claimed.
+- **The trapezoid mishandled the step at the observation.** Integrating
+  `(F - 1{x >= y})**2` directly biases the one interval straddling `y` by about
+  half a grid step -- enough to score a point mass at zero against `obs = 3` as
+  2.5 rather than 3.0. Splitting the integral at `y`, where the CDF is available
+  in closed form, removes it exactly.
+
+### Two earlier root-cause claims were wrong, and are retracted
+
+1. The first attempt blamed `gamma_mean_intercept`/`gamma_mean_slope` as the only
+   unbounded parameters and capped the predicted cube-root mean at the training
+   maximum. That cap **provably does not bind**: a `heavy`-classified cell holds
+   observations from **0 to 355 mm**, because bins are classified from the
+   *forecast* rather than the observation, so the cap sits near 320 mm -- above
+   the very bias it was meant to prevent. The slopes were never the problem
+   either, measuring 0.04-1.73.
+2. The second attempt concluded the fit was sound and only the *mean* was
+   mis-estimated. CRPS was too, by 2.6x on the affected cells.
+
+Recorded because it cost three full regenerations: a well-formed number that means
+the wrong thing passes every structural check. `E[X**3] != (E[X])**3` was
+available on the first run to catch this.
+
+### No verdict moved
+
+All four pre-registered verdicts stand exactly as recorded above: H1-RMSE PASS,
+H1-CRPS PASS, H2 FAIL, H3 FAIL. The fixes corrected *reported metrics* that were
+wrong, not conclusions that were wrong -- but H2 and H3 rest on numbers that had
+to be trustworthy before they could mean anything, and now they are.
+
+### Still open
+
+Two cells remain mildly high rather than absurd: `heavy` x CI at 120 h
+(+28.9 mm bias) and `heavy` x NE1 at 96 h (+28.4 mm). Neither is flagged by the
+gate and neither moves a verdict, but both are the residue of the same
+forecast-defined-bin problem and belong with any future revisit of the bins.
 
 ### Bin-level CRPS scales with the bin
 

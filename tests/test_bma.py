@@ -9,6 +9,7 @@ from weavr.bma import (
     BmaFitResult,
     _ensemble_crps_chunked,
     bma_analytic_predictive_mean,
+    bma_crps,
     crps_chunk_cells,
     fit_hierarchical_bma,
     renormalize_bma_for_present_sources,
@@ -397,13 +398,17 @@ class TestScoreBmaAndMean:
             np.random.default_rng(7),
             n_samples=200,
         )
-        replayed_da = xr.DataArray(
-            replayed, dims=(*obs.dims, "member"), coords=obs.coords
+        assert replayed.shape[-1] == 200
+        # CRPS is now integrated from the CDF, so it must NOT equal the sampled
+        # value -- and the gap is the point of the change.
+        assert crps.shape == obs.shape
+        exact = bma_crps(
+            result,
+            {s: v.values for s, v in mean_arrays.items()},
+            {s: None for s in mean_arrays},
+            obs.values,
         )
-        # CRPS must come from exactly the draws the function used.
-        assert float(crps.values) == pytest.approx(
-            float(ensemble_crps(replayed_da, obs, member_dim="member").values)
-        )
+        assert np.allclose(crps.values, exact)
         # The mean must equal the analytic moment, not the sample mean.
         analytic = bma_analytic_predictive_mean(
             result,
@@ -464,14 +469,19 @@ class TestScoreBmaAndMean:
             result, mean_arrays, spread, obs, rng=np.random.default_rng(3), n_samples=25
         )
 
-        # `predictive_mean` must stay unreduced -- `score_bma_cells` writes it
-        # straight into its per-cell MSE/bias fields. (CRPS stays reduced by
-        # `ensemble_crps`, exactly as before this change.)
+        # Both outputs must stay unreduced: `score_bma_cells` writes each one
+        # straight into a per-cell grid through a boolean mask.
         assert predictive_mean.dims == obs.dims
         assert predictive_mean.shape == obs.shape
         assert np.isfinite(predictive_mean.values).all()
         assert (predictive_mean.values >= 0.0).all()
-        assert np.isfinite(float(crps.values))
+        assert crps.shape == obs.shape, (
+            "CRPS must be per-cell. It used to be reduced to a scalar, which "
+            "made every cell of a (bin, region) group receive the group mean "
+            "and left the per-day BMA files with no within-group variation."
+        )
+        assert np.isfinite(crps.values).all()
+        assert (crps.values >= 0.0).all()
 
 
 class TestSampleBmaMixtureChunking:
