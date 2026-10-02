@@ -285,21 +285,53 @@ def select_emos_source(
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
+    """Step 07 made every other runner multi-season; this one still wasn't.
+
+    The fold loop has to iterate `iter_evaluation_folds` over two seasons, so
+    it needs the same `--*-stores` (plural) interface as Tier 2 and Tier 3, with
+    the singular `--store` forms kept for the archived v1 single-season runs.
+    Defaults point at the daily 2018 + 2020 stores, which is the only evidence
+    base a LOYO evaluation is meaningful on.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--baseline-store", type=Path, default=Path("data/baseline_2020_jjas_daily.zarr")
+        "--baseline-stores", nargs="+", default=None,
+        help="Baseline stores (default: 2018 + 2020 daily)",
     )
+    parser.add_argument("--baseline-store", default=None, help="Legacy single store")
     parser.add_argument(
-        "--lagged-store",
-        type=Path,
-        default=Path("data/lagged_ensemble_inputs_2020_jjas_daily.zarr"),
+        "--lagged-stores", nargs="+", default=None,
+        help="Lagged ensemble stores (default: 2018 + 2020 daily)",
     )
+    parser.add_argument("--lagged-store", default=None, help="Legacy single store")
     parser.add_argument(
-        "--ifs-ensemble-store", type=Path, default=Path("data/ifs_ens_2020_jjas.zarr")
+        "--ifs-ensemble-stores", nargs="+", default=None,
+        help="IFS-ENS stores (default: 2018 + 2020 daily)",
     )
-    parser.add_argument("--out-csv", type=Path, default=Path("results/tier2b_combined.csv"))
-    parser.add_argument("--n-samples", type=int, default=300)
-    parser.add_argument("--quantile-weight", type=float, default=0.5)
+    parser.add_argument("--ifs-ensemble-store", default=None, help="Legacy single store")
+    parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
+    parser.add_argument(
+        "--results-dir", default="results",
+        help=(
+            "Directory for the per-day files and the default parent for the "
+            "CSVs. Point this at a scratch directory to keep a run out of the "
+            "committed results/."
+        ),
+    )
+    parser.add_argument("--out-csv", type=Path, default=None,
+                        help="default: <results-dir>/tier2b_combined.csv")
+    parser.add_argument("--paired-out-csv", type=Path, default=None,
+                        help="default: <results-dir>/tier2b_combined_paired.csv")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing result CSVs.")
+    parser.add_argument("--test-fraction", type=float, default=0.2)
+    parser.add_argument("--n-samples", type=int, default=500,
+                        help="Monte Carlo draws for the BMA quantiles.")
+    parser.add_argument(
+        "--quantile-weight", type=float, default=0.5,
+        help="Fixed Vincentization weight for the `quantile_avg_fixed` arm.",
+    )
+    parser.add_argument("--block-days", type=int, default=7)
+    parser.add_argument("--n-resamples", type=int, default=1000)
     return parser.parse_args(args)
 
 
