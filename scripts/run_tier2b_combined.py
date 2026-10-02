@@ -380,6 +380,95 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(args)
 
 
+def cell_weighted_mean(values: np.ndarray, counts: np.ndarray) -> float:
+    """Mean of per-group cell means, weighted by each group's cell count.
+
+    `values` holds one mean per (combiner, bin) group and `counts` the number of
+    cells behind each. The natural-looking `values.sum() / counts.sum()` is not
+    a mean of anything: it divides a sum of *means* by a sum of *counts*, so it
+    shrinks with the number of groups and the typical cell count.
+
+    That mistake shipped twice here. It made the train-fold CRPS of `per_bin`
+    come out at 7e-5 mm while `quantile_avg`'s came out at 4.8 mm -- a 56,000x
+    ratio -- so the `<=` that nominates the primary arm picked `per_bin` at four
+    of five leads regardless of skill, and H10 was decided on that. Nothing
+    crashed and every number was finite; the verdict was simply meaningless.
+    """
+    values = np.asarray(values, dtype=float)
+    counts = np.asarray(counts, dtype=float)
+    if values.size == 0 or counts.sum() <= 0:
+        return float("nan")
+    return float(np.average(values, weights=counts))
+
+
+#: Two train-fold CRPS values that are compared with `<` to nominate the
+#: primary arm must be on the same scale. Legitimate differences between
+#: methods are a few percent; the historical averaging bug put the two
+#: candidates 56,000x apart. Ten is loose enough never to fire on a real skill
+#: difference and tight enough to catch a units error on sight.
+MAX_TRAIN_CRPS_SCALE_RATIO = 10.0
+
+
+def comparable_train_crps(
+    candidates: dict[str, float], ratio_limit: float = MAX_TRAIN_CRPS_SCALE_RATIO
+) -> dict[str, float]:
+    """Fail loudly if two train-fold CRPS values are not on a common scale.
+
+    These values are compared with `<` to nominate the primary arm, so a units
+    error in one of them does not produce a wrong number -- it produces a
+    confidently wrong *choice of arm*, and the resulting verdict looks entirely
+    normal. That is exactly what happened: `per_bin` reported 7e-5 mm against
+    `quantile_avg`'s 4.8 mm, so the comparison always picked `per_bin` and H10
+    was decided on the weakest arm at four of five leads.
+
+    A legitimate difference between two combination rules on the same fold is a
+    few percent of CRPS. Anything past `ratio_limit` is a scale error, not
+    skill, and there is no sensible verdict to report from it.
+    """
+    finite = {k: v for k, v in candidates.items() if np.isfinite(v)}
+    if len(finite) < 2:
+        return finite
+    values = np.array(list(finite.values()), dtype=float)
+    smallest = float(values.min())
+    if smallest <= 0.0:
+        return finite
+    ratio = float(values.max()) / smallest
+    if ratio > ratio_limit:
+        detail = ", ".join(f"{k}={v:.6g}" for k, v in sorted(finite.items()))
+        raise ValueError(
+            f"train-fold CRPS values are not on a common scale (max/min = "
+            f"{ratio:.0f}x, limit {ratio_limit:g}x): {detail}. A units or "
+            "weighting error in one of these makes the primary-arm nomination "
+            "meaningless while still producing a finite, plausible verdict. "
+            "Fix the averaging before re-running."
+        )
+    return finite
+
+
+def combined_beats_parent(
+    difference: float, ci_high: float, degenerate: bool = False
+) -> bool:
+    """Did a combination beat a parent, given a paired difference and its upper bound?
+
+    Lower loss is better, so a combination wins when its paired difference
+    against the parent is *negative* and the 95% interval excludes 0 on the
+    negative side -- which is `ci_high < 0`, not `ci_low > 0`.
+
+    The two are opposite claims, and the wrong one is the quiet kind of wrong:
+    a real, significant improvement (`d = -0.0467`, CI
+    `[-0.0743, -0.0222]`) fails a `ci_low > 0` test, so a method that clearly
+    won was reported as having lost, and the only symptom was a FAIL verdict
+    that looked plausible. That is why this is a named function with its own
+    tests rather than an inline comparison.
+
+    A degenerate bootstrap -- too few days to resample -- is never a win,
+    whatever the point estimate says.
+    """
+    if degenerate:
+        return False
+    return bool(difference < 0.0 and ci_high < 0.0)
+
+
 def _values(da: xr.DataArray) -> np.ndarray:
     """`da`'s values with dims forced to `(sample, latitude, longitude)`."""
     return da.transpose("sample", "latitude", "longitude").values.astype(float)
@@ -500,12 +589,23 @@ def _accumulate_day_sums(
     metrics: dict[str, np.ndarray],
     day_index: np.ndarray,
     thresholds: list[float],
+    obs_cells: np.ndarray,
 ) -> None:
-    """Add one group's per-cell metrics into per-day sums and cell counts."""
+    """Add one group's per-cell metrics into per-day sums and cell counts.
+
+    The binary observation is derived here, per threshold, rather than passed
+    in. It was passed in before -- as the raw rainfall value -- so the score
+    was computed as `(probability - rainfall_mm) ** 2`, which is a squared
+    rainfall error near 285 mm^2, not a Brier score. Every `brier_*` column in
+    every output was that quantity. A Brier score is bounded by 1, and nothing
+    checked it, so the columns carried a plausible-looking, entirely wrong
+    number through three runs.
+    """
     np.add.at(acc["crps_sum"], day_index, np.nan_to_num(metrics["crps"]))
     np.add.at(acc["pit_sum"], day_index, np.nan_to_num(metrics["pit"]))
-    for i, _ in enumerate(thresholds):
-        residual = metrics["exceed"][i] - metrics["obs_binary"]
+    for i, threshold in enumerate(thresholds):
+        obs_binary = (obs_cells > float(threshold)).astype(float)
+        residual = metrics["exceed"][i] - obs_binary
         np.add.at(acc["brier_num"][i], day_index, residual**2)
     np.add.at(acc["n_cells"], day_index, 1)
 
@@ -555,6 +655,7 @@ def train_fold_diagnostics(
     n_samples: int,
     stride: int,
     thresholds: list[float],
+    lead_hours: int,
 ) -> tuple[pd.DataFrame, dict[str, float], np.ndarray, float]:
     """Score both parents and the whole weight grid on the **train** fold.
 
@@ -641,7 +742,7 @@ def train_fold_diagnostics(
     rows = [
         {
             "bin": bin_label,
-            "lead": 0,
+            "lead": lead_hours,
             "combiner": combiner,
             "crps": total / n_cells,
             "n_cells": n_cells,
@@ -653,9 +754,8 @@ def train_fold_diagnostics(
     if table.empty:
         return table, {}, weight_sum, 0
     mean_by_combiner = {
-        combiner: float(total / n_cells)
+        combiner: cell_weighted_mean(group["crps"].to_numpy(), group["n_cells"].to_numpy())
         for combiner, group in table.groupby("combiner")
-        for total, n_cells in [(group["crps"].sum(), group["n_cells"].sum())]
     }
     return table, mean_by_combiner, weight_sum, weight_count
 
@@ -753,7 +853,7 @@ def main() -> int:
             train_table, train_mean, weight_sum, weight_count = train_fold_diagnostics(
                 emos_results, bma_results, forecasts, obs_aligned, rain_bin_labels,
                 region_v, train_valid, levels, rng, args.n_samples, args.train_stride,
-                IMD_THRESHOLDS,
+                IMD_THRESHOLDS, lead_hours,
             )
             best_source = select_emos_source(
                 {
@@ -809,8 +909,8 @@ def main() -> int:
                     chosen_rows["combiner"] == chosen_rows["chosen"]
                 ]
                 if not picked.empty:
-                    per_bin_train_crps = float(
-                        picked["crps"].sum() / picked["n_cells"].sum()
+                    per_bin_train_crps = cell_weighted_mean(
+                        picked["crps"].to_numpy(), picked["n_cells"].to_numpy()
                     )
             # A per-bin map that picks the same parent for every bin is not a
             # combination: its predictive distribution *is* that parent, so it
@@ -819,6 +919,17 @@ def main() -> int:
             # guarantee a zero difference and turn H10 into a foregone fail.
             # It is reported as collapsed, and excluded from nomination for the
             # same reason an endpoint weight is reported as not fitted.
+            # Before anything is compared on `<`, check the two candidates are
+            # even commensurable. This is the guard that would have stopped the
+            # 56,000x-scale nomination bug at run time instead of leaving it to
+            # be caught by reading the table afterwards.
+            comparable_train_crps(
+                {
+                    "quantile_avg": best_w_crps,
+                    "per_bin": per_bin_train_crps,
+                }
+            )
+
             per_bin_degenerate = len(set(selection.mapping.values())) < 2
             if per_bin_degenerate:
                 nominated = "quantile_avg"
@@ -910,8 +1021,9 @@ def main() -> int:
                 day_index = test_day_index.reshape(-1)[indices]
                 for arm, q in arms.items():
                     metrics = arm_cell_metrics(q, levels, cell_obs, IMD_THRESHOLDS)
-                    metrics["obs_binary"] = cell_obs
-                    _accumulate_day_sums(accumulators[arm], metrics, day_index, IMD_THRESHOLDS)
+                    _accumulate_day_sums(
+                        accumulators[arm], metrics, day_index, IMD_THRESHOLDS, cell_obs
+                    )
 
             print(
                 f"[lead {lead_hours:>3}h | fold {split_label}] "
@@ -987,38 +1099,55 @@ def main() -> int:
         if not train_frame.empty
         else {}
     )
+    # Every combination is judged against both parents, not just the nominated
+    # one: the plan asks for each arm's verdict to be as visible as a pass, and
+    # a single nominated arm's failure would otherwise hide a method that did
+    # beat both parents.
     for lead_hours in leads:
-        nominated = nominated_by_lead.get(lead_hours)
-        if nominated is None:
-            continue
-        for parent in ("emos_csg", "bma"):
-            combined = pooled[nominated][lead_hours]["crps_mm"].to_numpy(dtype=float)
-            other = pooled[parent][lead_hours]["crps_mm"].to_numpy(dtype=float)
-            if combined.size == 0 or combined.size != other.size:
-                continue
-            ci = paired_difference_ci(
-                combined, other,
-                block_days=args.block_days, n_resamples=args.n_resamples,
-            )
-            beats = bool(ci.estimate < 0.0 and ci.ci_lo > 0.0 and not ci.degenerate)
-            paired_rows.append(
-                {
-                    "lead_hours": lead_hours,
-                    "arm": nominated,
-                    "vs_parent": parent,
-                    "crps_difference_mm": float(ci.estimate),
-                    "ci_low": float(ci.ci_lo),
-                    "ci_high": float(ci.ci_hi),
-                    "beats_parent": beats,
-                    "n_days": int(combined.size),
-                }
-            )
+        for arm in COMBINED_ARMS:
+            for parent in ("emos_csg", "bma"):
+                combined = pooled[arm][lead_hours]["crps_mm"].to_numpy(dtype=float)
+                other = pooled[parent][lead_hours]["crps_mm"].to_numpy(dtype=float)
+                if combined.size == 0 or combined.size != other.size:
+                    continue
+                ci = paired_difference_ci(
+                    combined, other,
+                    block_days=args.block_days, n_resamples=args.n_resamples,
+                )
+                # Lower loss is better, so "beats" is a *negative* difference
+                # whose interval excludes 0 on the negative side. Testing
+                # `ci_lo > 0` asks for an interval above 0, which is the
+                # opposite claim, and it reported every significant improvement
+                # as a failure.
+                beats = bool(
+                    ci.estimate < 0.0 and ci.ci_hi < 0.0 and not ci.degenerate
+                )
+                paired_rows.append(
+                    {
+                        "lead_hours": lead_hours,
+                        "arm": arm,
+                        "is_nominated": arm == nominated_by_lead.get(lead_hours),
+                        "vs_parent": parent,
+                        "crps_difference_mm": float(ci.estimate),
+                        "ci_low": float(ci.ci_lo),
+                        "ci_high": float(ci.ci_hi),
+                        "beats_parent": beats,
+                        "degenerate": bool(ci.degenerate),
+                        "n_days": int(combined.size),
+                    }
+                )
     paired = pd.DataFrame(paired_rows)
     paired.to_csv(args.paired_out_csv, index=False)
 
     leads_beating_both = 0
     for lead_hours in leads:
-        rows = paired[paired["lead_hours"] == lead_hours] if not paired.empty else pd.DataFrame()
+        rows = (
+            paired[
+                (paired["lead_hours"] == lead_hours) & (paired["is_nominated"])
+            ]
+            if not paired.empty
+            else pd.DataFrame()
+        )
         if rows.empty:
             continue
         both = bool(rows["beats_parent"].all()) and len(rows) == 2
@@ -1032,6 +1161,18 @@ def main() -> int:
             for r in rows.itertuples()
         )
         print(f"  lead {lead_hours:>3}h [{nominated_by_lead.get(lead_hours)}]: {detail}")
+
+    if not paired.empty:
+        print("")
+        print("Every combination against both parents (H10 is decided on the "
+              "nominated arm alone):")
+        for arm in COMBINED_ARMS:
+            arm_rows = paired[paired["arm"] == arm]
+            won = sum(
+                int(bool(group["beats_parent"].all()) and len(group) == 2)
+                for _, group in arm_rows.groupby("lead_hours")
+            )
+            print(f"  {arm:<20} beat both parents at {won}/{len(leads)} leads")
 
     print("")
     if leads_beating_both >= 3:

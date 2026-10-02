@@ -7,8 +7,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from run_tier2b_combined import (
+    _accumulate_day_sums,
+    _new_day_accumulator,
     cdf_at_threshold,
+    cell_weighted_mean,
     combine_predictive_quantiles,
+    combined_beats_parent,
+    comparable_train_crps,
     compute_brier_score,
     fit_quantile_weight,
     pit_summary,
@@ -234,3 +239,190 @@ class TestSelectEmosSource:
         assert select_emos_source({"graphcast": float("nan"), "ifs_ens": 4.0}) == "ifs_ens"
         both_nan = {"graphcast": float("nan"), "ifs_ens": float("nan")}
         assert select_emos_source(both_nan) == "graphcast"
+
+
+class TestCombinedBeatsParent:
+    """The sign rule that decided H10, pinned with the case that got it wrong.
+
+    Every number below is taken from a real Tier 2b run. The first case is the
+    one that matters: `d = -0.0467` with CI `[-0.0743, -0.0222]` is the
+    combination beating EMOS-CSG at lead 120 by a wide, clearly significant
+    margin. Testing `ci_low > 0` called it a failure, so the run reported a FAIL
+    whose actual cause was an inverted comparison rather than the methods.
+    """
+
+    def test_significant_improvement_counts_as_a_win(self):
+        assert combined_beats_parent(-0.046671, -0.022159) is True
+
+    def test_significant_improvement_over_bma_counts_as_a_win(self):
+        assert combined_beats_parent(-0.015549, -0.008425) is True
+
+    def test_an_interval_straddling_zero_is_not_a_win(self):
+        # lead 48 against bma: negative point estimate, upper bound above 0.
+        assert combined_beats_parent(-0.021209, 0.000426) is False
+
+    def test_a_clear_loss_is_not_a_win(self):
+        # lead 96 against bma, and lead 96 against emos_csg in the other
+        # direction. Both are worse and both must stay losses.
+        assert combined_beats_parent(0.034662, 0.052665) is False
+        assert combined_beats_parent(0.006380, 0.031499) is False
+
+    def test_an_exact_tie_is_not_a_win(self):
+        # The collapsed per-bin arm: difference and both bounds identically 0.
+        assert combined_beats_parent(0.0, 0.0) is False
+
+    def test_degenerate_bootstrap_never_wins(self):
+        assert combined_beats_parent(-0.5, -0.1, degenerate=True) is False
+
+    def test_positive_difference_with_intervals_above_zero_is_not_a_win(self):
+        # The exact shape the inverted test used to accept.
+        assert combined_beats_parent(0.01, 0.02) is False
+
+
+class TestCellWeightedMean:
+    """The averaging bug that decided H10 on the wrong arm.
+
+    `values.sum() / counts.sum()` divides a sum of per-group means by a sum of
+    cell counts. It is not a mean, it has no stable scale, and here it reported
+    `per_bin`'s train CRPS as 7e-5 mm against `quantile_avg`'s 4.8 mm, so the
+    primary-arm nomination picked `per_bin` at four of five leads on units
+    rather than skill. Every value was finite and no test failed.
+    """
+
+    def test_equals_the_plain_mean_when_groups_are_equal_sized(self):
+        assert cell_weighted_mean(
+            np.array([4.0, 6.0]), np.array([10.0, 10.0])
+        ) == pytest.approx(5.0)
+
+    def test_weights_toward_the_larger_group(self):
+        # Two groups, wildly unequal counts: the big one must dominate.
+        assert cell_weighted_mean(
+            np.array([4.0, 6.0]), np.array([1000.0, 1.0])
+        ) == pytest.approx((4.0 * 1000 + 6.0 * 1) / 1001.0)
+
+    def test_result_lies_within_the_range_of_the_inputs(self):
+        """The broken version falls orders of magnitude below the smallest input.
+
+        This is the property that would have caught it: no average of per-group
+        means can land outside the range of those means.
+        """
+        values = np.array([4.8, 4.9, 5.0])
+        counts = np.array([20_000.0, 18_000.0, 19_000.0])
+        got = cell_weighted_mean(values, counts)
+        assert values.min() <= got <= values.max()
+        # And specifically not the 7e-5 the sum-of-means version produced.
+        assert got > 0.1
+
+    def test_broken_shortcut_is_far_outside_the_range(self):
+        values = np.array([4.8, 4.9, 5.0])
+        counts = np.array([20_000.0, 18_000.0, 19_000.0])
+        broken = float(values.sum() / counts.sum())
+        assert broken < 1e-3, "the shortcut no longer reproduces the historical bug"
+
+    def test_empty_input_is_nan_not_zero(self):
+        assert np.isnan(cell_weighted_mean(np.array([]), np.array([])))
+
+    def test_zero_counts_is_nan_not_a_division_error(self):
+        assert np.isnan(cell_weighted_mean(np.array([4.0]), np.array([0.0])))
+
+
+class TestComparableTrainCrps:
+    """The guard that stops a units error deciding which arm is judged."""
+
+    def test_plausible_values_pass_through_unchanged(self):
+        got = comparable_train_crps(
+            {"quantile_avg": 4.83, "per_bin": 4.79, "other": 5.01}
+        )
+        assert got == {"quantile_avg": 4.83, "per_bin": 4.79, "other": 5.01}
+
+    def test_the_historical_bug_is_rejected(self):
+        """7e-5 against 4.8 is a units error, and must raise rather than pick."""
+        with pytest.raises(ValueError, match="not on a common scale"):
+            comparable_train_crps({"quantile_avg": 4.83, "per_bin": 7.35e-5})
+
+    def test_error_names_the_offending_values(self):
+        with pytest.raises(ValueError) as excinfo:
+            comparable_train_crps({"quantile_avg": 4.83, "per_bin": 7.35e-5})
+        message = str(excinfo.value)
+        assert "quantile_avg" in message and "per_bin" in message
+
+    def test_non_finite_values_are_ignored(self):
+        got = comparable_train_crps(
+            {"quantile_avg": 4.83, "per_bin": float("nan")}
+        )
+        assert got == {"quantile_avg": 4.83}
+
+    def test_a_single_candidate_cannot_be_mismatched(self):
+        assert comparable_train_crps({"per_bin": 4.8}) == {"per_bin": 4.8}
+
+    def test_no_candidates_is_not_an_error(self):
+        assert comparable_train_crps({}) == {}
+
+    def test_ratio_limit_is_configurable_for_tightening(self):
+        with pytest.raises(ValueError):
+            comparable_train_crps(
+                {"a": 4.83, "b": 4.0}, ratio_limit=1.05
+            )
+
+
+class TestDayAccumulatorBrier:
+    """The Brier columns were squared rainfall, not a Brier score.
+
+    The binary observation was passed in as the raw rainfall value, so the
+    score was `(probability - rainfall_mm) ** 2` -- about 285 mm^2, where a
+    Brier score is bounded by 1. Every `brier_*` column in every written output
+    carried it. These tests pin both the bound and the indicator's direction,
+    which is what the raw-value version got wrong.
+    """
+
+    THRESHOLDS = [7.5, 115.6]
+
+    def _accumulator(self):
+        return _new_day_accumulator(n_days=1, thresholds=self.THRESHOLDS)
+
+    def _run(self, exceed, obs):
+        acc = self._accumulator()
+        metrics = {
+            "crps": np.ones_like(obs, dtype=float),
+            "pit": np.full_like(obs, 0.5, dtype=float),
+            "exceed": np.asarray(exceed, dtype=float).reshape(len(self.THRESHOLDS), -1),
+        }
+        _accumulate_day_sums(
+            acc, metrics, np.zeros(len(obs), dtype=int),
+            self.THRESHOLDS, np.asarray(obs, dtype=float),
+        )
+        # `brier_num` accumulates a sum over cells; the reported score divides
+        # by the cell count, so the mean is what a caller sees.
+        return acc["brier_num"][:, 0] / float(len(obs))
+
+    def test_a_perfect_forecast_scores_zero(self):
+        # Both cells stay below 7.5 mm and the forecast says so, at both
+        # thresholds. (An earlier fixture used 20 mm here, which *does* exceed
+        # 7.5 mm -- the assertion was wrong, not the code.)
+        got = self._run([[0.0, 0.0], [0.0, 0.0]], [2.0, 5.0])
+        assert np.allclose(got, 0.0)
+
+    def test_a_certain_miss_scores_one(self):
+        # Predicting no exceedance where it rained heavily is the worst case at
+        # 7.5 mm, where both cells exceed. At 115.6 mm only the 250 mm cell
+        # does, so that row scores 0.5 -- the threshold-relative part that the
+        # raw-rainfall version could not have produced.
+        got = self._run([[0.0, 0.0], [0.0, 0.0]], [30.0, 250.0])
+        assert np.isclose(got[0], 1.0)
+        assert np.isclose(got[1], 0.5)
+
+    def test_the_score_is_bounded_by_one(self):
+        got = self._run([[0.3, 0.7], [0.2, 0.9]], [30.0, 250.0])
+        assert np.all(got >= 0.0) and np.all(got <= 1.0)
+
+    def test_the_historical_defect_would_be_hundreds(self):
+        """Rainfall in mm against a probability: the old number, for contrast."""
+        obs_mm = np.array([30.0, 250.0])
+        prob = np.array([0.3, 0.7])
+        broken = float(np.mean((prob - obs_mm) ** 2))
+        assert broken > 100.0
+
+    def test_exceedance_uses_strictly_greater_than(self):
+        # obs exactly at the threshold is not an exceedance.
+        got = self._run([[0.0], [0.0]], [7.5])
+        assert np.allclose(got, 0.0)
