@@ -342,8 +342,6 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
                         help="default: <results-dir>/tier2b_combined_paired.csv")
     parser.add_argument("--force", action="store_true", help="Overwrite existing result CSVs.")
     parser.add_argument("--test-fraction", type=float, default=0.2)
-    parser.add_argument("--n-samples", type=int, default=500,
-                        help="Monte Carlo draws for the BMA quantiles.")
     parser.add_argument(
         "--train-out-csv", type=Path, default=None,
         help="Train-fold diagnostics CSV (default: <results-dir>/tier2b_combined_train.csv)")
@@ -647,8 +645,6 @@ def train_fold_diagnostics(
     region_v: np.ndarray,
     valid: np.ndarray,
     levels: np.ndarray,
-    rng: np.random.Generator,
-    n_samples: int,
     stride: int,
     thresholds: list[float],
     lead_hours: int,
@@ -787,14 +783,13 @@ def main() -> int:
 
     obs = open_multi_season(baseline_paths, group="imd_observed").load()
     region_labels = assign_regions(obs["latitude"].values, obs["longitude"].values)
-    rng = np.random.default_rng(0)
     levels = DEFAULT_QUANTILE_LEVELS
 
     print("Tier 2b combined combiners: EMOS-CSG, BMA and their combinations under LOYO")
     print(f"Baseline store(s): {baseline_paths}")
     print(f"Lagged store(s): {lagged_paths}")
     print(f"IFS ensemble store(s): {ifs_paths}")
-    print(f"Quantile levels: {len(levels)} | BMA draws: {args.n_samples}")
+    print(f"Quantile levels: {len(levels)} | BMA quantiles: exact (CDF inversion)")
 
     domain_rows: list[dict] = []
     train_rows: list[dict] = []
@@ -844,7 +839,7 @@ def main() -> int:
 
             train_table, train_mean, weight_sum, weight_count = train_fold_diagnostics(
                 emos_results, bma_results, forecasts, obs_aligned, rain_bin_labels,
-                region_v, train_valid, levels, rng, args.n_samples, args.train_stride,
+                region_v, train_valid, levels, args.train_stride,
                 IMD_THRESHOLDS, lead_hours,
             )
             best_source = select_emos_source(

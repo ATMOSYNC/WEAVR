@@ -777,7 +777,7 @@ def test_tier2b_scores_every_arm_and_writes_all_three_csvs(stores, tmp_path):
     out = tmp_path / "t2b_arms"
     run_script(
         "run_tier2b_combined.py", stores, out,
-        extra=["--n-samples", "60", "--train-stride", "1", "--n-resamples", "50"],
+        extra=["--train-stride", "1", "--n-resamples", "50"],
     )
     frame = pd.read_csv(out / "tier2b_combined.csv")
     assert set(frame["arm"]) == set(TIER2B_ARMS), (
@@ -806,7 +806,7 @@ def test_tier2b_h10_is_decided_not_skipped(stores, tmp_path):
     out = tmp_path / "t2b_h10"
     proc = run_script(
         "run_tier2b_combined.py", stores, out,
-        extra=["--n-samples", "60", "--train-stride", "1", "--n-resamples", "50"],
+        extra=["--train-stride", "1", "--n-resamples", "50"],
     )
     assert "H10 PASS" in proc.stdout or "H10 FAIL" in proc.stdout, (
         "tier2b printed no H10 verdict. The plan's third deliverable is the "
@@ -833,7 +833,7 @@ def test_tier2b_default_weight_is_the_fixed_one(stores, tmp_path):
     out = tmp_path / "t2b_default_weight"
     run_script(
         "run_tier2b_combined.py", stores, out,
-        extra=["--n-samples", "60", "--train-stride", "1", "--n-resamples", "50"],
+        extra=["--train-stride", "1", "--n-resamples", "50"],
     )
     train = pd.read_csv(out / "tier2b_combined_train.csv")
     assert np.allclose(train["vincentization_weight"], 0.5), (
@@ -856,7 +856,7 @@ def test_tier2b_line_pool_is_comparable_to_quantile_averaging(stores, tmp_path):
     out = tmp_path / "t2b_pool"
     run_script(
         "run_tier2b_combined.py", stores, out,
-        extra=["--n-samples", "60", "--train-stride", "1", "--n-resamples", "50"],
+        extra=["--train-stride", "1", "--n-resamples", "50"],
     )
     frame = pd.read_csv(out / "tier2b_combined.csv")
     pooled = frame.groupby("arm")["crps_mm"].mean()
@@ -875,7 +875,7 @@ def test_tier2b_missing_store_fails_loudly(stores, tmp_path):
     partial.pop("ifs_ens_2020")
     proc = run_script(
         "run_tier2b_combined.py", partial, tmp_path / "t2b_missing",
-        extra=["--n-samples", "60", "--train-stride", "1"],
+        extra=["--train-stride", "1"],
         expect_ok=False,
     )
     assert proc.returncode != 0
