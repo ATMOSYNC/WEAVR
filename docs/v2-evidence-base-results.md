@@ -15,6 +15,14 @@ scripts/run_scorecard.py --results-dir results
 scripts/gate_step07_results.py                 # evidence-base validator
 ```
 
+> **Known issue -- #106.** Every forecast score below pairs each forecast with
+> the IMD day *before* the one it covers (IMD labels a day by its 08:30 IST end
+> date; `weavr.grid` assumes the start date). Re-pairing cuts raw GraphCast's
+> lead-24 RMSE by ~10%. Everything here is internally consistent and uses the
+> same pairing as the rest of `main`, so comparisons between methods are like
+> for like, but absolute skill is understated and the verdicts are to be
+> re-decided once #106 is resolved.
+
 ---
 
 ## Summary
@@ -73,14 +81,26 @@ against 6.29 mm in 2018).
 
 ### Two properties of these numbers worth stating plainly
 
-**The probabilistic scores do not beat climatology.** A constant forecast at
-the seasonal mean scores CRPS 3.33 mm on 2018 land cells and 3.45 mm on 2020;
-the calibrated methods score 4.55–4.80 pooled. This is not a v2 regression — the
-committed v1 weekly numbers had the same property (3.76 mm against a 3.45 mm
-floor for 2020). Nothing pre-registered turns on beating climatology on CRPS:
-H1 and H2 are *relative* comparisons against other WEAVR configurations.
-It belongs here because a reader of this table will otherwise assume the
-probabilistic layer is skilful against climatology, and it is not.
+**The probabilistic scores do beat climatology on CRPS -- a correction.** An
+earlier version of this section said they did not, quoting a constant
+seasonal-mean forecast at 3.33 mm (2018) and 3.45 mm (2020). Those numbers are
+not reproducible: no script produces them, and no valid CRPS can. A constant
+per-cell seasonal mean is a point forecast, so its CRPS is its MAE, 7.45 / 8.30
+mm on land cells; even a climatology fitted *in-sample* on the test season
+itself scores 4.63 / 5.24 mm. Against the project's real reference -- the
+day-of-season IMD climatological ensemble with the test year excluded
+(`weavr.climatology`), which is what the scorecard scores as `climatology` --
+every calibrated method is better at every lead, every interval excluding 0:
+
+| lead | EMOS-CSG | EMOS-IFS | BMA |
+|---|---|---|---|
+| 24 h | −0.442 | −0.409 | −0.255 |
+| 72 h | −0.457 | −0.402 | −0.276 |
+| 120 h | −0.422 | −0.328 | −0.243 |
+
+(CRPS difference against `climatology`, mm, pooled over both folds; negative =
+method better.) The heavy-rain *probabilities* are a different story: H3's
+Brier leg below is decisively worse than climatology at 64.5 mm and above.
 
 **BMA sits clearly behind both single-source EMOS calibrations.** 4.733
 against 4.546 mm (EMOS-CSG) and 4.579 mm (EMOS-IFS) at lead 24; the gap to
