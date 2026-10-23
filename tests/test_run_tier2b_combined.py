@@ -15,6 +15,7 @@ from run_tier2b_combined import (
     comparable_train_crps,
     compute_brier_score,
     fit_quantile_weight,
+    nominate_by_lead,
     pit_summary,
     pit_values,
     predictive_mean_from_cdf,
@@ -439,3 +440,45 @@ class TestDayAccumulatorBrier:
         # obs exactly at the threshold is not an exceedance.
         got = self._run([[0.0], [0.0]], [7.5])
         assert np.allclose(got, 0.0)
+
+
+class TestNominateByLead:
+    @staticmethod
+    def _frame(rows):
+        import pandas as pd
+
+        return pd.DataFrame(
+            rows,
+            columns=[
+                "lead_hours",
+                "fold",
+                "vincentization_train_crps",
+                "per_bin_train_crps",
+                "per_bin_degenerate",
+            ],
+        )
+
+    def test_folds_that_disagree_are_pooled_not_read_in_order(self):
+        # Fold 2018 narrowly prefers per_bin, fold 2020 clearly prefers
+        # quantile_avg. Pooled, quantile_avg wins -- and reversing the row
+        # order must not change that, which `.first()` did.
+        rows = [
+            (48, "2018", 4.8560, 4.8559, False),
+            (48, "2020", 4.1300, 4.1400, False),
+        ]
+        assert nominate_by_lead(self._frame(rows)) == {48: "quantile_avg"}
+        assert nominate_by_lead(self._frame(rows[::-1])) == {48: "quantile_avg"}
+
+    def test_per_bin_collapsed_in_any_fold_is_ineligible(self):
+        rows = [
+            (120, "2018", 4.92, 4.90, True),
+            (120, "2020", 4.20, 4.10, False),
+        ]
+        assert nominate_by_lead(self._frame(rows)) == {120: "quantile_avg"}
+
+    def test_ties_go_to_quantile_avg(self):
+        rows = [(24, "2018", 4.5, 4.5, False)]
+        assert nominate_by_lead(self._frame(rows)) == {24: "quantile_avg"}
+
+    def test_empty_frame(self):
+        assert nominate_by_lead(self._frame([])) == {}

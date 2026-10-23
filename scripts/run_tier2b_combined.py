@@ -283,6 +283,30 @@ def pit_summary(quantiles: np.ndarray, levels: np.ndarray, obs: np.ndarray) -> d
     }
 
 
+def nominate_by_lead(train_frame: pd.DataFrame) -> dict[int, str]:
+    """The primary combined arm per lead, from train-fold CRPS pooled over folds.
+
+    Each fold records its own choice, and the folds can disagree. Taking the
+    first fold's row -- what this used to do -- makes the nominated arm depend
+    on fold order rather than on the data. Instead each candidate's train CRPS
+    is averaged over the folds at that lead and the lower one wins, ties going
+    to `quantile_avg` as in the per-fold rule. `per_bin` is ineligible at a
+    lead if it collapsed onto a single parent in any fold, since there it is a
+    copy of that parent rather than a combination.
+    """
+    if train_frame.empty:
+        return {}
+    nominated: dict[int, str] = {}
+    for lead_hours, rows in train_frame.groupby("lead_hours"):
+        per_bin_ok = not rows["per_bin_degenerate"].astype(bool).any()
+        quantile_avg = float(rows["vincentization_train_crps"].mean())
+        per_bin = float(rows["per_bin_train_crps"].mean())
+        nominated[int(lead_hours)] = (
+            "per_bin" if per_bin_ok and per_bin < quantile_avg else "quantile_avg"
+        )
+    return nominated
+
+
 def fit_quantile_weight(
     q_csgd: np.ndarray,
     q_bma: np.ndarray,
@@ -1113,11 +1137,7 @@ def main() -> int:
 
     train_frame = pd.DataFrame(train_rows)
     paired_rows: list[dict] = []
-    nominated_by_lead = (
-        train_frame.groupby("lead_hours")["nominated_primary_arm"].first().to_dict()
-        if not train_frame.empty
-        else {}
-    )
+    nominated_by_lead = nominate_by_lead(train_frame)
     # Every combination is judged against both parents, not just the nominated
     # one: the plan asks for each arm's verdict to be as visible as a pass, and
     # a single nominated arm's failure would otherwise hide a method that did
