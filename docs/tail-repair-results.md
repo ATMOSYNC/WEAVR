@@ -52,7 +52,7 @@ LOYO over both daily seasons (`data/baseline_{2018,2020}_jjas_daily.zarr`), Tier
 | variant | tw-CRPS@64.5 Δ | SEDI@115.6 Δ | Brier@7.5 degraded | RMSE Δ | **H7** |
 |---|---|---|---|---|---|
 | `same_period` | +0.474 … +0.554 (all 5 leads **worse**, CI excludes 0) | −0.112 … −0.256 (**improved**, all 5 leads) | no | +4.09 … +4.71 mm | **PASS** (SEDI branch) |
-| `climatology` | +0.698 … +0.802 (all 5 leads **worse**, CI excludes 0) | −0.136 … −0.271 (**improved**, all 5 leads) | no | +5.83 … +6.65 mm | **PASS** (SEDI branch) |
+| `climatology` | +0.699 … +0.802 (all 5 leads **worse**, CI excludes 0) | −0.135 … −0.271 (**improved**, all 5 leads) | no | +5.83 … +6.65 mm | **PASS** (SEDI branch) |
 
 **H7 (QM part) passes for both variants, but only through the SEDI branch — and it is not free.**
 
@@ -60,6 +60,8 @@ LOYO over both daily seasons (`data/baseline_{2018,2020}_jjas_daily.zarr`), Tier
 - tw-CRPS@64.5 mm moves the **wrong way at every lead**, significantly (CIs exclude 0): QM sharpens the extreme tail at the cost of the threshold-weighted score it was supposed to help.
 - RMSE increases significantly at every lead, by roughly **+4.1 to +4.7 mm** (`same_period`) and **+5.8 to +6.7 mm** (`climatology`). The `climatology` variant pays roughly 1.5 mm more than `same_period`.
 - Brier@7.5 mm does **not** degrade for either variant, so the pre-registered non-inferiority guard is satisfied and the pass is not the artifact of a light-rain forecast being wrecked.
+
+**Out-of-sample climatology (correction).** The `climatology` reference is described above as excluding the test season, but until this revision the runner passed the full 2006–2020 climatology, which contains both LOYO test seasons — so each fold's quantile map had seen the observations it was scored against. It now drops every held-out year (`weavr.quantile_mapping.climatology_excluding_years`). Re-measured, the effect is in the third decimal (tw-CRPS +0.698 → +0.699 and SEDI −0.136 → −0.135 at the edge of their ranges; RMSE unchanged at the precision quoted) and **both verdicts stand**. `same_period` never used the climatology and is byte-identical.
 
 **Correction to an earlier run.** A previous run reported `climatology` as *failing* H7 (Brier@7.5 degrading at 5/5 leads). That was a bug: the runner passed `climatology["rain"].mean(dim="time")` — a single value per grid cell — as the reference, so the fitted quantile map was degenerate. With the full climatological distribution the Brier guard passes. The numbers in this table supersede the earlier ones.
 
