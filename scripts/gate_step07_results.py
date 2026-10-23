@@ -18,8 +18,11 @@ from pathlib import Path
 
 import pandas as pd
 
+#: The committed outputs by default. It used to default to the untracked
+#: `.step07_v2` staging folder, so the documented command silently validated
+#: a stale scratch run rather than what `results/` actually holds.
 RESULTS = Path(
-    os.environ.get("WEAVR_STEP07_RESULTS_DIR", ".step07_v2")
+    os.environ.get("WEAVR_STEP07_RESULTS_DIR", "results")
 ).resolve()
 PER_DAY = RESULTS / "per_day"
 LEADS = [24, 48, 72, 96, 120]
