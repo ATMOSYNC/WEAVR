@@ -284,3 +284,40 @@ class TestShapeParameterIntervalIsReported:
         assert fit.xi_se is not None and fit.xi_se > 0.0
         assert fit.xi_ci is not None
         assert fit.xi_ci[0] < fit.shape_xi < fit.xi_ci[1]
+
+
+class TestReliabilityCounts:
+    """The reliability evidence #74 asks for alongside the H7 EVT verdict."""
+
+    def test_exact_zero_has_its_own_bin_and_sums_pool_across_folds(self) -> None:
+        from run_tail_repair_evt import RELIABILITY_EDGES, reliability_counts
+
+        probs = np.array([0.0, 0.0, 5e-5, 0.03, 0.03, 0.9, np.nan])
+        obs = np.array([0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0])
+        table = reliability_counts(probs, obs)
+
+        assert len(table) == RELIABILITY_EDGES.size
+        zero = table.loc[0]
+        # Both hard zeros land in bin 0, and one of them was an event: the
+        # false zero this step exists to remove, visible in the table.
+        assert (zero["n"], zero["sum_observed"]) == (2, 1.0)
+        assert table.loc[1, "n"] == 1  # (0, 1e-4]
+        two_to_five = table[(table["p_lo"] == 0.02) & (table["p_hi"] == 0.05)].iloc[0]
+        assert two_to_five["n"] == 2
+        assert two_to_five["sum_forecast"] == pytest.approx(0.06)
+        assert two_to_five["sum_observed"] == 1.0
+        assert table.loc[table.index[-1], "n"] == 1  # (0.5, 1]
+        # NaN forecasts are excluded, not counted as zero.
+        assert table["n"].sum() == 6
+
+    def test_benchmark_and_arms_share_one_event_definition(self) -> None:
+        from run_tail_repair_evt import benchmark_row
+
+        # A cell observing exactly the threshold is an event for every arm.
+        row = benchmark_row(
+            np.zeros((1, 1, 1)), np.full((1, 1, 1), 115.6),
+            climatology_grid=np.zeros((1, 1)), threshold=115.6,
+            lead_hours=24, split_label="2018", split_kind="leave_one_year_out",
+            n_train=1, n_test=1,
+        )
+        assert row["brier"] == pytest.approx(1.0)
