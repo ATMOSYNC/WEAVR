@@ -282,7 +282,8 @@ whole season daily. Every RMSE in this file improved or worsened for sampling
 reasons before any method changed.
 
 Headline v2 findings: **H1 passes** (the blend beats the best single member on
-RMSE at 3 of 5 leads and on CRPS at 5 of 5, every interval excluding zero),
-**H2 fails** (the multi-source combiner does not beat the best single-source
-EMOS on CRPS at any lead), and **H3 is not yet testable** (its Brier leg needs
-exceedance probabilities that Tier 2's per-day files do not carry).
+RMSE and on CRPS at 5 of 5 leads each, every interval excluding zero),
+**H2 fails** (the multi-source combiner is significantly worse than either
+single-source EMOS on CRPS at every lead), and **H3 fails** (Brier skill against
+climatology is about -2.6 at 64.5 mm, and SEDI is worse than the best member at
+every lead).
