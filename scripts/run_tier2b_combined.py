@@ -45,23 +45,17 @@ difference means the combination is better. The primary combined arm is
 nominated by **train**-fold CRPS rather than by test score, and every arm's
 verdict is reported separately so a fail is as visible as a pass.
 
-## Status
+## Bugs worth recording
 
-`main()` is still the original stub. What has landed is the numerical layer
-every arm is built from, plus its tests: `cdf_at_threshold`,
-`quantiles_from_cdf`, `predictive_mean_from_cdf`, `pit_summary`,
-`fit_quantile_weight` and `select_emos_source`.
-
-The remaining work is the fold loop: fitting the parents, filling per-cell
-quantile grids group by group as Tier 2 does, then writing the domain,
-per-day and paired-difference files.
-
-Two bugs found while testing this layer are worth recording, because both
-were silent rather than loud. The CDF inversion searched for `F <= tau`
-where the definition of a quantile is `inf{v : F(v) >= tau}`, which returns
-the wrong end of the distribution for every level. And `pit_summary` handed
-a per-cell array of observations to a scalar-threshold signature, which only
-surfaced once a real array met it.
+Three bugs in the numerical layer were silent rather than loud. The CDF
+inversion searched for `F <= tau` where the definition of a quantile is
+`inf{v : F(v) >= tau}`, which returns the wrong end of the distribution for
+every level. `pit_summary` handed a per-cell array of observations to a
+scalar-threshold signature, which only surfaced once a real array met it.
+And the PIT of a dry observation was read as `F(0)`, the top of the point
+mass at zero, so a perfectly calibrated forecast scored a PIT mean of 0.64
+-- every arm's "0.61-0.63 over-forecast" was that, not a shared bias.
+`pit_values` now scores the point mass as the randomised PIT's expectation.
 """
 
 from __future__ import annotations
@@ -243,21 +237,48 @@ def predictive_mean_from_cdf(cdf: np.ndarray, grid: np.ndarray) -> np.ndarray:
     return np.trapezoid(1.0 - cdf, np.asarray(grid, dtype=float), axis=-1)
 
 
+def pit_values(quantiles: np.ndarray, levels: np.ndarray, obs: np.ndarray) -> np.ndarray:
+    """Per-cell PIT, scored correctly at the point mass at zero.
+
+    For a continuous forecast the PIT is `F(obs)`. Rainfall forecasts are not
+    continuous: they put a mass `p0` at exactly 0 mm, so a dry observation has
+    no single PIT value -- every level in `[0, p0]` is equally consistent with
+    it. The standard treatment draws the PIT uniformly from that interval.
+    Reading it as `F(0) = p0` instead puts every dry cell at the *top* of the
+    interval, and with half the cell-days dry a perfectly calibrated forecast
+    then scores a PIT mean of ~0.64, not 0.5. The expectation of the
+    randomised PIT, `p0 / 2`, is returned for dry cells, so means are exact and
+    no random draw enters a reported number.
+    """
+    f_obs = cdf_at_threshold(quantiles, levels, obs)
+    return np.where(np.asarray(obs, dtype=float) <= 0.0, 0.5 * f_obs, f_obs)
+
+
 def pit_summary(quantiles: np.ndarray, levels: np.ndarray, obs: np.ndarray) -> dict:
     """PIT / reliability summary read off predictive quantiles.
 
-    An observation's PIT value is the probability the forecast assigns at
-    or below it, `F(obs)`. A calibrated forecast makes that uniform on
-    [0, 1], so the mean absolute deviation from 0.5 is a monotone
-    reliability signal, and the share of observations falling inside the
-    forecast's own central 90% interval should sit near 0.9.
+    A calibrated forecast makes the PIT uniform on [0, 1], so the mean
+    absolute deviation from 0.5 is a monotone reliability signal, and the
+    share of observations falling inside the forecast's own central 90%
+    interval should sit near 0.9.
+
+    Dry observations are scored as the randomised PIT `U * p0` (see
+    `pit_values`), and each statistic takes that draw's exact expectation
+    rather than one sample of it.
     """
     f_obs = cdf_at_threshold(quantiles, levels, obs)
-    central = (f_obs >= 0.05) & (f_obs <= 0.95)
+    dry = np.asarray(obs, dtype=float) <= 0.0
+    p0 = np.where(dry, f_obs, 1.0)  # 1.0 only keeps the wet branch finite
+    # E|U p0 - 0.5| and P(0.05 <= U p0 <= 0.95) for U ~ Uniform(0, 1).
+    # `np.where` evaluates both branches, so the divisor is guarded for p0 = 0.
+    safe = np.maximum(p0, 1e-12)
+    dry_mad = np.where(p0 <= 0.5, 0.5 - p0 / 2.0, (0.125 + (p0 - 0.5) ** 2 / 2.0) / safe)
+    dry_central = np.where(p0 > 0.05, (np.minimum(p0, 0.95) - 0.05) / safe, 0.0)
+    wet_central = ((f_obs >= 0.05) & (f_obs <= 0.95)).astype(float)
     return {
-        "pit_mean": float(np.mean(f_obs)),
-        "pit_mad_from_half": float(np.mean(np.abs(f_obs - 0.5))),
-        "pit_central_90_coverage": float(np.mean(central)),
+        "pit_mean": float(np.mean(np.where(dry, 0.5 * f_obs, f_obs))),
+        "pit_mad_from_half": float(np.mean(np.where(dry, dry_mad, np.abs(f_obs - 0.5)))),
+        "pit_central_90_coverage": float(np.mean(np.where(dry, dry_central, wet_central))),
         "n_pit_cells": int(f_obs.size),
     }
 
@@ -573,7 +594,7 @@ def arm_cell_metrics(
         exceed[i] = 1.0 - cdf_at_threshold(quantiles, levels, float(threshold))
     return {
         "crps": crps_from_quantiles(quantiles, levels, obs_cells),
-        "pit": cdf_at_threshold(quantiles, levels, obs_cells),
+        "pit": pit_values(quantiles, levels, obs_cells),
         "exceed": exceed,
     }
 

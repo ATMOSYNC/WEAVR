@@ -16,6 +16,7 @@ from run_tier2b_combined import (
     compute_brier_score,
     fit_quantile_weight,
     pit_summary,
+    pit_values,
     predictive_mean_from_cdf,
     quantiles_from_cdf,
     score_quantiles_crps,
@@ -176,6 +177,40 @@ class TestPitSummary:
         summary = pit_summary(q, levels, obs)
         assert summary["pit_mean"] < 0.1
         assert summary["pit_mad_from_half"] > 0.4
+
+
+    def test_calibrated_forecast_with_a_point_mass_gives_half(self):
+        # Rainfall forecasts put a mass p0 at exactly 0 mm. Drawing the
+        # observation from the forecast itself makes it calibrated by
+        # construction, with about half the cases dry. Reading a dry case's
+        # PIT as F(0) = p0 scored this 0.64 -- the exact signature every
+        # Tier 2b arm showed.
+        from scipy import stats
+
+        levels = np.arange(1, 100) / 100.0
+        rng = np.random.default_rng(5)
+        n = 20000
+        p0 = rng.uniform(0.2, 0.8, size=n)
+        wet = rng.uniform(size=n) > p0
+        obs = np.where(wet, stats.gamma.rvs(0.8, scale=12.0, size=n, random_state=rng), 0.0)
+        g = np.clip((levels[None, :] - p0[:, None]) / (1.0 - p0[:, None]), 0.0, 1.0 - 1e-12)
+        q = np.where(
+            levels[None, :] <= p0[:, None], 0.0, stats.gamma.ppf(g, 0.8, scale=12.0)
+        )
+
+        summary = pit_summary(q, levels, obs)
+        assert summary["pit_mean"] == pytest.approx(0.5, abs=0.01)
+        assert summary["pit_mad_from_half"] == pytest.approx(0.25, abs=0.01)
+        assert summary["pit_central_90_coverage"] == pytest.approx(0.9, abs=0.01)
+        assert np.mean(pit_values(q, levels, obs)) == pytest.approx(0.5, abs=0.01)
+
+    def test_dry_observation_sits_mid_mass(self):
+        # A forecast that is certainly dry (all levels at 0) against a dry
+        # observation: the randomised PIT is uniform on [0, 1], mean 0.5.
+        levels = np.arange(1, 100) / 100.0
+        q = np.zeros((1, levels.size))
+        value = pit_values(q, levels, np.array([0.0]))[0]
+        assert value == pytest.approx(0.495, abs=0.01)
 
 
 class TestFitQuantileWeight:
