@@ -311,13 +311,9 @@ H4's NEPS-G go/no-go.
 ## 6. Drift: no drift flagged
 
 `run_daily_verification.py` reports **0 of 15 (source, lead) cells flagged**
-in 2018 and **0 of 15** in 2020. Drift does not fire across the 2018 → 2020
-GraphCast checkpoint change at daily cadence.
-
-Note: this script takes a single `--store` and predates the multi-season
-refactor, so it was run once per season into
-`results/daily_verification_2018.csv` and `_2020.csv` rather than as one
-two-fold table. The comparison the prompt asks for is drawn from the two.
+(`results/daily_verification.csv`). It runs on both seasons concatenated, so
+the rolling window crosses the 2018 → 2020 GraphCast checkpoint change, and
+drift does not fire across it at daily cadence.
 
 ## 7. Open defects found while regenerating
 
