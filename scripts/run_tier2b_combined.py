@@ -31,9 +31,12 @@ come from the blend or from the estimator. Every arm's CRPS therefore comes
 from `weavr.stacking.crps_from_quantiles` applied to that arm's own
 predictive quantiles.
 
-**BMA quantiles are Monte Carlo.** `predictive_quantiles_bma` takes order
-statistics of `n_samples` draws, so its 0.99 quantile is only as resolved as
-the draw count allows; `--n-samples` trades runtime against tail resolution.
+**BMA quantiles are exact, not sampled.** `weavr.bma.bma_predictive_quantiles`
+inverts the mixture CDF at each level. The sampled alternative -- order statistics
+of `--n-samples` draws -- understates the upper tail by 1-6% of CRPS, because the
+predictive variable is a cube-root-scale gamma cubed and cannot be represented by
+500 samples. H10's margins are 0.02-0.03 mm on a ~5 mm baseline, so a parent
+scored that way is compared at a coarser resolution than the margin it decides.
 
 **H10 (pre-registered)**: a combined arm beats *both* parents on CRPS at 3
 or more of 5 lead times, with the 95% paired block-bootstrap CI on the
@@ -83,7 +86,10 @@ from run_tier2_hierarchical_baseline import (  # noqa: E402
     load_ifs_ensemble,
 )
 
-from weavr.bma import fit_hierarchical_bma, sample_bma_mixture  # noqa: E402
+from weavr.bma import (  # noqa: E402
+    bma_predictive_quantiles,
+    fit_hierarchical_bma,
+)
 from weavr.emos import fit_emos_csg, predict_csgd_params  # noqa: E402
 from weavr.rain_bins import classify_rain_bin  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
@@ -97,7 +103,6 @@ from weavr.splits import iter_evaluation_folds  # noqa: E402
 from weavr.stacking import (
     DEFAULT_QUANTILE_LEVELS,
     crps_from_quantiles,
-    predictive_quantiles_bma,
     predictive_quantiles_csgd,
     quantile_average,
     select_per_bin,
@@ -131,24 +136,6 @@ VALUE_GRID_MM = np.arange(0.0, 600.0 + 1.0, 1.0)
 #: reported as collapsing onto that parent, not forced into a spurious
 #: interior optimum.
 WEIGHT_GRID = np.round(np.arange(0.0, 1.0 + 0.05, 0.05), 2)
-
-
-def combine_predictive_quantiles(
-    csgd_mean: np.ndarray,
-    csgd_std: np.ndarray,
-    csgd_shift: np.ndarray,
-    bma_samples: np.ndarray,
-    levels: np.ndarray | None = None,
-    weight: float = 0.5,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return (q_csgd, q_bma, q_avg) predictive quantiles."""
-    if levels is None:
-        levels = DEFAULT_QUANTILE_LEVELS
-
-    q_csgd = predictive_quantiles_csgd(csgd_mean, csgd_std, csgd_shift, levels=levels)
-    q_bma = predictive_quantiles_bma(bma_samples, levels=levels)
-    q_avg = quantile_average(q_csgd, q_bma, weight=weight)
-    return q_csgd, q_bma, q_avg
 
 
 def compute_brier_score(prob: np.ndarray, obs: np.ndarray, threshold: float) -> float:
@@ -733,10 +720,7 @@ def train_fold_diagnostics(
                 crps_from_quantiles(quantiles[source], levels, obs_cells),
             )
 
-        bma_samples = sample_bma_mixture(
-            bma_result, cell_mean, cell_spread, rng, n_samples=n_samples
-        )
-        q_bma = predictive_quantiles_bma(bma_samples, levels)
+        q_bma = bma_predictive_quantiles(bma_result, cell_mean, cell_spread, levels)
         _record("bma", bin_label, crps_from_quantiles(q_bma, levels, obs_cells))
 
         for source, q_src in quantiles.items():
@@ -746,7 +730,6 @@ def train_fold_diagnostics(
                     np.sum(crps_from_quantiles(blended, levels, obs_cells))
                 )
         weight_count += int(take.size)
-        del bma_samples
 
     rows = [
         {
@@ -1016,11 +999,15 @@ def main() -> int:
                 else:
                     q_emos = np.zeros((indices.size, len(levels)), dtype=float)
 
-                bma_samples = sample_bma_mixture(
-                    bma_result, cell_mean, cell_spread, rng, n_samples=args.n_samples
+                # Exact quantiles by inverting the mixture CDF, not the order
+                # statistics of `n_samples` draws. The sampled version understates
+                # the upper tail -- `Y = X**3` cannot be represented by 500 samples
+                # -- by 1-6% of CRPS, which is 0.05-0.3 mm on a ~5 mm baseline.
+                # H10's margins are 0.02-0.03 mm, so the sampled parent was being
+                # compared at a coarser resolution than the verdict's margin.
+                q_bma = bma_predictive_quantiles(
+                    bma_result, cell_mean, cell_spread, levels
                 )
-                q_bma = predictive_quantiles_bma(bma_samples, levels)
-                del bma_samples
 
                 per_bin_choice = selection.mapping.get(
                     (str(bin_label), lead_hours), selection.pooled_best

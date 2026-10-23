@@ -11,7 +11,6 @@ from run_tier2b_combined import (
     _new_day_accumulator,
     cdf_at_threshold,
     cell_weighted_mean,
-    combine_predictive_quantiles,
     combined_beats_parent,
     comparable_train_crps,
     compute_brier_score,
@@ -22,27 +21,6 @@ from run_tier2b_combined import (
     score_quantiles_crps,
     select_emos_source,
 )
-
-
-class TestCombinePredictiveQuantiles:
-    def test_combines_csgd_and_bma_samples(self):
-        mean = np.array([2.0, 5.0])
-        std = np.array([1.5, 2.5])
-        shift = np.array([-0.5, -1.0])
-
-        rng = np.random.default_rng(42)
-        bma_samples = rng.uniform(0, 10, size=(2, 200))
-        levels = np.array([0.25, 0.50, 0.75])
-
-        q_csgd, q_bma, q_avg = combine_predictive_quantiles(
-            mean, std, shift, bma_samples, levels=levels, weight=0.5
-        )
-
-        assert q_csgd.shape == (2, 3)
-        assert q_bma.shape == (2, 3)
-        assert q_avg.shape == (2, 3)
-        assert np.all(q_avg >= 0.0)
-        assert np.all(np.diff(q_avg, axis=-1) >= 0.0)
 
 
 class TestComputeBrierScore:
