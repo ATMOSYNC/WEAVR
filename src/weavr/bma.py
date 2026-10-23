@@ -162,9 +162,9 @@ class BmaComponentFit:
     #: Upper bound on this component's predicted cube-root mean, set from the
     #: largest *training* observation in cube-root space.
     #:
-    #: The mean regressor is the only unbounded quantity in this fit. Every
-    #: other one is guarded -- `p0` is clipped into (0, 1), the variance into
-    #: `[max(intercept, _TINY), inf)` -- because `gamma_mean_intercept` and
+    #: The mean regressor needs a bound of its own -- `p0` is clipped into
+    #: (0, 1) and the variance into its training range -- because
+    #: `gamma_mean_intercept` and
     #: `gamma_mean_slope` come straight from `np.linalg.lstsq` with no
     #: constraint. When `forecast_ct` has near-zero spread within a single
     #: (bin, region) training cell, that regression is ill-conditioned and
@@ -172,16 +172,29 @@ class BmaComponentFit:
     #: range predicts an enormous `mean_ct`. Since the density uses `mean_ct**3`
     #: as the gamma scale, the predictive mean explodes.
     #:
-    #: Measured on the two-season daily base: one (bin, region) per fold
-    #: produced this -- `heavy`xSI on the 2018 fold at CRPS 145mm with bias
-    #: +277mm, and `heavy`xNE1 on 2020 at CRPS 154mm with bias +197mm -- while
-    #: the other five regions in the same bin and lead were fine (17-40mm).
-    #: Observed daily accumulations top out near 400mm, so an RMSE of 667-748mm
-    #: in those rows is not a forecast error at all. Bounding the prediction at
-    #: the training range is the standard remedy and leaves well-posed fits
-    #: untouched, because a correctly conditioned regression already predicts
-    #: inside it.
+    #: Bounding the prediction at the training range is the standard remedy
+    #: and leaves well-posed fits untouched, because a correctly conditioned
+    #: regression already predicts inside it.
+    #:
+    #: It was introduced for `heavy`xSI (2018 fold) and `heavy`xNE1 (2020 fold),
+    #: which scored CRPS ~145-155mm, but it never binds on them: their cause is
+    #: the variance, not the mean -- see `min_variance_ct`.
     max_mean_ct: float = float("inf")
+
+    #: Bounds on the predicted cube-root variance, set from the range this
+    #: component predicted over its own *training* cells -- the same remedy as
+    #: `max_mean_ct`, applied to the variance regression.
+    #:
+    #: The variance regression on spread can fit a negative slope, and a test
+    #: day whose spread is wider than any training day then extrapolates the
+    #: variance below zero. It used to be floored at `_TINY` (1e-6), turning the
+    #: component into a spike -- and the CDF then clipped the gamma scale
+    #: `variance / mean` at `_TINY` on its own, which moved that spike's mean
+    #: from cube-root 3.5 (~43 mm) to 12.3 (~1850 mm). That is what put 58% and
+    #: 71% of the predictive mass above 1000 mm on `heavy`xSI and `heavy`xNE1,
+    #: and what their CRPS of ~145-155 mm was measuring.
+    min_variance_ct: float = 0.0
+    max_variance_ct: float = float("inf")
 
 
 @dataclass
@@ -281,9 +294,18 @@ def _fit_component(
             spread_ct_wet, residual_sq
         )
         gamma_variance_intercept = max(gamma_variance_intercept, _TINY)
+        # The range predicted on training cells, which the prediction is held
+        # to -- see `BmaComponentFit.min_variance_ct`. Floored at `_TINY` only
+        # where training itself predicted a non-positive variance.
+        trained_variance = np.clip(
+            gamma_variance_intercept + gamma_variance_slope * spread_ct_wet, _TINY, None
+        )
+        min_variance_ct = float(trained_variance.min())
+        max_variance_ct = float(trained_variance.max())
     else:
         gamma_variance_intercept = max(float(np.mean(residual_sq)), _TINY)
         gamma_variance_slope = 0.0
+        min_variance_ct = max_variance_ct = gamma_variance_intercept
 
     return BmaComponentFit(
         source,
@@ -295,6 +317,8 @@ def _fit_component(
         gamma_variance_intercept,
         gamma_variance_slope,
         max_mean_ct=max_mean_ct,
+        min_variance_ct=min_variance_ct,
+        max_variance_ct=max_variance_ct,
     )
 
 
@@ -316,10 +340,12 @@ def _component_predictive_params(
 
     if component.route == "ensemble_dressing" and forecast_spread is not None:
         spread_ct = _cube_root(forecast_spread)
+        # Held inside the range training predicted. See
+        # `BmaComponentFit.min_variance_ct` for what extrapolating it did.
         variance_ct = np.clip(
             component.gamma_variance_intercept + component.gamma_variance_slope * spread_ct,
-            _TINY,
-            None,
+            max(component.min_variance_ct, _TINY),
+            component.max_variance_ct,
         )
     else:
         variance_ct = np.full_like(forecast_ct, max(component.gamma_variance_intercept, _TINY))
@@ -664,11 +690,18 @@ def _bma_sources(result: BmaFitResult) -> tuple[str, ...]:
     return tuple(result.weights)
 
 
-#: Value grid the analytic CRPS is integrated on: 1 mm to 150 mm, then 5 mm to
-#: 1000 mm. Beyond the top of the grid the CDF is 1 while the step term is 0, so
-#: the integrand is already ~0 and truncation contributes nothing measurable.
+#: Value grid the analytic CRPS is integrated on: 1 mm steps to 150 mm, 5 mm
+#: steps to 1000 mm, then geometric to 100 m. The integral stops at the grid
+#: top, so the grid has to reach where `1 - F` is negligible rather than where
+#: rain physically stops: a fitted mixture is not obliged to respect physics,
+#: and when one put 58% of its mass above 1000 mm a grid ending there scored
+#: CRPS 45.6 mm against a true 145.4 mm.
 BMA_CRPS_GRID_MM = np.concatenate(
-    [np.arange(0.0, 150.0 + 1.0, 1.0), np.arange(155.0, 1000.0 + 5.0, 5.0)]
+    [
+        np.arange(0.0, 150.0 + 1.0, 1.0),
+        np.arange(155.0, 1000.0 + 5.0, 5.0),
+        np.geomspace(1100.0, 1e5, 40),
+    ]
 )
 
 
@@ -703,16 +736,13 @@ def bma_mixture_cdf(
     padded = cut.reshape(pad + cut.shape)
     if not result.components:
         # A fallback cell is a point mass at zero, so its CDF is 1 at every
-        # non-negative value.
-        # Same two calling conventions as the fitted path: a shared grid gives
-        # `(*cells, G)`, a per-cell value gives the cells' own shape.
-        out_shape = (
-            shape + values.shape if values_ndim <= cell_ndim
-            else np.broadcast_shapes(shape, values.shape)
-        )
-        return np.ones(out_shape, dtype=float)
+        # non-negative value. The shape is exactly the fitted path's: per-cell
+        # parameters `shape + (1,)` broadcast against the padded values. Building
+        # it any other way breaks the per-cell convention -- `(n,)` cells against
+        # `(n, 1)` values broadcast from the right to `(n, n)`, not `(n, 1)`.
+        return np.ones(np.broadcast_shapes(shape + (1,), padded.shape), dtype=float)
 
-    total = None
+    total: np.ndarray | None = None
     for source in _bma_sources(result):
         p0, mean_ct, variance_ct = _component_predictive_params(
             result.components[source], forecast_mean[source], forecast_spread.get(source)
@@ -723,8 +753,12 @@ def bma_mixture_cdf(
         # and the evaluation points get *leading* singletons so theirs stay
         # trailing. NumPy aligns from the right, so a (ndim, ndim) parameter
         # block cannot broadcast against a (G,) grid without this.
-        kappa = np.clip(mean_ct_safe**2 / variance_ct, _TINY, None).reshape(shape + (1,))
-        theta = np.clip(variance_ct / mean_ct_safe, _TINY, None).reshape(shape + (1,))
+        # No clip on either parameter: `mean_ct_safe` and `variance_ct` are both
+        # already positive, so both are, and clipping one alone changes the
+        # distribution -- flooring `theta` while keeping `kappa` multiplies the
+        # mean `kappa * theta` by `_TINY / theta`.
+        kappa = (mean_ct_safe**2 / variance_ct).reshape(shape + (1,))
+        theta = (variance_ct / mean_ct_safe).reshape(shape + (1,))
         # `p0 +` is the point mass at zero, and it is not optional. A dry cell has
         # p0 ~ 1, so dropping it leaves the CDF near 0 across the whole grid and
         # CRPS integrates to ~294 mm instead of ~2.7 mm.
@@ -734,7 +768,48 @@ def bma_mixture_cdf(
             * gamma_dist.cdf(padded, kappa, scale=theta)
         )
         total = contribution if total is None else total + contribution
+    # `result.components` is non-empty here, so the loop assigned `total`.
+    assert total is not None
     return total
+
+
+#: Bisection steps for a quantile the value grid does not bracket. Each halves
+#: the cube-root interval, so 60 steps resolve it far below a millimetre even
+#: from an upper bound of thousands of metres.
+_QUANTILE_BISECTION_STEPS = 60
+
+
+def _invert_beyond_grid(
+    result: BmaFitResult,
+    forecast_mean: dict[str, np.ndarray],
+    forecast_spread: dict[str, np.ndarray | None],
+    levels: np.ndarray,
+    lower_mm: float,
+) -> np.ndarray:
+    """Exact quantiles above the grid top, by bisection on the closed-form CDF.
+
+    Each entry of `forecast_mean[s]` is one (cell, level) pair, aligned with
+    `levels`. The CDF is strictly increasing above zero, so bisection in
+    cube-root space converges to the unique root; the bracket's upper end is
+    doubled until it covers every target first.
+    """
+    lo = np.full(levels.shape, np.cbrt(lower_mm))
+    hi = 2.0 * lo
+    for _ in range(64):
+        short = bma_mixture_cdf(result, forecast_mean, forecast_spread, hi[..., None] ** 3)
+        short = short[..., 0] < levels
+        if not short.any():
+            break
+        hi = np.where(short, 2.0 * hi, hi)
+    for _ in range(_QUANTILE_BISECTION_STEPS):
+        mid = 0.5 * (lo + hi)
+        below = (
+            bma_mixture_cdf(result, forecast_mean, forecast_spread, mid[..., None] ** 3)[..., 0]
+            < levels
+        )
+        lo = np.where(below, mid, lo)
+        hi = np.where(below, hi, mid)
+    return (0.5 * (lo + hi)) ** 3
 
 
 def _cumulative_trapezoid(values: np.ndarray, grid: np.ndarray) -> np.ndarray:
@@ -816,7 +891,23 @@ def bma_predictive_quantiles(
         )
         x_lo = grid[idx - 1]
         x_hi = grid[idx]
-        values = np.maximum.accumulate(x_lo + frac * (x_hi - x_lo), axis=-1)
+        values = x_lo + frac * (x_hi - x_lo)
+        # A level the CDF never reaches on the grid has no bracketing pair:
+        # `argmax` of an all-False row is 0, and interpolating from the first
+        # interval -- where a wet, fat-tailed cell's CDF is nearly flat -- divides
+        # by a near-zero span and returns millions of mm. Those levels are solved
+        # exactly beyond the grid instead.
+        unreached = ~reach[:, -1, :]
+        if unreached.any():
+            cells, level_index = np.nonzero(unreached)
+            values[cells, level_index] = _invert_beyond_grid(
+                result,
+                {s: v[cells] for s, v in sub_mean.items()},
+                {s: (None if v is None else v[cells]) for s, v in sub_spread.items()},
+                levels_arr[level_index],
+                float(grid[-1]),
+            )
+        values = np.maximum.accumulate(values, axis=-1)
         # Below the point mass at zero the quantile *is* zero, and interpolating
         # toward it produces a negative value, because the CDF has already risen
         # to p0 at the grid's first point. Same convention as the CSGD:
@@ -832,6 +923,7 @@ def bma_crps(
     forecast_spread: dict[str, np.ndarray | None],
     obs: np.ndarray,
     grid: np.ndarray = BMA_CRPS_GRID_MM,
+    chunk_cells: int = 1024,
 ) -> np.ndarray:
     """Exact per-cell CRPS, integrated from the mixture CDF rather than sampled.
 
@@ -854,7 +946,45 @@ def bma_crps(
     It is also **per-cell**, which the sampled version was not: CRPS used to be
     reduced to a scalar before `score_bma_cells` assigned it into a per-cell
     grid, so every cell in a (bin, region) group received the group average.
+
+    Cells are scored in chunks of `chunk_cells`, so peak memory is set by the
+    chunk and the grid, not by how many cells one (bin, region) group holds:
+    each temporary is `(chunk, n_grid)` floats, about 3 MB at the defaults.
     """
+    obs = np.asarray(obs, dtype=float)
+    sources = _bma_sources(result)
+    cell_shape = np.asarray(forecast_mean[sources[0]], dtype=float).shape
+    flat_obs = np.broadcast_to(obs, cell_shape).reshape(-1)
+    flat_mean = {s: np.asarray(forecast_mean[s], dtype=float).reshape(-1) for s in sources}
+    flat_spread = {
+        s: (
+            None
+            if forecast_spread.get(s) is None
+            else np.asarray(forecast_spread[s], dtype=float).reshape(-1)
+        )
+        for s in sources
+    }
+    out = np.empty(flat_obs.size, dtype=float)
+    for start in range(0, flat_obs.size, chunk_cells):
+        stop = min(start + chunk_cells, flat_obs.size)
+        out[start:stop] = _bma_crps_block(
+            result,
+            {s: v[start:stop] for s, v in flat_mean.items()},
+            {s: (None if v is None else v[start:stop]) for s, v in flat_spread.items()},
+            flat_obs[start:stop],
+            grid,
+        )
+    return out.reshape(cell_shape)
+
+
+def _bma_crps_block(
+    result: BmaFitResult,
+    forecast_mean: dict[str, np.ndarray],
+    forecast_spread: dict[str, np.ndarray | None],
+    obs: np.ndarray,
+    grid: np.ndarray,
+) -> np.ndarray:
+    """`bma_crps` for one chunk of 1-D cells."""
     obs = np.asarray(obs, dtype=float)
     cdf = bma_mixture_cdf(result, forecast_mean, forecast_spread, grid)
     cdf_at_obs = bma_mixture_cdf(result, forecast_mean, forecast_spread, obs[..., None])[..., 0]
@@ -962,8 +1092,9 @@ def bma_exceedance_probability(
             component, forecast_mean[source], forecast_spread.get(source)
         )
         mean_ct_safe = np.clip(mean_ct, _TINY, None)
-        kappa = np.clip(mean_ct_safe**2 / variance_ct, _TINY, None)
-        theta = np.clip(variance_ct / mean_ct_safe, _TINY, None)
+        # Unclipped, for the reason given in `bma_mixture_cdf`.
+        kappa = mean_ct_safe**2 / variance_ct
+        theta = variance_ct / mean_ct_safe
         survival = gammaincc(kappa, cut / theta)
         total = total + result.weights[source] * ((1.0 - p0) * survival)
     return np.clip(total, 0.0, 1.0)

@@ -4,12 +4,15 @@ import xarray as xr
 
 import weavr.bma as bma_module
 from weavr.bma import (
+    BMA_CRPS_GRID_MM,
     MIN_TRAIN_DAYS_PER_BIN,
     BmaComponentFit,
     BmaFitResult,
     _ensemble_crps_chunked,
+    _fit_component,
     bma_analytic_predictive_mean,
     bma_crps,
+    bma_exceedance_probability,
     bma_mixture_cdf,
     bma_predictive_quantiles,
     crps_chunk_cells,
@@ -700,6 +703,60 @@ class TestBmaPredictiveQuantiles:
         below = ~above
         assert np.allclose(achieved[below], np.broadcast_to(p0[:, None], achieved.shape)[below])
 
+    #: Cube-root mean and variance of a cell whose CDF is flat over the first
+    #: grid step and still well below 1 at the grid top (100 m).
+    FAT_MEAN_CT, FAT_VARIANCE_CT = 46.0, 30.0
+
+    def _fat_tailed_wet_result(self):
+        """A wet cell with levels the grid cannot bracket.
+
+        This is the shape that broke Tier 2b: with the grid ending at 1000 mm,
+        such a cell's 0.99 quantile came back as 4,054,806 mm, because levels
+        above the grid top had no bracketing pair and were extrapolated from the
+        first interval, where the CDF is nearly flat.
+        """
+        return BmaFitResult(
+            bin_label="x", region="R1", weights={"a": 1.0},
+            components={
+                "a": BmaComponentFit(
+                    "a", "kernel_dressing", -3.0, 0.0, self.FAT_MEAN_CT, 0.0,
+                    self.FAT_VARIANCE_CT, 0.0, max_mean_ct=50.0,
+                )
+            },
+        )
+
+    def test_fallback_cdf_has_the_fitted_paths_shape_for_per_cell_values(self):
+        """`(n,)` cells against `(n, 1)` values must give `(n, 1)`, as fitted cells do.
+
+        Broadcasting the two from the right instead gives `(n, n)`, which only
+        `[..., 0]` in `bma_crps` was hiding.
+        """
+        fallback = BmaFitResult(bin_label="x", region="R1", weights={"a": 1.0}, components={})
+        values = np.arange(5.0)[:, None]
+        got = bma_mixture_cdf(fallback, {"a": np.ones(5)}, {"a": None}, values)
+        fitted = bma_mixture_cdf(self._result(0.0, -1.0), {"a": np.ones(5)}, {"a": None}, values)
+        assert got.shape == fitted.shape == (5, 1)
+        assert np.all(got == 1.0)
+
+    def test_levels_beyond_the_grid_are_solved_exactly_not_extrapolated(self):
+        result = self._fat_tailed_wet_result()
+        mean = {"a": np.full((3,), 1.0)}
+        spread = {"a": None}
+        top = bma_mixture_cdf(result, mean, spread, BMA_CRPS_GRID_MM[-1:])[0, 0]
+        beyond = self.LEVELS > top
+        assert beyond.any(), "the fixture must leave some levels above the grid"
+
+        q = bma_predictive_quantiles(result, mean, spread, self.LEVELS)
+
+        # Above the grid top, and exactly at the requested level.
+        assert np.all(q[:, beyond] > BMA_CRPS_GRID_MM[-1])
+        achieved = bma_mixture_cdf(result, mean, spread, q)
+        assert np.allclose(achieved[:, beyond], self.LEVELS[beyond], atol=1e-9)
+        # Bounded by the distribution itself: no quantile of a cube-root gamma
+        # sits more than 7 sd above its cube-root mean.
+        assert np.all(q < (self.FAT_MEAN_CT + 7.0 * np.sqrt(self.FAT_VARIANCE_CT)) ** 3)
+        assert np.all(np.diff(q, axis=-1) >= 0.0)
+
     def test_is_not_the_order_statistics_of_a_finite_sample(self):
         """The draw-based version is the thing this replaces; keep it visible.
 
@@ -716,3 +773,55 @@ class TestBmaPredictiveQuantiles:
             self.LEVELS,
         )
         assert not np.allclose(exact[:, -1], sampled[:, -1])
+
+
+class TestNearDegenerateVarianceKeepsTheDistributionWhereItIs:
+    """`heavy`xSI / `heavy`xNE1: the two cells that scored CRPS ~145-155 mm.
+
+    A negative-slope variance regression, extrapolated to a test spread wider
+    than training, floored the variance at 1e-6. The CDF then clipped the gamma
+    scale `variance / mean` at 1e-6 on its own, which moved a spike at
+    cube-root 3.5 (~43 mm) to 12.3 (~1850 mm) and put 58% of the mixture's mass
+    above 1000 mm.
+    """
+
+    def _spike(self):
+        # Variance pinned at the floor: the state those cells reached.
+        return BmaFitResult(
+            bin_label="heavy", region="SI", weights={"a": 1.0},
+            components={
+                "a": BmaComponentFit(
+                    "a", "kernel_dressing", -20.0, 0.0, 3.5, 0.0, 1e-9, 0.0, max_mean_ct=6.8,
+                )
+            },
+        )
+
+    def test_cdf_puts_the_spike_at_its_own_mean(self):
+        mean = {"a": np.full(2, 10.0)}
+        cdf = bma_mixture_cdf(self._spike(), mean, {"a": None}, np.array([40.0, 46.0, 1000.0]))
+        # 3.5**3 = 42.9 mm: all of the mass is between 40 and 46 mm.
+        assert np.allclose(cdf[:, 0], 0.0, atol=1e-6)
+        assert np.allclose(cdf[:, 1:], 1.0, atol=1e-6)
+
+    def test_exceedance_agrees_with_the_cdf(self):
+        mean = {"a": np.full(2, 10.0)}
+        assert np.allclose(
+            bma_exceedance_probability(self._spike(), mean, {"a": None}, 46.0), 0.0, atol=1e-6
+        )
+
+    def test_variance_prediction_is_held_inside_the_training_range(self):
+        rng = np.random.default_rng(0)
+        spread = rng.uniform(10.0, 40.0, 300)
+        fmean = rng.uniform(60.0, 120.0, 300)
+        # Residual variance falls as spread rises, so the fitted slope is negative.
+        obs = (np.cbrt(fmean) + rng.normal(0.0, 1.0, 300) * (2.0 - np.cbrt(spread) / 3.5)) ** 3
+        obs = np.clip(obs, 0.1, None)
+        component = _fit_component("a", fmean, spread, obs)
+        assert component.gamma_variance_slope < 0.0
+
+        # A spread far wider than training would extrapolate below zero.
+        _, _, variance = bma_module._component_predictive_params(
+            component, np.array([90.0]), np.array([5000.0])
+        )
+        assert variance[0] == pytest.approx(component.min_variance_ct)
+        assert component.min_variance_ct > 1e-3
