@@ -59,6 +59,8 @@ import xarray as xr
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from build_seeps_climatology import load_climatology  # noqa: E402
+from run_scorecard import _pooled_sedi  # noqa: E402
+from run_tail_repair_evt import expected_counts  # noqa: E402
 from run_tier2_hierarchical_baseline import load_graphcast_ensemble  # noqa: E402
 
 from weavr.emos import (  # noqa: E402
@@ -69,6 +71,7 @@ from weavr.emos import (  # noqa: E402
 )
 from weavr.quantile_mapping import (  # noqa: E402
     apply_regional_quantile_maps,
+    climatology_excluding_years,
     fit_regional_quantile_maps,
 )
 from weavr.rain_bins import RAIN_BIN_LABELS, classify_rain_bin  # noqa: E402
@@ -88,7 +91,6 @@ from weavr.stores import (  # noqa: E402
     open_multi_season,
     resolve_store_paths,
 )
-from weavr.verify import sedi  # noqa: E402
 
 LEAD_HOURS = [24, 48, 72, 96, 120]
 THRESHOLDS = (7.5, 35.5, 64.5, 115.6, 204.5)
@@ -108,18 +110,23 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--results-dir", type=Path, default=Path("results"))
     parser.add_argument("--out-csv", type=Path, default=None)
     parser.add_argument("--out-paired-csv", type=Path, default=None)
-    parser.add_argument("--test-fraction", type=float, default=0.5)
+    parser.add_argument("--test-fraction", type=float, default=0.2)
     parser.add_argument("--force", action="store_true", help=FORCE_HELP)
     return parser.parse_args(args)
 
 
 def quantile_mapped_members(
     forecasts: xr.DataArray,
+    train_mask: np.ndarray,
     reference: xr.DataArray,
     region_labels: xr.DataArray,
     lead_hours: int,
 ) -> xr.DataArray:
     """Return the ensemble with each member quantile-mapped.
+
+    The maps are fitted on the training days' forecasts only and then applied
+    to every day. Fitting on the whole series would put the test days'
+    forecast distribution inside the map scored on them.
 
     `member_dim="member"` keeps the member dimension when fitting, so each
     member is corrected against the reference distribution instead of the
@@ -129,7 +136,7 @@ def quantile_mapped_members(
     the one under test.
     """
     maps = fit_regional_quantile_maps(
-        forecasts,
+        forecasts.isel(sample=np.asarray(train_mask, dtype=bool)),
         reference,
         region_labels,
         sample_dim="sample",
@@ -166,6 +173,18 @@ def fitted_probability_grid(
         )
         probabilities[mask] = exceedance_probability_csgd(mean, std, shift, threshold)
     return probabilities
+
+
+def probability_sedi(probability: np.ndarray, obs: np.ndarray, threshold: float) -> float:
+    """SEDI of a probability forecast, from expected contingency counts.
+
+    `weavr.verify.sedi` thresholds forecast *values*, so a probability grid
+    passed to it with a threshold in mm never exceeds it and the score is
+    meaningless. This is the convention `run_tail_repair_evt.py` uses for its
+    probabilistic arms, so the two runners' SEDI values are comparable.
+    """
+    counts = expected_counts(probability, (obs >= threshold).astype(float))
+    return _pooled_sedi(*[float(np.sum(counts[k])) for k in counts])
 
 
 def crps_grid(
@@ -250,12 +269,17 @@ def main() -> int:
         for train_mask, test_mask, split_label in folds:
             train_obs = obs_aligned.isel(sample=train_mask)
             arm_forecasts = {"raw_members": forecasts}
+            # The climatology covers both test seasons, so the test year is
+            # removed before it is used as a reference.
+            fold_climatology = climatology_excluding_years(
+                climatology_rain, sample_times[test_mask]
+            )
             for variant, reference in (
                 ("same_period", train_obs),
-                ("climatology", climatology_rain),
+                ("climatology", fold_climatology),
             ):
                 arm_forecasts[f"qm_members_{variant}"] = quantile_mapped_members(
-                    forecasts, reference, region_labels, lead_hours
+                    forecasts, train_mask, reference, region_labels, lead_hours
                 )
 
             fold_crps: dict[str, float] = {}
@@ -271,7 +295,8 @@ def main() -> int:
                 test_labels = rain_bin_labels.isel(sample=test_mask)
                 test_obs = obs_aligned.isel(sample=test_mask)
                 mean_values = test_forecast.mean(dim="member", skipna=True).values
-                spread_values = test_forecast.std(dim="member", skipna=True).values
+                # ddof=1, matching the spread `fit_emos_csg` was fitted on.
+                spread_values = test_forecast.std(dim="member", ddof=1, skipna=True).values
                 obs_values = test_obs.values
                 labels = test_labels.values
 
@@ -319,13 +344,7 @@ def main() -> int:
                             ** 2
                         )
                     )
-                    sedi_value = float(
-                        sedi(
-                            _as_data_array(grid, template),
-                            test_obs,
-                            threshold,
-                        )
-                    )
+                    sedi_value = probability_sedi(grid, obs_values, threshold)
                     rows.append(
                         {
                             "lead_hours": lead_hours,
