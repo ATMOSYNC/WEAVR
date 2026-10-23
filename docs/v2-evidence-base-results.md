@@ -23,14 +23,15 @@ scripts/gate_step07_results.py                 # evidence-base validator
 |---|---|
 | Tiers regenerated | 0, 1, 2, 3, single-source, Phase 2, independence, daily verification |
 | Test days per lead | 244 / 242 / 240 / 238 / 236 (leads 24→120h) |
-| Scorecard comparisons | 3047, 58.9% significant |
+| Scorecard comparisons | 3857, 61.0% significant |
 | Degenerate bootstraps | **0** |
 | Verdicts reached | **4** of 12 registered claims: H1 PASS x2, H2 FAIL, H3 FAIL |
 
 **All three headline claims are now decided, and two of the three fail.** H1
-passes twice over: the blend beats the best single ensemble member on RMSE at
-3 of 5 leads and on CRPS at 5 of 5. H2 fails — the multi-source combiner does
-**not** beat the best single-source EMOS calibration on CRPS. H3 fails on both
+passes twice over: the blend beats the best single ensemble member on RMSE and
+on CRPS at 5 of 5 leads each. H2 fails — the multi-source combiner is
+significantly **worse** than either single-source EMOS calibration on CRPS, at
+every lead. H3 fails on both
 legs: at 64.5 mm the blend's Brier is 3.6× worse than climatology (BSS −2.6,
 where the claim needs > 0) and its SEDI is worse than the best member at every
 lead.
@@ -59,11 +60,11 @@ Pooled across both folds, from `results/tier2_hierarchical_baseline.csv`:
 
 | lead | tier0 RMSE | tier1 RMSE | EMOS-CSG CRPS | EMOS-IFS CRPS | BMA CRPS |
 |---|---|---|---|---|---|
-| 24 h | 14.24 | 13.42 | 4.546 | 4.547 | 4.643 |
-| 48 h | 14.12 | 13.30 | 4.554 | 4.554 | 4.577 |
-| 72 h | 13.97 | 13.17 | 4.560 | 4.560 | 4.569 |
-| 96 h | 13.89 | 13.15 | 4.596 | 4.596 | 4.597 |
-| 120 h | 13.90 | 13.20 | 4.622 | 4.622 | 4.627 |
+| 24 h | 14.61 | 13.86 | 4.546 | 4.579 | 4.733 |
+| 48 h | 14.71 | 13.86 | 4.554 | 4.598 | 4.741 |
+| 72 h | 14.77 | 13.84 | 4.560 | 4.615 | 4.741 |
+| 96 h | 14.78 | 13.85 | 4.596 | 4.666 | 4.770 |
+| 120 h | 14.83 | 13.89 | 4.622 | 4.716 | 4.801 |
 
 Per fold, Tier 0 RMSE is 13.90–14.24 mm on the 2018 fold and 14.98–15.71 mm
 on 2020. Tier 1 beats Tier 0 at every lead on both folds, by 0.35–0.82 mm.
@@ -74,16 +75,17 @@ against 6.29 mm in 2018).
 
 **The probabilistic scores do not beat climatology.** A constant forecast at
 the seasonal mean scores CRPS 3.33 mm on 2018 land cells and 3.45 mm on 2020;
-the calibrated methods score 4.55 and 4.62. This is not a v2 regression — the
+the calibrated methods score 4.55–4.80 pooled. This is not a v2 regression — the
 committed v1 weekly numbers had the same property (3.76 mm against a 3.45 mm
 floor for 2020). Nothing pre-registered turns on beating climatology on CRPS:
 H1 and H2 are *relative* comparisons against other WEAVR configurations.
 It belongs here because a reader of this table will otherwise assume the
 probabilistic layer is skilful against climatology, and it is not.
 
-**BMA sits marginally behind single-source EMOS-CSG.** 4.643 against 4.546 mm
-at lead 24, converging to a dead heat by lead 96. Since `tier2_bma` is the
-declared headline, this directly shapes the verdicts below.
+**BMA sits clearly behind both single-source EMOS calibrations.** 4.733
+against 4.546 mm (EMOS-CSG) and 4.579 mm (EMOS-IFS) at lead 24; the gap to
+EMOS-IFS narrows to 0.085 mm by lead 120 but never closes. Since `tier2_bma` is
+the declared headline, this directly shapes the verdicts below.
 
 ## 2b. v1 vs v2, and why the columns must not simply be compared
 
@@ -98,11 +100,11 @@ declared headline, this directly shapes the verdicts below.
 
 | lead | tier0 RMSE v1 → v2 | tier1 RMSE v1 → v2 | BMA CRPS v1 → v2 |
 |---|---|---|---|
-| 24 h | 11.55 → 14.61 | 11.08 → 13.86 | 3.721 → 4.643 |
-| 48 h | 13.59 → 14.71 | 12.53 → 13.86 | 3.802 → 4.577 |
-| 72 h | 13.15 → 14.77 | 12.05 → 13.84 | 3.830 → 4.569 |
-| 96 h | 14.15 → 14.78 | 13.34 → 13.85 | 4.643 → 4.597 |
-| 120 h | 15.35 → 14.83 | 14.90 → 13.89 | 4.454 → 4.627 |
+| 24 h | 11.55 → 14.61 | 11.08 → 13.86 | 3.721 → 4.733 |
+| 48 h | 13.59 → 14.71 | 12.53 → 13.86 | 3.802 → 4.741 |
+| 72 h | 13.15 → 14.77 | 12.05 → 13.84 | 3.830 → 4.741 |
+| 96 h | 14.15 → 14.78 | 13.34 → 13.85 | 4.643 → 4.770 |
+| 120 h | 15.35 → 14.83 | 14.90 → 13.89 | 4.454 → 4.801 |
 
 **Every tier got worse on RMSE, and that is not a regression.** v1 scored 4
 test days, all in the last four weeks of September
@@ -130,7 +132,7 @@ Single machine, 8 cores, the whole Tier 2 process single-threaded. Prompt item
 | Tier 3, 5 leads × 2 folds (regime-conditioned) | **2 h 09 m** |
 | independence diagnostic | **~1 min** |
 | daily verification, per season | **~10 s** |
-| scorecard, 2827 comparisons × 1000 bootstrap resamples | **~1 min** |
+| scorecard, 3857 comparisons × 1000 bootstrap resamples | **~1 min** |
 | result gate | **~2 s** |
 | **full end-to-end rehearsal on miniature stores** | **~7 min** |
 
@@ -140,7 +142,10 @@ scale in about the time it takes to make coffee. Run it before any multi-hour
 regeneration, not after the next loss.
 
 Peak RSS was 2.6 GB for Tier 2 and 4.7 GB for Tier 3, both inside the memory
-budget the blocked CRPS and cell-blocked BMA work was built for.
+budget the blocked CRPS and cell-blocked BMA work was built for. The final
+regeneration (after the BMA fix in §7) ran Tier 2 and Tier 3 side by side in
+2 h 47 m each, peaking at 7.0 GB and 5.8 GB RSS; the exact full-support BMA
+CRPS costs memory, not verdicts.
 
 ## 3. Verdicts
 
@@ -150,8 +155,8 @@ steps (08, 09, 11/12, 13, 14, 19, 21) and are correctly out of scope here.
 ### H1-RMSE — **PASS**
 
 A WEAVR blend beats the best single member chosen on the training fold, on
-RMSE. `tier2_bma` improves at 3 of 5 leads with the CI excluding 0, at leads
-72, 96 and 120 h.
+RMSE. `tier2_bma` improves at 5 of 5 leads with the CI excluding 0 at every
+one: by 0.96 mm at 24 h, narrowing to 0.32 mm at 120 h.
 
 ### H1-CRPS — **PASS**, via an identity; not evaluable as written
 
@@ -166,31 +171,38 @@ the same comparator is decided on `mae_mm`:
 
 | lead | tier2_bma | best member | diff | 95% CI | significant |
 |---|---|---|---|---|---|
-| 24 h | 7.2333 | 7.4312 | −0.1979 | [−0.3888, −0.0275] | yes |
-| 48 h | 7.1243 | 7.4614 | −0.3371 | [−0.4816, −0.2194] | yes |
-| 72 h | 7.1288 | 7.5628 | −0.4340 | [−0.5821, −0.3167] | yes |
-| 96 h | 7.1794 | 7.5871 | −0.4076 | [−0.5325, −0.3102] | yes |
-| 120 h | 7.2379 | 7.6138 | −0.3759 | [−0.4878, −0.2747] | yes |
+| 24 h | 7.0720 | 7.4312 | −0.3592 | [−0.5093, −0.2347] | yes |
+| 48 h | 7.1046 | 7.4614 | −0.3568 | [−0.5030, −0.2375] | yes |
+| 72 h | 7.1147 | 7.5628 | −0.4481 | [−0.5971, −0.3282] | yes |
+| 96 h | 7.1682 | 7.5871 | −0.4189 | [−0.5442, −0.3201] | yes |
+| 120 h | 7.2272 | 7.6138 | −0.3866 | [−0.4989, −0.2849] | yes |
 
 5 of 5 leads, all intervals excluding 0.
 
-### H2 — **FAIL** against EMOS-GraphCast, **INSUFFICIENT_DATA** against EMOS-IFS
+### H2 — **FAIL** against both EMOS-GraphCast and EMOS-IFS
 
-The multi-source combiner does not beat the best single-source EMOS on CRPS.
+The multi-source combiner does not beat the best single-source EMOS on CRPS; it
+is significantly worse than both.
 
-| lead | vs EMOS-GraphCast | vs EMOS-IFS |
-|---|---|---|
-| 24 h | +0.0975 (BMA worse) | +0.0641 (BMA worse) |
-| 48 h | +0.0234 | −0.0208 |
-| 72 h | +0.0089 | −0.0461 |
-| 96 h | +0.0008 | −0.0692 |
-| 120 h | +0.0045 | −0.0891 |
+| lead | vs EMOS-GraphCast | 95% CI | vs EMOS-IFS | 95% CI |
+|---|---|---|---|---|
+| 24 h | +0.1876 (BMA worse) | [+0.167, +0.214] | +0.1543 (BMA worse) | [+0.136, +0.177] |
+| 48 h | +0.1873 | [+0.169, +0.210] | +0.1432 | [+0.120, +0.165] |
+| 72 h | +0.1806 | [+0.157, +0.209] | +0.1255 | [+0.101, +0.146] |
+| 96 h | +0.1740 | [+0.147, +0.204] | +0.1040 | [+0.080, +0.129] |
+| 120 h | +0.1788 | [+0.153, +0.201] | +0.0852 | [+0.054, +0.114] |
 
-Not one lead reaches significance against either comparator. Against
-GraphCast-EMOS the difference is non-negative at every lead — BMA is never
-even nominally better, hence FAIL. Against IFS-EMOS it is nominally better at
-4 of 5 leads but never significantly, hence INSUFFICIENT_DATA: the direction
-leans BMA's way and the data cannot resolve it.
+BMA is worse at every lead against both comparators, and every interval
+excludes 0.
+
+**Correction to an earlier version of this section**, which reported H2 as
+INSUFFICIENT_DATA against EMOS-IFS ("nominally better at 4 of 5 leads"). That
+verdict came from a `results/scorecard.csv` generated *before* commit 9a44833
+regenerated every Tier 2 per-day file: the committed scorecard was scoring BMA
+at 4.643 mm at lead 24 while the committed per-day files said 4.747. Rebuilt
+from the files actually in `results/`, the direction is unambiguous. The same
+staleness explains every other significance flip between the two scorecards;
+none is bootstrap noise (the bootstrap seed and day indices are identical).
 
 This is the finding most worth the reader's attention. The blend beats a
 single raw member decisively (H1) but does not beat a single-source
@@ -214,12 +226,12 @@ Both legs fail.
 
 | threshold | tier2_bma | climatology | BSS (needs > 0) |
 |---|---|---|---|
-| 7.5 mm | 0.1438 | 0.0429 | −2.35 |
-| 64.5 mm | 0.01238 | 0.00343 | **−2.61** |
-| 115.6 mm | 0.00257 | 0.00069 | −2.73 |
-| 204.5 mm | 0.00029 | 0.00007 | −2.90 |
+| 7.5 mm | 0.1435 | 0.0429 | −2.35 |
+| 64.5 mm | 0.01236 | 0.00343 | **−2.60** |
+| 115.6 mm | 0.00256 | 0.00069 | −2.70 |
+| 204.5 mm | 0.00027 | 0.00007 | −2.82 |
 
-BSS at 64.5 mm is −2.61 to −2.63 across the five leads, where the claim needs
+(lead 24 h.) BSS at 64.5 mm is −2.60 to −2.62 across the five leads, where the claim needs
 it above 0. Climatology is a strong forecast for a rare event precisely
 because it is close to the base rate, and a 24–120 h probabilistic blend does
 not beat simply knowing how often 64.5 mm falls.
@@ -229,14 +241,15 @@ not beat simply knowing how often 64.5 mm falls.
 | threshold | tier2_bma better at | significant at |
 |---|---|---|
 | 7.5 mm | 5/5 leads | 5/5 |
-| 64.5 mm | **0/5** | 4/5 (worse) |
+| 64.5 mm | **0/5** | 5/5 (worse) |
 | 115.6 mm | **0/5** | 3/5 (worse) |
 | 204.5 mm | 0/5 | 0/5 |
 
 The blend's SEDI advantage exists only at 7.5 mm — light rain. At the 64.5 mm
 threshold the claim names, it is worse at every lead and significantly so at
-four of five. Against climatology it is better at 7.5 mm and worse at all
-three higher thresholds.
+all five. Against climatology it is better at 7.5 mm; above that climatology's
+SEDI is undefined, because a constant seasonal-mean forecast never reaches the
+threshold and so has no hits or false alarms to score.
 
 **Correction to an earlier draft of this file**, which reported this leg as
 "better at 115.6 mm and worse at 204.5 mm". That was wrong on both counts: the
@@ -288,49 +301,56 @@ two-fold table. The comparison the prompt asks for is drawn from the two.
 
 ## 7. Open defects found while regenerating
 
-### Resolved: the "degenerate fits" were a Monte Carlo artefact
+### Resolved: the "degenerate fits" -- two causes, found in two passes
 
 `scripts/gate_step07_results.py` used to flag two cells as degenerate, in both
-the by-bin and by-region tables:
+the by-bin and by-region tables. Pooled CRPS, lead 24 h:
 
-| bin | region | lead | CRPS (was) | CRPS (now) | RMSE (was) | RMSE (now) |
-|---|---|---|---|---|---|---|
-| heavy | NE1 | 24 h | 119.5 mm | **48.5 mm** | 666.8 mm | **62.2 mm** |
-| heavy | SI | 24 h | 101.3 mm | **38.3 mm** | 748.4 mm | **50.0 mm** |
+| bin | region | as first flagged | after 9a44833 | now |
+|---|---|---|---|---|
+| heavy | NE1 | 119.5 mm | 48.5 mm | **33.2 mm** |
+| heavy | SI | 101.3 mm | 38.3 mm | **26.4 mm** |
 
-with biases of +135.7 mm and +173.0 mm against a `heavy` bin whose rainfall
-range is 64.5-115.6 mm by construction. **The gate now raises no advisories at
-all.**
+For scale, the other regions in the same bin sit at 26.7 mm (CI). **The gate now
+raises no advisories at all.**
 
-**The cause was the estimator, not the fit.** The mixture draws
+**First cause: the Monte Carlo estimator (fixed in 9a44833).** The mixture draws
 `X ~ Gamma(kappa, theta)` on the cube-root scale and then cubes it, so the
-predictive variable is `Y = X**3`. Two consequences:
+predictive variable is `Y = X**3`. `E[Y]` is `theta**3 kappa (kappa+1)
+(kappa+2)`, not `(E[X])**3`, and `Var(Y)` is large enough that 500 draws cannot
+represent it. Every summary taken from those draws was biased upward: the
+predictive mean of heavy x SI read 327.6 mm, true 62.2 mm. `weavr.bma` now
+computes the mean from `E[X**3]`, the exceedance probability from the gamma
+survival function (exact, because cubing is monotone), and CRPS by integrating
+the mixture CDF.
 
-1. `E[Y]` is `theta**3 kappa (kappa+1) (kappa+2)`, **not** `(E[X])**3`. Jensen
-   guarantees they differ.
-2. `Var(Y)` is large enough that 500 draws cannot represent it.
+**Second cause: two clips that compounded (fixed in 636ac86).** 9a44833 called the
+remaining excess "an estimator artifact", and that was wrong -- its integration
+grid stopped at 1000 mm, so it could not see where the mass had gone. Over the
+full support the affected fold-cells scored 145.4 and 155.0 mm. The mechanism:
 
-Every summary taken from those draws was biased, in the direction that makes the
-mixture look worse than it is:
+1. The variance regression has a negative slope in these cells and
+   extrapolated below zero on the test forecasts, so the variance was floored
+   at `_TINY` (1e-6).
+2. `bma_mixture_cdf` and `bma_exceedance_probability` then clipped
+   `theta = var / mean` at `_TINY` *independently* of `kappa`, which moved the
+   component mean from a cube-root 3.5 (~43 mm) to 12.3 (~1850 mm) and put
+   58-71% of the mass above 1000 mm.
 
-| quantity | how it was computed | heavy x SI, lead 24 |
-|---|---|---|
-| predictive mean | mean of 500 draws | 327.6 mm (true **62.2 mm**) |
-| CRPS | mean of 500 draws | 101.3 mm (true **38.3 mm**) |
-| `P(Y > t)` | fraction of 500 draws | already accurate to ~0.0005 |
+Fixes: no independent clip of `kappa` or `theta`; the predicted variance is
+bounded to the range seen in training (`BmaComponentFit.min_variance_ct` /
+`max_variance_ct`); `BMA_CRPS_GRID_MM` extends geometrically to 1e5 mm;
+`bma_predictive_quantiles` solves levels beyond the grid by bisection instead of
+extrapolating (it had returned 4,054,806 mm). Each fix has a test that fails on
+the old code.
 
-`bias_mm`, `mse_mm2` and `rmse_mm` are all built from the predictive mean, which
-is where the +277.4 mm bias came from. **H3 was never affected** -- its
-exceedance probabilities were already accurate -- so H3 FAIL is a genuine result
-and not an artefact.
+**H3's SEDI leg was affected, its verdict was not.** SEDI is built from
+contingency counts of the predictive *mean*, which the estimator bias inflated:
+at 64.5 mm, lead 24, BMA's SEDI moved 0.397 → 0.389, against 0.464 for the best
+member. The Brier leg uses the exceedance probabilities, which were already
+accurate. Both legs fail before and after.
 
-`weavr.bma` now computes all three exactly: the mean from `E[X**3]`, the
-exceedance probability from the gamma survival function (exact, because cubing is
-monotone), and CRPS by integrating the mixture CDF. It also verified against
-brute-force quadrature on a 600,001-point grid: 28.8512 mm analytic against
-28.8511 mm exact at `obs = 30 mm`.
-
-### Three further defects fixed alongside
+### Three further defects fixed in 9a44833
 
 - **CRPS was reduced to a scalar** before `score_bma_cells` assigned it into a
   per-cell grid, so every cell of a `(bin, region)` group received the *group*
@@ -349,22 +369,22 @@ brute-force quadrature on a 600,001-point grid: 28.8512 mm analytic against
    unbounded parameters and capped the predicted cube-root mean at the training
    maximum. That cap **provably does not bind**: a `heavy`-classified cell holds
    observations from **0 to 355 mm**, because bins are classified from the
-   *forecast* rather than the observation, so the cap sits near 320 mm -- above
-   the very bias it was meant to prevent. The slopes were never the problem
+   *forecast* rather than the observation. The slopes were never the problem
    either, measuring 0.04-1.73.
-2. The second attempt concluded the fit was sound and only the *mean* was
-   mis-estimated. CRPS was too, by 2.6x on the affected cells.
+2. 9a44833 concluded that after the exact estimator the residual was not a fit
+   problem. It was: the variance floor and the `theta` clip above.
 
-Recorded because it cost three full regenerations: a well-formed number that means
-the wrong thing passes every structural check. `E[X**3] != (E[X])**3` was
-available on the first run to catch this.
+Recorded because it cost several full regenerations: a well-formed number that
+means the wrong thing passes every structural check, and a validation grid that
+stops short of the support validates nothing beyond it.
 
-### No verdict moved
+### Verdicts after the fix
 
-All four pre-registered verdicts stand exactly as recorded above: H1-RMSE PASS,
-H1-CRPS PASS, H2 FAIL, H3 FAIL. The fixes corrected *reported metrics* that were
-wrong, not conclusions that were wrong -- but H2 and H3 rest on numbers that had
-to be trustworthy before they could mean anything, and now they are.
+H1-RMSE PASS, H1-CRPS PASS, H2 FAIL (now against both comparators), H3 FAIL.
+H1-RMSE strengthened from 3 to 5 significant leads and H2-vs-EMOS-IFS moved from
+INSUFFICIENT_DATA to FAIL; both moves come from rebuilding the scorecard on the
+current per-day files (see the H2 correction above), not from the BMA fix,
+which moved domain BMA CRPS by at most 0.015 mm.
 
 ### Still open
 

@@ -299,10 +299,13 @@ function renderExtremeProbabilityLegend(container, colorscale, grid, counts) {
   tailNote.style.marginTop = "8px";
   // The real count, and -- when the committed grid predates step 12 -- an
   // honest "none in this grid" rather than a legend implying cells exist.
+  // "Experimental" is in the legend as well as the caption: measured on two
+  // seasons the tail removes every false zero but worsens SEDI at 5 of 5
+  // leads, and the legend is what a reader looks at while reading the map.
   tailNote.innerHTML =
     '<span class="legend-swatch" style="background:' +
     EXTREME_PROBABILITY_TAIL_GEOGRAPHY_COLOR +
-    '"></span>pooled GPD tail' +
+    '"></span>pooled GPD tail <strong>(experimental)</strong>' +
     (counts.tail > 0
       ? ` (${counts.tail} cell${counts.tail === 1 ? "" : "s"} at this lead; ` +
         "probability extrapolated from the pooled upper tail)"

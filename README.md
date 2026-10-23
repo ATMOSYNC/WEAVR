@@ -193,10 +193,10 @@ daily cadence, leave-one-year-out:
   than re-weighting.
 - **The blend beats a single ensemble member, but not a single-source
   calibration.** H1 passes twice: the blend beats the best single member on
-  RMSE at 3 of 5 leads and on CRPS at 5 of 5, every interval excluding zero.
-  H2 fails: the multi-source combiner does **not** beat the best single-source
-  EMOS on CRPS at any lead. Calibrating one good source appears to capture
-  most of what the mixture adds.
+  RMSE and on CRPS at 5 of 5 leads each, every interval excluding zero.
+  H2 fails: the multi-source combiner is significantly **worse** than either
+  single-source EMOS on CRPS at every lead. Calibrating one good source
+  appears to capture what the mixture adds, and more.
 - **Extremes are the open problem.** GraphCast detects no 115.6 mm event at
   any lead, and no source detects any 204.5 mm event. RMSE and warning skill
   point in opposite directions.
