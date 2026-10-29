@@ -115,14 +115,17 @@ def load_skill_trends_data(
       re-plot that duplicate; tier3 contributes only its own new method,
       `regime_conditioned`.
 
-    The real, checked outcome across tiers is mixed, not monotonically
-    improving: tier1 beats tier0 domain-wide at every lead but not in every
-    region x lead cell; tier2's EMOS-CSG and BMA trade off which wins (3 vs.
-    2 of 5 leads); tier3's regime-conditioned reweighting does not beat
-    tier2 at any lead (0 of 5) -- see `docs/tier1-regional-weights-results.md`,
+    The real, checked outcome across tiers (two-season daily LOYO, pooled
+    fold) is mixed, not monotonically improving: tier1 beats tier0 domain-wide
+    at every lead (RMSE 0.29-0.85 mm lower); tier2's EMOS-CSG beats BMA at all
+    5 leads on CRPS (4.55-4.62 vs. 4.73-4.80 mm) and beats EMOS-IFS-ENS too;
+    tier3's regime-conditioned reweighting loses to tier2 at every lead (wins
+    0 of 5; CRPS ~7.4 mm vs. ~4.6 mm) -- see
+    `docs/tier1-regional-weights-results.md`,
     `docs/tier2-hierarchical-baseline-results.md`,
-    `docs/phase5-regime-conditioned-results.md`. This function returns every
-    real method's own numbers as-is; it does not smooth or hide the mixed
+    `docs/phase5-regime-conditioned-results.md`,
+    `docs/v2-evidence-base-results.md`. This function returns every real
+    method's own numbers as-is; it does not smooth or hide the mixed
     picture.
     """
     rows: list[dict[str, object]] = []
