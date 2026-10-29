@@ -68,10 +68,10 @@ from weavr import verify as V  # noqa: E402
 from weavr.grid import IMD_DAY_START_HOUR_UTC  # noqa: E402
 from weavr.score_io import (  # noqa: E402
     FORCE_HELP,
+    PerDayScoreWriter,
     guard_result_overwrites,
     per_day_scores,
     resolve_result_paths,
-    write_per_day_scores,
 )
 from weavr.splits import (  # noqa: E402
     InsufficientTimeBlocksError,
@@ -326,6 +326,7 @@ def main() -> int:
     print("CRPS/Brier: not computed -- no ensemble-shaped source in this store (deferred, Phase 2)")
 
     rows: list[dict] = []
+    per_day_writer = PerDayScoreWriter(args.results_dir)
     for lead_hours in LEAD_HOURS:
         mean_forecast, obs_aligned, contributing = equal_weight_mean_and_obs(
             sources, obs, PRECIP_VARIABLE, lead_hours
@@ -334,7 +335,7 @@ def main() -> int:
         for _, test_mask, split_label in iter_evaluation_folds(
             sample_times, test_fraction=args.test_fraction
         ):
-            write_per_day_scores(
+            per_day_writer.add(
                 "tier0",
                 lead_hours,
                 per_day_scores(
@@ -342,7 +343,6 @@ def main() -> int:
                     obs_aligned.isel(sample=test_mask),
                     fold=split_label,
                 ),
-                out_dir=args.results_dir,
             )
 
         lead_results = score_lead(
@@ -390,7 +390,10 @@ def main() -> int:
                 flat[f"ets_{t}mm"] = row["contingency"][t]["ets"]
             writer.writerow(flat)
 
+    per_day_paths = per_day_writer.flush()
     print(f"\nWrote {out_path}")
+    for path in per_day_paths:
+        print(f"Wrote {path}")
     return 0
 
 

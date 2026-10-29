@@ -67,10 +67,10 @@ from weavr import verify as V  # noqa: E402
 from weavr.climatology import climatological_ensemble  # noqa: E402
 from weavr.score_io import (  # noqa: E402
     FORCE_HELP,
+    PerDayScoreWriter,
     guard_result_overwrites,
     per_day_scores,
     resolve_result_paths,
-    write_per_day_scores,
 )
 from weavr.splits import iter_evaluation_folds  # noqa: E402
 from weavr.stores import (  # noqa: E402
@@ -121,7 +121,7 @@ def write_climatology_per_day(
     test_mask,
     lead_hours: int,
     thresholds: tuple[float, ...],
-    results_dir: str,
+    per_day_writer: PerDayScoreWriter | None = None,
     fold: str = "test",
 ) -> None:
     """Score the climatological reference on the same test days, as a method."""
@@ -147,12 +147,12 @@ def write_climatology_per_day(
             )
         )
 
-    write_per_day_scores(
-        "climatology",
-        lead_hours,
-        pd.concat(frames, ignore_index=True),
-        out_dir=results_dir,
-    )
+    if per_day_writer is not None:
+        per_day_writer.add(
+            "climatology",
+            lead_hours,
+            pd.concat(frames, ignore_index=True),
+        )
 
 
 def score_lead_all_sources(
@@ -163,7 +163,7 @@ def score_lead_all_sources(
     test_fraction: float,
     thresholds: tuple[float, ...],
     neighborhood_size: int,
-    results_dir: str | None = None,
+    per_day_writer: PerDayScoreWriter | None = None,
 ) -> list[dict]:
     """One row per raw source at one lead, plus a `best_single_member_on_train`
     row repeating the winning source's test scores under a stable label.
@@ -183,18 +183,17 @@ def score_lead_all_sources(
         winner = best_single_member_on_train(train_rmse)
         fold_winners[split_label] = winner
 
-        if results_dir is not None:
+        if per_day_writer is not None:
             test_obs = obs_aligned.isel(sample=test_mask)
             for name, da in forecasts.items():
-                write_per_day_scores(
+                per_day_writer.add(
                     name,
                     lead_hours,
                     per_day_scores(
                         da.isel(sample=test_mask), test_obs, fold=split_label, thresholds=thresholds
                     ),
-                    out_dir=results_dir,
                 )
-            write_per_day_scores(
+            per_day_writer.add(
                 "best_single_member_on_train",
                 lead_hours,
                 per_day_scores(
@@ -203,7 +202,6 @@ def score_lead_all_sources(
                     fold=split_label,
                     thresholds=thresholds,
                 ),
-                out_dir=results_dir,
             )
             write_climatology_per_day(
                 obs_aligned,
@@ -211,7 +209,7 @@ def score_lead_all_sources(
                 test_mask,
                 lead_hours,
                 thresholds,
-                results_dir,
+                per_day_writer=per_day_writer,
                 fold=split_label,
             )
 
@@ -354,6 +352,7 @@ def main() -> int:
     )
 
     rows = []
+    per_day_writer = PerDayScoreWriter(args.results_dir)
     for lead_hours in LEAD_HOURS:
         lead_rows = score_lead_all_sources(
             sources,
@@ -363,7 +362,7 @@ def main() -> int:
             args.test_fraction,
             V.IMD_RAIN_THRESHOLDS_MM,
             args.neighborhood_size,
-            results_dir=args.results_dir,
+            per_day_writer=per_day_writer,
         )
         rows.extend(lead_rows)
         for row in lead_rows:
@@ -407,6 +406,8 @@ def main() -> int:
             writer.writerow(flat)
 
     print(f"\nWrote {out_path}")
+    per_day_writer.flush()
+
     return 0
 
 
