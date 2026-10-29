@@ -457,7 +457,7 @@ def _write_valid_results(root: Path, season_days: int) -> None:
     for lead in (24, 48, 72, 96, 120):
         rows = []
         for year in (2018, 2020):
-            n = season_days - (lead // 24 - 1)
+            n = season_days - lead // 24
             rows.append(
                 pd.DataFrame(
                     {
@@ -725,11 +725,13 @@ def test_result_gate_rejects_a_missing_ifs_ens_per_day_family(tmp_path):
 
 
 def test_expected_row_count_formula_matches_two_season_daily_cadence():
-    """`122 - (lead_days - 1)` per season, verified against real outputs.
+    """`122 - lead_days` per season: IMD labels a day by the date its window ends.
 
-    The 244/242/240/238/236 sequence was read off the 40 known-good per-day
-    files the fast tiers produced against the real 122-day stores, so pinning
-    it here means a change to the cadence assumption has to be deliberate.
+    A forecast from init day `t` at lead `L` days is scored against IMD day
+    `t + L`, and the observations end on the season's last init day, so the
+    last `L` init days have nothing to score against (issue #106). Before the
+    fix the labels sat one day earlier and the sequence was 244/242/240/238/236;
+    pinning the new one here means a change to the cadence has to be deliberate.
     """
     sys.path.insert(0, str(REPO / "scripts"))
     import gate_step07_results as gate
@@ -738,11 +740,11 @@ def test_expected_row_count_formula_matches_two_season_daily_cadence():
     try:
         gate.SEASON_DAYS = 122
         assert [gate.expected_rows(lead) for lead in (24, 48, 72, 96, 120)] == [
-            244,
             242,
             240,
             238,
             236,
+            234,
         ]
     finally:
         gate.SEASON_DAYS = original

@@ -96,12 +96,14 @@ notes: list[str] = []
 def expected_rows(lead_hours: int) -> int:
     """Per-day rows across both folds at this lead.
 
-    A longer lead pushes the last init times' valid times past the end of the
-    observed window, so each extra lead day costs one day per season. Verified
-    against the tier0/tier1/single-source/phase2 runs: 244/242/240/238/236.
+    IMD labels a day by the date its window ends on, so a forecast from init
+    day `t` at lead `L` days is scored against IMD day `t + L`. The season's
+    observations end on its last init day, so the last `L` init days have no
+    observation to score against: each lead day costs one day per season.
+    Gives 242/240/238/236/234 on the two-season daily base.
     """
     lead_days = lead_hours // 24
-    return 2 * (SEASON_DAYS - (lead_days - 1))
+    return 2 * (SEASON_DAYS - lead_days)
 
 
 def check_domain_csv(name: str) -> pd.DataFrame | None:
