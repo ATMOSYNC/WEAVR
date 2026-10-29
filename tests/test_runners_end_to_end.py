@@ -57,6 +57,7 @@ RUNNER_STORE_KINDS: dict[str, tuple[str, ...]] = {
     "run_phase2_ensemble_baseline.py": ("baseline", "lagged"),
     "run_tier2_hierarchical_baseline.py": ("baseline", "lagged", "ifs_ens", "climatology"),
     "run_tier3_regime_conditioned_baseline.py": ("baseline", "lagged", "ifs_ens", "climatology"),
+    "run_tier2b_combined.py": ("baseline", "lagged", "ifs_ens", "climatology"),
 }
 
 
@@ -185,7 +186,20 @@ AGGREGATE_RUNNERS = [
     ("run_phase2_ensemble_baseline.py", "phase2_ensemble_baseline.csv", True),
     ("run_tier3_regime_conditioned_baseline.py", "tier3_regime_conditioned_baseline.csv", True),
     ("run_independence_diagnostic.py", "independence_diagnostic.csv", False),
+    ("run_tier2b_combined.py", "tier2b_combined.csv", True),
 ]
+
+#: Step 13's arms. The two parents plus the four combinations; a run that
+#: silently dropped one would still satisfy every check above, because a
+#: shorter arm list is not an error anywhere else in the suite.
+TIER2B_ARMS = (
+    "emos_csg",
+    "bma",
+    "per_bin",
+    "quantile_avg",
+    "quantile_avg_fixed",
+    "linear_pool",
+)
 
 
 @pytest.mark.parametrize("script,filename,per_day", AGGREGATE_RUNNERS)
@@ -752,3 +766,122 @@ def test_expected_row_count_formula_matches_two_season_daily_cadence():
 
 def test_seasons_constant_is_two():
     assert SEASONS == (2018, 2020)
+
+
+def test_tier2b_scores_every_arm_and_writes_all_three_csvs(stores, tmp_path):
+    """Step 13's four methods are the deliverable, so all six arms must appear.
+
+    The suite's generic checks only assert that *some* rows were written. A
+    fold loop that dropped the linear pool, or emitted only the parents, would
+    pass both of those and still leave H10 unanswerable, because H10 asks
+    whether a combination beats both parents.
+    """
+    out = tmp_path / "t2b_arms"
+    run_script(
+        "run_tier2b_combined.py", stores, out,
+        extra=["--train-stride", "1", "--n-resamples", "50"],
+    )
+    frame = pd.read_csv(out / "tier2b_combined.csv")
+    assert set(frame["arm"]) == set(TIER2B_ARMS), (
+        f"tier2b_combined.csv arms={sorted(set(frame['arm']))}; "
+        f"expected all of {sorted(TIER2B_ARMS)}"
+    )
+    assert (out / "tier2b_combined_train.csv").exists()
+    assert (out / "tier2b_combined_paired.csv").exists()
+
+    per_day = sorted((out / "per_day").glob("tier2b_*.csv"))
+    assert len(per_day) == len(TIER2B_ARMS) * 5, (
+        f"wrote {len(per_day)} per-day files; expected "
+        f"{len(TIER2B_ARMS)} arms x 5 leads"
+    )
+    for f in per_day:
+        day = pd.read_csv(f)
+        # `.astype(str)` for the same reason as the generic test above: a
+        # column of only these two values is read back as int64.
+        folds = set(day["fold"].astype(str))
+        assert folds == {"2018", "2020"}, f"{f.name} folds={sorted(folds)}"
+        assert np.isfinite(day["crps_mm"].to_numpy()).any(), f"{f.name} has no finite CRPS"
+
+
+def test_tier2b_h10_is_decided_not_skipped(stores, tmp_path):
+    """H10 must reach a verdict, and the verdict must follow the pre-registered rule."""
+    out = tmp_path / "t2b_h10"
+    proc = run_script(
+        "run_tier2b_combined.py", stores, out,
+        extra=["--train-stride", "1", "--n-resamples", "50"],
+    )
+    assert "H10 PASS" in proc.stdout or "H10 FAIL" in proc.stdout, (
+        "tier2b printed no H10 verdict. The plan's third deliverable is the "
+        "verdict, so a run that scores arms without deciding one is unfinished."
+    )
+
+    paired = pd.read_csv(out / "tier2b_combined_paired.csv")
+    assert {
+        "arm", "vs_parent", "crps_difference_mm", "ci_low", "ci_high", "beats_parent"
+    } <= set(paired.columns)
+    for lead, group in paired.groupby("lead_hours"):
+        assert set(group["vs_parent"]) == {"emos_csg", "bma"}, (
+            f"lead {lead} compared against {sorted(set(group['vs_parent']))}; "
+            "H10 requires beating each parent separately."
+        )
+
+
+def test_tier2b_default_weight_is_the_fixed_one(stores, tmp_path):
+    """The fitted weight is opt-in, so a default run is the pre-registered 0.5.
+
+    The fit lost a lead to 0.5 on the measured evidence (3/5 vs 4/5), so making
+    it the default would put the weaker method in every future run.
+    """
+    out = tmp_path / "t2b_default_weight"
+    run_script(
+        "run_tier2b_combined.py", stores, out,
+        extra=["--train-stride", "1", "--n-resamples", "50"],
+    )
+    train = pd.read_csv(out / "tier2b_combined_train.csv")
+    assert np.allclose(train["vincentization_weight"], 0.5), (
+        f"default weights were {sorted(set(train['vincentization_weight']))}; "
+        "expected the pre-registered fixed 0.5 unless --fit-weight is passed"
+    )
+    # The fit is still recorded, so "we tried it" stays reproducible.
+    assert "vincentization_train_crps" in train.columns
+    assert "vincentization_weight_fitted" in train.columns
+
+
+def test_tier2b_line_pool_is_comparable_to_quantile_averaging(stores, tmp_path):
+    """The linear pool must land in the same CRPS neighbourhood as Vincentization.
+
+    These two differ only in the space they average in, and the plan keeps the
+    linear pool as a comparison arm. If it came out orders of magnitude worse,
+    the cause would be the bracketed interpolation in `linear_pool_quantiles`
+    rather than the pooling rule, and the arm would be quietly misleading.
+    """
+    out = tmp_path / "t2b_pool"
+    run_script(
+        "run_tier2b_combined.py", stores, out,
+        extra=["--train-stride", "1", "--n-resamples", "50"],
+    )
+    frame = pd.read_csv(out / "tier2b_combined.csv")
+    pooled = frame.groupby("arm")["crps_mm"].mean()
+    for arm in ("linear_pool", "quantile_avg", "quantile_avg_fixed", "emos_csg", "bma"):
+        assert np.isfinite(pooled[arm]), f"{arm} CRPS is not finite"
+    assert pooled["linear_pool"] < 10 * max(pooled["emos_csg"], 1e-9), (
+        f"linear_pool CRPS {pooled['linear_pool']:.4f} is far outside the "
+        f"parent range (emos_csg {pooled['emos_csg']:.4f}, bma {pooled['bma']:.4f}); "
+        "that is an inversion failure, not a pooling result."
+    )
+
+
+def test_tier2b_missing_store_fails_loudly(stores, tmp_path):
+    """A missing IFS store must abort before any CSV claims to be scored."""
+    partial = dict(stores)
+    partial.pop("ifs_ens_2020")
+    proc = run_script(
+        "run_tier2b_combined.py", partial, tmp_path / "t2b_missing",
+        extra=["--train-stride", "1"],
+        expect_ok=False,
+    )
+    assert proc.returncode != 0
+    assert not (tmp_path / "t2b_missing" / "tier2b_combined.csv").exists(), (
+        "tier2b wrote its domain CSV despite a missing store; the partial run "
+        "must not be readable as a finished one."
+    )

@@ -532,7 +532,7 @@ def main() -> int:
         if ifs_ensemble is not None:
             # The IFS series comes from a different store and is not filtered by
             # `has_obs`, so at some leads it is longer than the sample set the
-            # forecasts were trimmed to (244 vs 242 at lead 48). Reindex onto the
+            # forecasts were trimmed to (242 vs 240 at lead 48). Reindex onto the
             # forecasts' own `sample` axis so the benchmark is scored on exactly
             # the days the other arms were scored on, rather than raising a
             # length mismatch several minutes into the run.
