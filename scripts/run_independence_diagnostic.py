@@ -14,7 +14,7 @@ effective number of models, and the participation ratio, for
 to how the blend is built (it is the reason Tier 1's fitted weights look the
 way they do), so measuring it on test days would leak the test set into the
 design, exactly what `src/weavr/splits.py` exists to prevent. The split
-comes from `run_tier0_baseline.train_test_masks`, so it is literally the
+comes from `weavr.splits.iter_evaluation_folds`, so it is literally the
 tier scripts' split, not a re-derivation of it.
 
 Two things this diagnostic is expected to explain:

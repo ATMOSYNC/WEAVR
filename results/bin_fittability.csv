@@ -1,0 +1,51 @@
+granularity,combiner,lead_hours,bin,fits,fits_total,fraction
+"per bin (EMOS-CSG, pooled over regions)",emos_,24,dry,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,24,light,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,24,heavy,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,24,very_heavy,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,24,extremely_heavy,0,4,0.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,48,dry,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,48,light,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,48,heavy,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,48,very_heavy,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,48,extremely_heavy,0,4,0.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,72,dry,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,72,light,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,72,heavy,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,72,very_heavy,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,72,extremely_heavy,0,4,0.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,96,dry,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,96,light,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,96,heavy,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,96,very_heavy,2,4,0.5
+"per bin (EMOS-CSG, pooled over regions)",emos_,96,extremely_heavy,0,4,0.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,120,dry,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,120,light,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,120,heavy,4,4,1.0
+"per bin (EMOS-CSG, pooled over regions)",emos_,120,very_heavy,2,4,0.5
+"per bin (EMOS-CSG, pooled over regions)",emos_,120,extremely_heavy,0,4,0.0
+"per (bin, region) (BMA)",bma,24,dry,12,12,1.0
+"per (bin, region) (BMA)",bma,24,light,12,12,1.0
+"per (bin, region) (BMA)",bma,24,heavy,12,12,1.0
+"per (bin, region) (BMA)",bma,24,very_heavy,3,12,0.25
+"per (bin, region) (BMA)",bma,24,extremely_heavy,0,12,0.0
+"per (bin, region) (BMA)",bma,48,dry,12,12,1.0
+"per (bin, region) (BMA)",bma,48,light,12,12,1.0
+"per (bin, region) (BMA)",bma,48,heavy,12,12,1.0
+"per (bin, region) (BMA)",bma,48,very_heavy,3,12,0.25
+"per (bin, region) (BMA)",bma,48,extremely_heavy,0,12,0.0
+"per (bin, region) (BMA)",bma,72,dry,12,12,1.0
+"per (bin, region) (BMA)",bma,72,light,12,12,1.0
+"per (bin, region) (BMA)",bma,72,heavy,12,12,1.0
+"per (bin, region) (BMA)",bma,72,very_heavy,1,12,0.08333333333333333
+"per (bin, region) (BMA)",bma,72,extremely_heavy,0,12,0.0
+"per (bin, region) (BMA)",bma,96,dry,12,12,1.0
+"per (bin, region) (BMA)",bma,96,light,12,12,1.0
+"per (bin, region) (BMA)",bma,96,heavy,11,12,0.9166666666666666
+"per (bin, region) (BMA)",bma,96,very_heavy,1,12,0.08333333333333333
+"per (bin, region) (BMA)",bma,96,extremely_heavy,0,12,0.0
+"per (bin, region) (BMA)",bma,120,dry,12,12,1.0
+"per (bin, region) (BMA)",bma,120,light,12,12,1.0
+"per (bin, region) (BMA)",bma,120,heavy,11,12,0.9166666666666666
+"per (bin, region) (BMA)",bma,120,very_heavy,1,12,0.08333333333333333
+"per (bin, region) (BMA)",bma,120,extremely_heavy,0,12,0.0
