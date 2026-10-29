@@ -36,7 +36,7 @@ Implemented in `src/weavr/quantile_mapping.py`:
 
 ## 3. HEPPI Methodological Comparison
 
-In `HEPPI` (NCMRWF Universal Quantile Mapping, UQM), quantile mapping was shown to effectively reconstruct the heavy precipitation tail, while parametric EMOS excelled at sharpness. In WEAVR, QM is employed not to replace EMOS, but as a pre-processing transfer function to feed calibrated members into the Tier 1 regional blender and Tier 2 EMOS-CSG pipelines.
+In `HEPPI` (NCMRWF Universal Quantile Mapping, UQM), quantile mapping was shown to effectively reconstruct the heavy precipitation tail, while parametric EMOS excelled at sharpness. In WEAVR, QM is employed not to replace EMOS, but as a pre-processing transfer function to feed calibrated members into the Tier 1 regional blender and Tier 2 EMOS-CSG pipelines. §4.2 measures the Tier 2 path and finds it hurts.
 
 ---
 
@@ -52,7 +52,7 @@ LOYO over both daily seasons (`data/baseline_{2018,2020}_jjas_daily.zarr`), Tier
 | variant | tw-CRPS@64.5 Δ | SEDI@115.6 Δ | Brier@7.5 degraded | RMSE Δ | **H7** |
 |---|---|---|---|---|---|
 | `same_period` | +0.474 … +0.554 (all 5 leads **worse**, CI excludes 0) | −0.112 … −0.256 (**improved**, all 5 leads) | no | +4.09 … +4.71 mm | **PASS** (SEDI branch) |
-| `climatology` | +0.698 … +0.802 (all 5 leads **worse**, CI excludes 0) | −0.136 … −0.271 (**improved**, all 5 leads) | no | +5.83 … +6.65 mm | **PASS** (SEDI branch) |
+| `climatology` | +0.699 … +0.802 (all 5 leads **worse**, CI excludes 0) | −0.135 … −0.271 (**improved**, all 5 leads) | no | +5.83 … +6.65 mm | **PASS** (SEDI branch) |
 
 **H7 (QM part) passes for both variants, but only through the SEDI branch — and it is not free.**
 
@@ -61,9 +61,35 @@ LOYO over both daily seasons (`data/baseline_{2018,2020}_jjas_daily.zarr`), Tier
 - RMSE increases significantly at every lead, by roughly **+4.1 to +4.7 mm** (`same_period`) and **+5.8 to +6.7 mm** (`climatology`). The `climatology` variant pays roughly 1.5 mm more than `same_period`.
 - Brier@7.5 mm does **not** degrade for either variant, so the pre-registered non-inferiority guard is satisfied and the pass is not the artifact of a light-rain forecast being wrecked.
 
+**Out-of-sample climatology (correction).** The `climatology` reference is described above as excluding the test season, but until this revision the runner passed the full 2006–2020 climatology, which contains both LOYO test seasons — so each fold's quantile map had seen the observations it was scored against. It now drops every held-out year (`weavr.quantile_mapping.climatology_excluding_years`). Re-measured, the effect is in the third decimal (tw-CRPS +0.698 → +0.699 and SEDI −0.136 → −0.135 at the edge of their ranges; RMSE unchanged at the precision quoted) and **both verdicts stand**. `same_period` never used the climatology and is byte-identical.
+
 **Correction to an earlier run.** A previous run reported `climatology` as *failing* H7 (Brier@7.5 degrading at 5/5 leads). That was a bug: the runner passed `climatology["rain"].mean(dim="time")` — a single value per grid cell — as the reference, so the fitted quantile map was degenerate. With the full climatological distribution the Brier guard passes. The numbers in this table supersede the earlier ones.
 
-### 4.2 HEPPI directional check — PENDING
+### 4.2 QM on the members before EMOS-CSG — makes CRPS worse
+
+§3 describes QM as a pre-processing step feeding calibrated members into Tier 2 EMOS-CSG. `scripts/run_tail_repair_qm_emos.py` tests exactly that: EMOS-CSG fitted on the raw lagged GraphCast members (`raw_members`) against EMOS-CSG refitted on members quantile-mapped per region (`qm_members_same_period`, `qm_members_climatology`), same LOYO folds, same held-out days. The maps are fitted on training-fold forecasts only, and the climatology reference drops both held-out years. Results in `results/tail_repair_qm_emos.csv` and `results/tail_repair_qm_emos_paired.csv`.
+
+`raw_members` reproduces Tier 2's EMOS-GraphCast to the fourth decimal (pooled CRPS 4.5457 mm at lead 24 in both), which is the check that this runner scores the same thing.
+
+Paired CRPS difference, QM arm minus `raw_members` (positive = QM worse), 95% moving-block bootstrap CI:
+
+| lead | `same_period` | 95% CI | `climatology` | 95% CI |
+|---|---|---|---|---|
+| 24 h | +0.042 | [+0.027, +0.057] | +0.058 | [+0.046, +0.072] |
+| 48 h | +0.043 | [+0.029, +0.058] | +0.059 | [+0.046, +0.073] |
+| 72 h | +0.043 | [+0.029, +0.058] | +0.058 | [+0.045, +0.072] |
+| 96 h | +0.043 | [+0.030, +0.057] | +0.056 | [+0.044, +0.070] |
+| 120 h | +0.046 | [+0.032, +0.061] | +0.058 | [+0.046, +0.073] |
+
+**Both arms are significantly worse at every lead.** Alongside, per fold:
+
+- Brier@7.5 mm worsens by +0.0016 … +0.0026 in every lead and fold.
+- SEDI at 64.5 and 115.6 mm moves by less than ±0.01 either way — no tail gain to set against the CRPS loss.
+- RMSE of the predictive mean rises by +3.6 … +4.5 mm (`same_period`) and +3.7 … +6.7 mm (`climatology`), the same double-penalty pattern §4.1 reports for the deterministic sources.
+
+**Reading.** The tail improvement QM delivers on deterministic sources (§4.1, SEDI@115.6) does not survive EMOS-CSG. A plausible but untested explanation is that EMOS-CSG's own regression already corrects the members' marginal bias, so a per-region map applied first adds noise to its predictors without adding information. On this evidence QM should not be inserted ahead of EMOS-CSG. This is a measured negative result for the Tier 2 path only; it does not touch the §4.1 H7 verdict, which is scoped to the Tier 1 blend.
+
+### 4.3 HEPPI directional check — PENDING
 
 Not performed. The check requires NEPS-G raw 2018 / 2019 archives from step 08 (#70); those data are not available. No number is reported in its place.
 
