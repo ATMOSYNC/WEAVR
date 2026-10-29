@@ -16,8 +16,8 @@ first.
 Both scripts reuse the tier scripts' code rather than re-implementing it:
 alignment and the metres→millimetres conversion come from
 `run_tier1_regional_baseline.load_aligned_forecasts_and_obs`, scoring from
-`run_tier0_baseline.score_lead`, and the train/test split from
-`run_tier0_baseline.train_test_masks`. Every number below is therefore on
+`run_tier0_baseline.score_lead`, and the train/test folds from
+`weavr.splits.iter_evaluation_folds`. Every number below is therefore on
 literally the same held-out days as the Tier 0/1/2 numbers it is compared
 against, not on a split that merely should line up.
 

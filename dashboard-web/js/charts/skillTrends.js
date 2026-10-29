@@ -154,11 +154,12 @@ function renderSkillTrendsChart(container, rows) {
 }
 
 const SKILL_TREND_CAPTION =
-  "The real, checked outcome across tiers is mixed, not monotonically " +
-  "improving: tier1 beats tier0 domain-wide at every lead but not in " +
-  "every region x lead cell; tier2's EMOS-CSG and BMA trade off which " +
-  "wins; tier3's regime-conditioned reweighting does not beat tier2 at " +
-  "any lead (0 of 5). This chart plots every real method's own " +
+  "Two-season (2018 + 2020) daily leave-one-year-out results, pooled. The " +
+  "outcome across tiers is mixed, not monotonically improving: tier1 beats " +
+  "tier0 domain-wide at every lead (RMSE 0.29-0.85 mm lower); tier2's " +
+  "EMOS-CSG beats BMA at every lead on CRPS, and EMOS-CSG also beats " +
+  "EMOS-IFS-ENS; tier3's regime-conditioned reweighting loses to tier2 at " +
+  "every lead (wins 0 of 5). This chart plots every real method's own " +
   "numbers -- it is not smoothed into a single improving trend line.";
 
 const SkillTrendsView = {

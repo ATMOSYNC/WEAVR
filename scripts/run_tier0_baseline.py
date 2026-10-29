@@ -29,9 +29,10 @@ Scope, decided by what the data actually supports, not assumed:
 - CRPS/Brier are not computed: no ensemble-shaped source exists in the store
   (deferred to Phase 2's lagged AI ensembles, per
   docs/phase-1-data-requirements.md).
-- leave_one_year_out is not usable (the store is one season); every lead
-  time uses seasonal_block_split instead, which this script states
-  explicitly rather than silently falling back.
+- Every fold is scored: `iter_evaluation_folds` yields both leave-one-year-out
+  folds on a two-season store (pooled rows are recomputed from the pooled
+  per-day scores), and falls back to a labelled `seasonal_block_split` only
+  for a single-season store, which the `split` column states explicitly.
 
 A real unit bug was caught running this, not assumed away: WeatherBench 2's
 `total_precipitation_24hr` is in **meters** (the ECMWF/GRIB convention),
@@ -57,7 +58,6 @@ import csv
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import xarray as xr
 
@@ -73,12 +73,7 @@ from weavr.score_io import (  # noqa: E402
     per_day_scores,
     resolve_result_paths,
 )
-from weavr.splits import (  # noqa: E402
-    InsufficientTimeBlocksError,
-    iter_evaluation_folds,
-    leave_one_year_out,
-    seasonal_block_split,
-)
+from weavr.splits import iter_evaluation_folds  # noqa: E402
 from weavr.stores import open_multi_season, resolve_store_paths  # noqa: E402
 
 PRECIP_VARIABLE = "total_precipitation_24hr"
@@ -133,33 +128,6 @@ def equal_weight_mean_and_obs(
         obs_aligned.isel(sample=has_obs.values),
         contributing,
     )
-
-
-def train_test_masks(
-    sample_times: pd.DatetimeIndex, test_fraction: float
-) -> tuple[str, np.ndarray, np.ndarray]:
-    """The one split rule every Tier-0-comparable script uses.
-
-    Extracted out of `score_lead` so scripts that need the *train* side too
-    (e.g. scripts/run_single_source_baseline.py picking its best single
-    member on train, scripts/run_independence_diagnostic.py computing error
-    correlations on train only) get literally the same masks rather than
-    re-deriving the rule and hoping it still matches.
-
-    Returns `(split_kind, train_mask, test_mask)`.
-    """
-    split_kind = "leave_one_year_out"
-    try:
-        # Only meaningful with 2+ distinct years -- checked, not assumed:
-        # this raises against today's single-season store, so the except
-        # branch is what actually runs. Kept so this script automatically
-        # starts using the more rigorous split the day a second season is
-        # added to the store, with no code change needed here.
-        train_mask, test_mask = next(iter(leave_one_year_out(sample_times)))
-    except InsufficientTimeBlocksError:
-        split_kind = "seasonal_block_split (single-season store; leave_one_year_out not usable)"
-        train_mask, test_mask = seasonal_block_split(sample_times, test_fraction=test_fraction)
-    return split_kind, train_mask, test_mask
 
 
 def score_lead(
