@@ -59,7 +59,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
 from pathlib import Path
 
@@ -92,10 +91,11 @@ from weavr.regimes import classify_monsoon_active_break  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
 from weavr.score_io import (  # noqa: E402
     FORCE_HELP,
+    PerDayScoreWriter,
     guard_result_overwrites,
     per_day_scores,
     resolve_result_paths,
-    write_per_day_scores,
+    write_rows_csv,
 )
 from weavr.splits import (  # noqa: E402
     InsufficientTimeBlocksError,
@@ -279,6 +279,7 @@ def main() -> int:
     domain_rows = []
     bin_rows = []
 
+    per_day_writer = PerDayScoreWriter(args.results_dir)
     for lead_hours in LEAD_HOURS:
         graphcast_ensemble = load_graphcast_ensemble(lagged_stores, lead_hours)
         ifs_ensemble = load_ifs_ensemble(ifs_ensemble_stores, lead_hours)
@@ -360,11 +361,10 @@ def main() -> int:
             fold_regime_bin_stats.append(regime_bin_stats)
 
             # Step 04 (additive): per-day scores for the regime-conditioned model
-            write_per_day_scores(
+            per_day_writer.add(
                 "tier3_regime_conditioned",
                 lead_hours,
                 per_day_scores(test_regime_blend, test_obs, fold=split_label),
-                out_dir=args.results_dir,
             )
 
             domain_row = {
@@ -502,14 +502,13 @@ def main() -> int:
             domain_rows.append(pooled_domain_row)
 
     def _write_csv(path_str: str, rows: list[dict]) -> None:
-        out_path = Path(path_str)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        fieldnames = list(rows[0].keys()) if rows else []
-        with out_path.open("w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-        print(f"Wrote {out_path}")
+        if not rows:
+            return
+        print(f"Wrote {write_rows_csv(path_str, rows)}")
+
+    # Per-day first: it is the expensive artifact and the CSVs are cheap
+    # formatting. Tier 2 lost a two-hour run to this ordering once already.
+    per_day_writer.flush()
 
     _write_csv(args.out_csv, domain_rows)
     _write_csv(args.bin_out_csv, bin_rows)

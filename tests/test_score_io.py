@@ -7,11 +7,13 @@ import xarray as xr
 
 from weavr import verify as V
 from weavr.score_io import (
+    PerDayScoreWriter,
     guard_result_overwrites,
     per_day_scores,
     read_per_day_scores,
     resolve_result_paths,
     write_per_day_scores,
+    write_rows_csv,
 )
 
 
@@ -285,3 +287,123 @@ class TestGuardResultOverwrites:
         with pytest.raises(SystemExit):
             guard_result_overwrites([existing])
         assert existing.read_text() == "reviewed numbers"
+
+
+class TestPerDayScoreWriter:
+    """Regression cover for the fold-overwrite that step 07 hit.
+
+    `write_per_day_scores` names files by `(method, lead)`, so a LOYO runner
+    that called it once per fold kept only the last fold. The aggregate CSVs
+    stayed correct because folds were scored in memory, so nothing failed --
+    the 2018 fold's days simply never reached the scorecard, and every paired
+    CI built on them came back non-computable.
+    """
+
+    def _fold(self, dates, label):
+        return pd.DataFrame(
+            {
+                "date": dates,
+                "fold": label,
+                "n_cells": 17_415,
+                "mse_mm2": 1.0,
+                "mae_mm": 0.9,
+            }
+        )
+
+    def test_two_folds_survive_in_one_file(self, tmp_path):
+        writer = PerDayScoreWriter(tmp_path)
+        writer.add("tier0", 24, self._fold(pd.date_range("2018-07-01", periods=3), "2018"))
+        writer.add("tier0", 24, self._fold(pd.date_range("2020-07-01", periods=3), "2020"))
+        written = writer.flush()
+
+        assert [p.name for p in written] == ["tier0__lead24.csv"]
+        frame = pd.read_csv(written[0])
+        assert len(frame) == 6
+        assert sorted(frame["fold"].astype(str).unique()) == ["2018", "2020"]
+
+    def test_direct_writes_in_a_loop_would_have_lost_a_fold(self, tmp_path):
+        """Pins *why* the writer exists: the naive loop keeps one fold."""
+        folds = [
+            self._fold(pd.date_range("2018-07-01", periods=3), "2018"),
+            self._fold(pd.date_range("2020-07-01", periods=3), "2020"),
+        ]
+        for frame in folds:
+            write_per_day_scores("tier0", 24, frame, out_dir=tmp_path)
+
+        frame = pd.read_csv(tmp_path / "per_day" / "tier0__lead24.csv")
+        assert len(frame) == 3
+        assert set(frame["fold"].astype(str)) == {"2020"}
+
+    def test_add_after_flush_is_refused_rather_than_dropped(self, tmp_path):
+        writer = PerDayScoreWriter(tmp_path)
+        writer.add("tier0", 24, self._fold(pd.date_range("2018-07-01", periods=2), "2018"))
+        writer.flush()
+        with pytest.raises(RuntimeError):
+            writer.add("tier0", 24, self._fold(pd.date_range("2020-07-01", periods=2), "2020"))
+
+    def test_duplicate_dates_across_folds_are_rejected(self, tmp_path):
+        """Overlapping folds would double-count days in the paired CI."""
+        writer = PerDayScoreWriter(tmp_path)
+        dates = pd.date_range("2018-07-01", periods=3)
+        writer.add("tier0", 24, self._fold(dates, "2018"))
+        writer.add("tier0", 24, self._fold(dates, "2020"))
+        with pytest.raises(ValueError, match="duplicate dates"):
+            writer.flush()
+
+    def test_frame_without_a_fold_column_is_rejected(self, tmp_path):
+        writer = PerDayScoreWriter(tmp_path)
+        frame = self._fold(pd.date_range("2018-07-01", periods=2), "2018").drop(
+            columns=["fold"]
+        )
+        with pytest.raises(ValueError, match="fold"):
+            writer.add("tier0", 24, frame)
+
+    def test_flush_is_a_noop_on_an_empty_run(self, tmp_path):
+        assert PerDayScoreWriter(tmp_path).flush() == []
+
+
+class TestWriteRowsCsv:
+    """Regression: heterogeneous rows must not raise.
+
+    A two-season Tier 2 run lost two hours of BMA scoring to
+    `ValueError: dict contains fields not in fieldnames: 'rmse_mm'`. The
+    per-fold rows carried no `rmse_mm`; the pooled rows appended later did;
+    and the writer derived its fieldnames from `rows[0]` alone, so the
+    by-bin CSV raised *after* every expensive number had been computed.
+    """
+
+    def test_later_row_with_extra_key_is_written_not_raised(self, tmp_path):
+        rows = [
+            {"lead_hours": 24, "fold": "2018", "crps_mm": 4.2, "mse_mm2": 30.1},
+            {
+                "lead_hours": 24,
+                "fold": "pooled",
+                "crps_mm": 4.3,
+                "mse_mm2": 31.0,
+                "rmse_mm": 5.57,  # pooled rows carry this; per-fold rows do not
+            },
+        ]
+        out = write_rows_csv(tmp_path / "by_bin.csv", rows)
+        frame = pd.read_csv(out)
+
+        assert list(frame.columns) == ["lead_hours", "fold", "crps_mm", "mse_mm2", "rmse_mm"]
+        # The row lacking the key gets an empty field, not a crash and not a
+        # silent zero that would read as a real measurement.
+        assert np.isnan(frame.loc[0, "rmse_mm"])
+        assert frame.loc[1, "rmse_mm"] == pytest.approx(5.57)
+        assert len(frame) == 2
+
+    def test_fieldnames_follow_first_seen_order(self, tmp_path):
+        rows = [{"b": 1, "a": 2}, {"c": 3, "a": 4}]
+        out = write_rows_csv(tmp_path / "ordered.csv", rows)
+        header = out.read_text().splitlines()[0]
+        assert header == "b,a,c"
+
+    def test_empty_row_list_writes_headerless_file(self, tmp_path):
+        out = write_rows_csv(tmp_path / "empty.csv", [])
+        assert out.exists()
+        assert out.read_text() == ""
+
+    def test_creates_missing_parent_directory(self, tmp_path):
+        out = write_rows_csv(tmp_path / "nested" / "deep" / "x.csv", [{"a": 1}])
+        assert out.exists()

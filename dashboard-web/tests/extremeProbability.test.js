@@ -230,6 +230,9 @@ test("the legend labels the threshold actually fetched", () => {
   const tailNote = host.children[0].children[3];
   assert.match(tailNote.innerHTML, /pooled GPD tail/);
   assert.match(tailNote.innerHTML, /1 cell at this lead/);
+  // The tail is labelled experimental where the reader looks, not only in
+  // the caption.
+  assert.match(tailNote.innerHTML, /\(experimental\)/);
 
   // ...and says so plainly when a grid uses none, instead of implying cells exist.
   const emptyHost = makeElement("div");

@@ -16,8 +16,8 @@ first.
 Both scripts reuse the tier scripts' code rather than re-implementing it:
 alignment and the metres→millimetres conversion come from
 `run_tier1_regional_baseline.load_aligned_forecasts_and_obs`, scoring from
-`run_tier0_baseline.score_lead`, and the train/test split from
-`run_tier0_baseline.train_test_masks`. Every number below is therefore on
+`run_tier0_baseline.score_lead`, and the train/test folds from
+`weavr.splits.iter_evaluation_folds`. Every number below is therefore on
 literally the same held-out days as the Tier 0/1/2 numbers it is compared
 against, not on a split that merely should line up.
 
@@ -197,3 +197,29 @@ python scripts/run_independence_diagnostic.py
 
 Both read `data/baseline_2020_jjas.zarr` (not committed; see `.gitignore`)
 and write into `results/`.
+
+---
+
+## v2 update (2026-10-01)
+
+**This file's numbers above are v1 and are now superseded.** They were measured
+on the **weekly, single-season 2020** evidence base: `n_train=14`, `n_test=3-4`,
+`split=seasonal_block_split`, test dates 2020-09-07/14/21/28, and no confidence
+intervals were computable. They are kept above as a labelled record.
+
+Step 07 regenerated every result on the **two-season daily LOYO** base
+(2018 + 2020, 122 train days per fold, 236-244 test days per lead, paired block
+bootstrap CIs). Read them in
+[`docs/v2-evidence-base-results.md`](v2-evidence-base-results.md).
+
+Do not set the v1 and v2 columns side by side without stating the cadence
+difference: v1 scored four late-September days on a weekly split, v2 scores a
+whole season daily. Every RMSE in this file improved or worsened for sampling
+reasons before any method changed.
+
+Headline v2 findings: **H1 passes** (the blend beats the best single member on
+RMSE and on CRPS at 5 of 5 leads each, every interval excluding zero),
+**H2 fails** (the multi-source combiner is significantly worse than either
+single-source EMOS on CRPS at every lead), and **H3 fails** (Brier skill against
+climatology is about -2.6 at 64.5 mm, and SEDI is worse than the best member at
+every lead).
