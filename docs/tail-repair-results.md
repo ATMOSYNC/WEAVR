@@ -132,9 +132,37 @@ Fitted on both daily seasons, LOYO, at $u = 64.5\text{ mm}$:
 | 2018 (train on 2020) | 0.1191 | 0.1190 | 0.1192 | 0.1190 | 0.1179 |
 | 2020 (train on 2018) | 0.0989 | 0.0987 | 0.0987 | 0.0984 | 0.0979 |
 
-$\hat{\xi} \approx 0.10$–$0.12$, positive throughout and stable across lead times within a fold, which is the heavy-tailed Fréchet behaviour characteristic of tropical monsoon downpours. The modest fold-to-fold difference (≈0.02) reflects which season the pooled fit sees, not lead-time drift. **No confidence interval is reported for $\hat{\xi}$**: the MLE is not accompanied by a parametric or bootstrap interval in `src/weavr/tail.py`, and none is claimed here.
+$\hat{\xi} \approx 0.10$–$0.12$, positive throughout and stable across lead times within a fold: a heavy-tailed (Fréchet-type) excess distribution. The tail is fitted on IMD observations only, so lead time can only enter through which days fall in the fold; the fold-to-fold difference (≈0.02) is the larger effect.
 
-All 5 rain bins (`dry`, `light`, `heavy`, `very_heavy`, `extremely_heavy`) fitted in every fold and lead — i.e. no `extremely_heavy` point-mass fallback remained.
+### How uncertain $\hat{\xi}$ is
+
+`fit_pooled_gpd` returns an information-matrix standard error, now emitted by the runner as `tail_shape_xi_se`, `tail_shape_xi_ci_lo` and `tail_shape_xi_ci_hi`. Two corrections were needed before it could be quoted:
+
+1. **The standard error came from the wrong curvature.** It was taken from the $\xi$–$\xi$ entry of the Hessian alone, which ignores the correlation between $\xi$ and the six regional scales. It is now the $\xi$ diagonal of the **inverse** Hessian. On simulated pooled GPD data the old interval was 26% too narrow with 85% coverage; the corrected one gives SE 0.0175 against a theoretical 0.0174 and 94.5% coverage (`tests/test_tail.py`).
+2. **The information interval assumes independent exceedances, and they are not.** One monsoon day produces exceedances in dozens of neighbouring cells, and wet spells span consecutive days. `scripts/diagnose_evt_tail.py` refits on a moving-block bootstrap that resamples whole days in 7-day blocks (`results/tail_evt_diagnostics.csv`).
+
+At the runner's $u = 64.5$ mm:
+
+| fold | $\hat{\xi}$ | information 95% CI | **block-bootstrap 95% CI** | width ratio |
+|---|---|---|---|---|
+| 2018 (train on 2020) | 0.119 | [0.094, 0.145] | **[0.064, 0.149]** | ×1.67 |
+| 2020 (train on 2018) | 0.099 | [0.073, 0.125] | **[0.036, 0.155]** | ×2.31 |
+
+**The block-bootstrap interval is the one to quote.** The information interval is 1.7–2.3× too narrow because it treats correlated exceedances as independent. Even so, both block intervals exclude 0, so the heavy-tail sign is supported; the magnitude is uncertain by roughly a factor of two.
+
+### Threshold choice
+
+A GPD is appropriate only above a threshold where $\hat{\xi}$ has stabilised. Refitting across candidate thresholds on each training season:
+
+| $u$ (mm) | 35.5 | 50 | **64.5** | 80 | 100 | 115.6 |
+|---|---|---|---|---|---|---|
+| $\hat{\xi}$, fold 2018 | 0.176 | 0.146 | **0.119** | 0.085 | 0.052 | 0.058 |
+| $\hat{\xi}$, fold 2020 | 0.142 | 0.108 | **0.099** | 0.101 | 0.070 | 0.068 |
+| exceedances, fold 2018 | 27,619 | 14,457 | **8,200** | 4,803 | 2,584 | 1,688 |
+
+$\hat{\xi}$ drifts downward from 0.14–0.18 at 35.5 mm to 0.06–0.07 at 115.6 mm. On the 2020 fold it is flat from 50 to 80 mm and every higher-threshold estimate lies inside the 64.5 mm block-bootstrap interval; on the 2018 fold it is still falling at 64.5 mm, and the 100 and 115.6 mm estimates (0.052, 0.058) fall below that interval. So **$u = 64.5$ mm sits at the lower edge of the stable region, not inside it**. It is defensible as IMD's own "heavy" boundary and because it keeps ~8,000 exceedances per fold, but a higher $u$ would give a lighter tail: at 115.6 mm, $\hat{\xi}$ is about half the 64.5 mm value. The probabilities at 204.5 mm, which extrapolate furthest, are the most sensitive to this choice.
+
+In this runner's own binning, all 5 rain bins fit in every fold and lead (`fallback bins unfitted: []` in every log line), so no `extremely_heavy` point-mass fallback remains here. This counts something different from Tier 2's per-bin and per-(bin, region) fits, where `extremely_heavy` never fits (`docs/v2-evidence-base-results.md` §7); neither number is wrong, and they should not be quoted interchangeably.
 
 ---
 
@@ -151,26 +179,104 @@ On the extreme-probability map, cells that previously rendered as fallback grey 
 
 ## 4. Measured H7 verdict (Step 12, EVT arm)
 
-LOYO over both daily seasons, `csgd_only` (point-mass control) vs `csgd_gpd_tail` (spliced EVT). Reproduce with `scripts/run_tail_repair_evt.py`. Paired moving-block bootstrap CIs; 236–244 test days per lead.
+LOYO over both daily seasons, `csgd_only` (point-mass control) vs `csgd_gpd_tail` (spliced EVT). Reproduce with `scripts/run_tail_repair_evt.py` (command in §4c). Paired moving-block bootstrap CIs; 236–244 test days per lead. Results: `results/tail_repair_evt.csv`, `results/tail_repair_evt_paired.csv`.
 
-| threshold | false-zero cells (control → EVT) | Brier improved | SEDI improved |
+| threshold | false-zero cell-days, control → EVT | Brier improved | SEDI improved |
 |---|---|---|---|
-| 115.6 mm | 193 → **0** | 2/5 leads | **0/5 leads** |
-| 204.5 mm | 193 → **0** | 2/5 leads | **0/5 leads** |
+| 115.6 mm | 193 → **0** | 2/5 leads | **0/5 leads** (worse at 5/5) |
+| 204.5 mm | 193 → **0** | 2/5 leads | **0/5 leads** (worse at 5/5) |
 
-**The spliced tail does eliminate every false zero-probability cell, and that is the honest win. It does not improve SEDI.**
+The 193 is a total over all five leads and both folds. The control's false zeros are not spread evenly: the 2018 fold has none at any lead, and the 2020 fold has 1 at 24 h, **116 at 96 h** and 76 at 120 h. Every bin fits in every fold and lead here (`fallback bins unfitted: []` throughout), so these are cells where the fitted CSGD's exceedance probability is exactly 0, not unfitted bins.
 
-- Every cell that previously got a hard 0.0 now receives a real spliced probability, at both thresholds, across all leads and folds.
-- SEDI **worsens at 5/5 leads** with CIs excluding 0 (Δ ≈ +0.07 to +0.16). Removing hard zeros inflates false alarms faster than it gains hits, so the skill component drops even though coverage improves.
-- Brier at 115.6/204.5 mm improves significantly at only 2/5 leads (24 h and 48 h); the remaining leads are neutral, and none is significantly degraded.
-- **H7 is not met by the EVT arm on its own.** The improvement leg fails (0/5 on SEDI, and the tw-CRPS leg is not measured here because the EVT arm produces an exceedance probability rather than a full predictive distribution). The zero-elimination result stands on its own and is what unblocks the dashboard fallback mask.
+**The spliced tail eliminates every false zero-probability cell-day, and that is the honest win. It does not improve SEDI.**
 
-**Raw IFS-ENS member-counting benchmark: NOT RUN.** Daily IFS-ENS stores for 2018 and 2020 do not exist yet (#69). The runner accepts `--ifs-ensemble-stores` and reports the comparison as unavailable when it is absent. No comparison against IFS-ENS member counting is claimed.
+- Every cell-day that got a hard 0.0 now receives a real spliced probability, at both thresholds.
+- SEDI is **worse at 5/5 leads** at both thresholds, every CI excluding 0: by 0.070–0.089 at 115.6 mm and 0.106–0.163 at 204.5 mm. §4b shows why.
+- Brier improves significantly at 2 of 5 leads at each threshold (115.6 mm: 24 h and 48 h; 204.5 mm: 24 h and 120 h). The rest are neutral; none is significantly worse.
+- **H7 is not met by the EVT arm on its own.** The improvement leg fails (0/5 on SEDI). The tw-CRPS leg is not measured, because the EVT arm produces an exceedance probability rather than a full predictive distribution. The zero-elimination result stands on its own and is what unblocks the dashboard fallback mask.
 
 ---
 
+## 4a. Against raw IFS-ENS member counting
+
+`raw_ifs_ens_member_counting` is the empirical fraction of the 50 IFS-ENS members above the threshold: no calibration, the thing a forecaster gets for free. It needs the daily full-member IFS-ENS stores for both seasons, which step 07 built (#69). Averaged over the ten lead-fold cells:
+
+| arm | false-zero cell-days per lead-fold, @115.6 | @204.5 | BSS @115.6 | BSS @204.5 | SEDI @115.6 | SEDI @204.5 |
+|---|---|---|---|---|---|---|
+| `csgd_only` (point-mass control) | 0–116 | 0–116 | −0.036 | −0.018 | 0.279 | 0.293 |
+| `csgd_gpd_tail` (spliced EVT) | **0** | **0** | **−0.017** | **−0.006** | 0.200 | 0.155 |
+| `raw_ifs_ens_member_counting` | **1.98–2.09 million** | **2.03–2.12 million** | −0.302 | −0.263 | 0.316 | 0.245 |
+
+Each lead-fold cell scores 2.09–2.12 million grid cell-days (the full 129×135 grid, sea included, times 118–122 days), so **raw member counting assigns probability exactly 0.0 to almost every cell-day**. With 50 members an exceedance at 115.6 or 204.5 mm needs at least one member to clear the bar, which almost never happens at a daily accumulation that size. (An earlier version of this table gave 2,087,404 as if it were a total; it is one lead-fold cell, and the benchmark rows were also written four times over -- see the runner fix in this branch.) Its Brier skill is negative and far worse than either calibrated arm.
+
+So the tail is not merely better than member counting on Brier: it is the **only** arm that assigns a non-zero probability to essentially every extreme cell-day.
+
+**What the benchmark does not rescue:**
+
+- The tail is **still worse than climatology** on Brier at both thresholds (BSS −0.017 and −0.006). Being the least-bad probabilistic forecast is not the same as being a good one.
+- Its SEDI is the **worst** of the three arms at 204.5 mm (0.155, against 0.293 and 0.245) and second-worst at 115.6 mm.
+
+Net: the tail is the only arm that gives a non-degenerate probability at these thresholds, and it beats raw member counting on Brier. It still loses to climatology, costs SEDI, and over-forecasts (§4b).
+
+---
+
+## 4b. Reliability: the tail forecasts extremes about three times too often
+
+`results/tail_repair_evt_reliability.csv` bins every cell-day's forecast probability and records the observed frequency per bin. Summed over all cell-days, expected events (Σ forecast probability) against observed events:
+
+| arm | 115.6 mm | 204.5 mm |
+|---|---|---|
+| `csgd_only` | 1.91× | 1.14× |
+| `csgd_gpd_tail` | **2.91×** | **3.07×** |
+| `raw_ifs_ens_member_counting` | 2.14× | 3.32× |
+
+The ratio is stable across leads (tail: 2.97× → 2.88× at 115.6 mm from 24 h to 120 h). Within the bins the pattern holds too: at 115.6 mm, lead 24, the control's 0.1–0.2 probability bin verifies at 6.1%, and its 0.2–0.5 bin at 6.3%.
+
+That is the mechanism behind §4's SEDI loss. Lifting every hard zero to a spliced probability spreads mass onto cell-days that stay dry, so false alarms grow faster than hits. A tail that over-forecasts by ~3× is not calibrated, whatever its Brier score says relative to the control.
+
+Two causes are open, and the order to check them in is clear:
+
+1. **The forecast–observation day alignment (#106).** Every arm here is fitted and scored against the IMD day before the one each forecast covers. A calibration fitted to the wrong day sees heavy-rain forecasts that mostly verify dry, which should push it towards over-dispersion. This affects every arm, so it has to be ruled in or out first.
+2. **The threshold choice** (§2): a lower $u$ gives a heavier tail, and $u = 64.5$ mm sits at the low edge of the stable region.
+
+---
+
+## 4c. What was wrong with the benchmark before this run
+
+`--ifs-ensemble-stores` existed on the runner and was accepted, but the flag was
+never resolved into paths. `ifs_available` was decided on a non-`None`
+argument that nothing then read, the runner printed **"IFS-ENS member-counting
+benchmark: enabled"**, and no benchmark row was ever emitted. A reader had no
+way to tell the difference between "ran and produced nothing" and "enabled and
+ran".
+
+That is a worse failure than an absent feature, because the message claimed it.
+Fixed in this branch: the stores are resolved, the arm is computed, and the run
+now **raises** if the stores were supplied but the benchmark produced no rows,
+rather than reporting success.
+
+Four more runner defects were fixed before this run, each with a test in `tests/test_run_tail_repair_evt.py`:
+
+- **The benchmark rows were written four times** -- once per inner-loop iteration rather than once per fold -- so any total summed over the CSV was 4× too large. The committed CSV now has 60 rows, not 120.
+- **The lagged stores were resolved with the IFS-ENS default list**, so an explicit `--lagged-stores` could be silently replaced.
+- **Test-time ensemble spread used `ddof=0` against `ddof=1` in training**, a small train/test mismatch. Fixing it moved SEDI by at most 0.002 and Brier by under 1e-6.
+- **`benchmark_row` counted an exceedance with `>`** where both other arms use `>=`.
+
+Reproduce with:
+
+```
+python scripts/run_tail_repair_evt.py \
+  --baseline-stores data/baseline_2018_jjas_daily.zarr data/baseline_2020_jjas_daily.zarr \
+  --lagged-stores   data/lagged_ensemble_inputs_2018_jjas_daily.zarr data/lagged_ensemble_inputs_2020_jjas_daily.zarr \
+  --ifs-ensemble-stores data/ifs_ens_2018_jjas_daily.zarr data/ifs_ens_2020_jjas_daily.zarr \
+  --climatology data/imd_seeps_climatology_jjas.zarr \
+  --results-dir results --force
+python scripts/diagnose_evt_tail.py --results-dir results --force   # §2 threshold and xi-interval diagnostics, ~4 min
+```
+
 ## 5. Honest Limitations
 
+- **Day alignment (#106).** Every number in this part pairs each forecast with the IMD day before the one it covers, as every runner in the project does today. The tail's fit is to IMD observations only, so $\hat{\xi}$ and the regional scales are unaffected. The splice anchor $P_{\text{CSGD}}(Y > u)$, every Brier and SEDI, and the over-forecast in §4b are not, and should be re-measured once #106 is resolved.
 - **Climatological Conditioning**: The GPD excess distribution describes the regional climatological tail behavior above $u$. Conditioning on the specific forecast lead and meteorological forcing enters solely through the splice anchor $P_{\text{CSGD}}(Y > u)$.
-- **Confidence Intervals**: Exceedance events $\ge 204.5\text{ mm}$ remain statistically rare (a few dozen grid cells per season), resulting in wide paired-bootstrap confidence intervals for the uppermost thresholds.
+- **Confidence Intervals**: Exceedance events $\ge 204.5\text{ mm}$ remain statistically rare (about 150 cell-days per season across the whole grid), resulting in wide paired-bootstrap confidence intervals for the uppermost thresholds.
 
