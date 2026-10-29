@@ -15,13 +15,18 @@ scripts/run_scorecard.py --results-dir results
 scripts/gate_step07_results.py                 # evidence-base validator
 ```
 
-> **Known issue -- #106.** Every forecast score below pairs each forecast with
-> the IMD day *before* the one it covers (IMD labels a day by its 08:30 IST end
-> date; `weavr.grid` assumes the start date). Re-pairing cuts raw GraphCast's
-> lead-24 RMSE by ~10%. Everything here is internally consistent and uses the
-> same pairing as the rest of `main`, so comparisons between methods are like
-> for like, but absolute skill is understated and the verdicts are to be
-> re-decided once #106 is resolved.
+> **Known issue -- #106: the code is fixed, these results are not yet
+> regenerated.** Every forecast score below pairs each forecast with the IMD day
+> *before* the one it covers: IMD labels a day by the date its 08:30 IST window
+> ends, and `weavr.grid` used to assume the start date. `weavr.grid.imd_day_for`
+> now pairs forecasts correctly (see `docs/grid-and-time-convention.md`), but
+> every table, CSV and verdict in this document was produced before that and has
+> **not** been regenerated, so absolute skill is understated and the verdicts
+> (H1-H3, and H7/H10 elsewhere) are to be re-decided on the regenerated results.
+> Comparisons between methods here are like for like with each other, not with
+> anything run after the fix. `scripts/gate_step07_results.py` expects the
+> corrected row counts (242/240/238/236/234 per lead, not 244/.../236), so it
+> rejects these committed files until they are regenerated -- by design.
 
 ---
 
