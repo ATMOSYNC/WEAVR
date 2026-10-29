@@ -314,20 +314,6 @@ def test_tier2_by_bin_csv_carries_pooled_and_fold_rows(tier2_out):
 # ---------------------------------------------------------------------------
 
 
-def _preflight(stores_root: Path) -> subprocess.CompletedProcess:
-    """Run the pre-flight store check the chain gates on."""
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO / "src")
-    return subprocess.run(
-        [str(PYTHON), "/tmp/step07_gate/preflight_stores.py"],
-        cwd=REPO,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-
-
 def test_all_zero_ifs_ens_store_is_caught_before_a_long_run(tmp_path):
     """The 2020 failure, reproduced deliberately.
 
@@ -471,11 +457,14 @@ def _write_valid_results(root: Path, season_days: int) -> None:
     for lead in (24, 48, 72, 96, 120):
         rows = []
         for year in (2018, 2020):
+            # A 24 h forecast from 1 June verifies on IMD day 2 June, so the
+            # first scored day moves with the lead and the last inits fall off.
             n = season_days - lead // 24
+            first = pd.Timestamp(f"{year}-06-01") + pd.Timedelta(days=lead // 24)
             rows.append(
                 pd.DataFrame(
                     {
-                        "date": pd.date_range(f"{year}-06-01", periods=n).date,
+                        "date": pd.date_range(first, periods=n).date,
                         "fold": [str(year)] * n,
                         "crps_mm": [4.2] * n,
                     }
