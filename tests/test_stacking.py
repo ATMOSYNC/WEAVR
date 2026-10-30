@@ -125,6 +125,14 @@ class TestQuantileAverage:
         q_avg = quantile_average(q_a, q_b, weight=0.4)
         assert np.all(np.diff(q_avg, axis=-1) >= 0.0)
 
+    def test_a_decreasing_input_is_reported_not_repaired(self):
+        """Step 13: "monotone by construction; assert it". A running maximum
+        used to paper over a bad input instead."""
+        q_a = np.array([[1.0, 2.0, 3.0]])
+        q_bad = np.array([[3.0, 1.0, 9.0]])
+        with pytest.raises(ValueError, match="decreasing"):
+            quantile_average(q_a, q_bad, weight=0.5)
+
 
 class TestCrpsFromQuantilesAccuracy:
     def test_matches_closed_form_csgd_crps_within_tolerance(self):

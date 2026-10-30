@@ -263,12 +263,17 @@ def quantile_average(
     q_avg = (1.0 - weight) * q_a_arr + weight * q_b_arr
     q_avg = np.clip(q_avg, 0.0, None)
 
-    # Monotonicity check
-    diffs = np.diff(q_avg, axis=-1)
-    if np.any(diffs < -1e-9):
-        # Numerical precision safeguard
-        q_avg = np.maximum.accumulate(q_avg, axis=-1)
-
+    # A convex combination of two non-decreasing quantile functions is
+    # non-decreasing, so a decrease here can only mean a bad input -- the kind
+    # of upstream defect (BMA quantiles extrapolated to millions of mm) this
+    # check exists to surface. Step 13 says "monotone by construction; assert
+    # it": it used to repair the output with a running maximum instead, which
+    # would have hidden exactly that.
+    if np.any(np.diff(q_avg, axis=-1) < -1e-9):
+        raise ValueError(
+            "quantile_average produced a decreasing quantile function; its inputs "
+            "are not non-decreasing along the level axis"
+        )
     return q_avg
 
 
