@@ -470,3 +470,39 @@ class TestVerdictFromRunnerTable:
 
     def test_missing_table_is_not_yet_tested(self, tmp_path):
         assert _verdict_from_runner_table(self.H10, tmp_path)["status"] == "NOT_YET_TESTED"
+
+
+def _bootstrap_categorical_difference_before_31_oct(counts_a, counts_b, score, block_days,
+                                                     n_resamples, seed):
+    """Verbatim logic of the function as it was at 217ff05 (CSI/SEDI only)."""
+    from weavr.significance import block_bootstrap_indices, bootstrap_is_degenerate
+
+    score_fn = _pooled_csi if score == "csi" else _pooled_sedi
+    n_args = 3 if score == "csi" else 4
+
+    def pooled(counts, index=None):
+        selected = [c if index is None else c[index] for c in counts[:n_args]]
+        return score_fn(*[float(np.sum(c)) for c in selected])
+
+    n_days = counts_a[0].size
+    estimate = -(pooled(counts_a) - pooled(counts_b))
+    if bootstrap_is_degenerate(n_days, block_days):
+        return estimate, float("nan"), float("nan")
+    indices = block_bootstrap_indices(n_days, block_days, n_resamples, seed)
+    replicates = np.array([-(pooled(counts_a, idx) - pooled(counts_b, idx)) for idx in indices])
+    finite = replicates[np.isfinite(replicates)]
+    lo, hi = np.quantile(finite, [0.025, 0.975])
+    return estimate, float(lo), float(hi)
+
+
+@pytest.mark.parametrize("score", ["csi", "sedi"])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_csi_and_sedi_bootstraps_are_unchanged_by_the_score_table(score, seed):
+    """The POD/FAR table refactor must not move a CSI or SEDI interval: the
+    EVT and QM runners' committed SEDI CIs were computed with the old code."""
+    rng = np.random.default_rng(seed)
+    a = tuple(rng.integers(0, 30, 120).astype(float) for _ in range(4))
+    b = tuple(rng.integers(0, 30, 120).astype(float) for _ in range(4))
+    new = _bootstrap_categorical_difference(a, b, score, 7, 400, seed)
+    old = _bootstrap_categorical_difference_before_31_oct(a, b, score, 7, 400, seed)
+    assert (new.estimate, new.ci_lo, new.ci_hi) == old
