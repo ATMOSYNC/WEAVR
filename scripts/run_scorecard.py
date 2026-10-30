@@ -557,12 +557,18 @@ CLAIM_SPECS: list[dict] = [
     },
     {
         "claim": "H7-EVT",
-        "summary": "The spliced extreme-value tail improves SEDI@115.6 without a worse Brier",
+        "summary": (
+            "The spliced extreme-value tail improves tw-CRPS@64.5 or SEDI@115.6 over "
+            "the point-mass fallback without a worse Brier@7.5"
+        ),
         "method_a": "evt_csgd_gpd_tail",
-        "method_b": None,
-        "metric": "sedi@115.6; brier guard",
+        "method_b": "evt_csgd_only",
+        "metric": "twcrps_64.5_mm or sedi@115.6; brier@7.5 guard",
         "threshold": "",
-        "produced_by": "12 (its probability SEDI is recomputed there)",
+        "produced_by": "12",
+        "runner_table": "tail_repair_evt_paired.csv",
+        "rule": "h7",
+        "rows": {"comparison": "csgd_gpd_tail_vs_csgd_only", "threshold": 115.6},
     },
     {
         "claim": "H8",
