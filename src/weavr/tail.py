@@ -7,6 +7,10 @@ Pareto distribution (GPD) fitted across IMD climatological extremes:
 - Spliced with the nearest fittable EMOS-CSG bin at threshold u:
     P(Y > y) = P_CSGD(Y > u) * (1 + xi * (y - u) / sigma_r)^(-1 / xi)   for y > u.
 - For y <= u, P(Y > y) = P_CSGD(Y > y), guaranteeing exact continuity at u.
+  `spliced_exceedance_probability` only knows P(Y > u), so it refuses y < u;
+  `exceedance_probability_with_tail` evaluates the CSGD itself below u.
+- `spliced_twcrps`: threshold-weighted CRPS of the spliced distribution for
+  t >= u, in closed form.
 """
 
 from __future__ import annotations
@@ -211,6 +215,11 @@ def spliced_exceedance_probability(
     - Strictly non-increasing (monotone) for y >= u.
     - Always bounded in [0, 1].
 
+    Defined for y >= u only. Below u the spliced distribution is the CSGD
+    itself, which this function is not given; it used to return P(Y > u) there,
+    a step where the distribution has none, so it now raises instead
+    (`exceedance_probability_with_tail` evaluates the CSGD below u).
+
     Parameters
     ----------
     p_exceed_u:
@@ -233,6 +242,11 @@ def spliced_exceedance_probability(
     u = tail_fit.threshold_u
     xi = tail_fit.shape_xi
     default_scale = np.median(list(tail_fit.scale_by_region.values()))
+    if np.any(y_b < u):
+        raise ValueError(
+            f"spliced_exceedance_probability is defined for y >= u = {u} mm only; "
+            "below u the spliced distribution is the CSGD itself"
+        )
 
     if isinstance(region, str):
         sig = float(tail_fit.scale_by_region.get(region, default_scale))
@@ -357,7 +371,24 @@ def exceedance_probability_with_tail(
         res = emos_results_by_bin.get(bin_name)
         is_fittable = res is not None and not res.is_fallback
 
-        if is_fittable and threshold <= u and res is not None:
+        if threshold < u and not is_fittable:
+            # Below u the spliced distribution of an unfittable bin *is* the
+            # nearest fittable bin's CSGD; the GPD only describes the excess
+            # above u. (This branch used to fall through to the splice, which
+            # returned P(Y > u) for any threshold below u.)
+            nearest_res = nearest_fittable_bin(bin_name, emos_results_by_bin)
+            if nearest_res is None or nearest_res.is_fallback:
+                probs[mask] = 0.0
+                methods[mask] = "fallback"
+            else:
+                pred_m, pred_s, pred_shift = predict_csgd_params(
+                    nearest_res, m_arr[mask], s_arr[mask]
+                )
+                probs[mask] = np.asarray(
+                    exceedance_probability_csgd(pred_m, pred_s, pred_shift, threshold), dtype=float
+                )
+                methods[mask] = "csgd+gpd_tail"
+        elif is_fittable and threshold <= u and res is not None:
             # Within useful fittable range: use CSGD directly
             mean_b = m_arr[mask]
             std_b = s_arr[mask]
@@ -387,3 +418,75 @@ def exceedance_probability_with_tail(
                 methods[mask] = "csgd+gpd_tail"
 
     return probs, methods
+
+
+def _gpd_survival_integrals(
+    c: np.ndarray, xi: float, sigma: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """`int_c^inf S(z) dz` and `int_c^inf S(z)^2 dz` for the GPD survival S.
+
+    With `S(z) = (1 + xi z / sigma)^(-1/xi)`: the first is
+    `sigma / (1 - xi) * S(c)^(1 - xi)` and the second
+    `sigma / (2 - xi) * S(c)^(2 - xi)` (exponential limits at xi = 0). For
+    xi < 0 S is 0 beyond the support end, and so are both integrals. The first
+    is finite only for xi < 1 -- a tail whose mean does not exist has no CRPS.
+    """
+    if xi >= 1.0:
+        raise ValueError(f"tw-CRPS needs a finite tail mean (xi < 1), got xi = {xi}")
+    if abs(xi) < _EPS:
+        s = np.exp(-c / sigma)
+    else:
+        arg = 1.0 + xi * c / sigma
+        s = np.where(arg <= 0, 0.0, np.maximum(arg, 0.0) ** (-1.0 / xi))
+    return sigma / (1.0 - xi) * s ** (1.0 - xi), sigma / (2.0 - xi) * s ** (2.0 - xi)
+
+
+def spliced_twcrps(
+    p_exceed_u: float | np.ndarray,
+    tail_fit: TailFit,
+    region: str | np.ndarray,
+    y: float | np.ndarray,
+    threshold: float,
+) -> np.ndarray:
+    """Threshold-weighted CRPS, weight `1{z >= threshold}`, of the spliced
+    distribution, for `threshold >= u`.
+
+    Above u the spliced CDF is `F(x) = 1 - p S(x - u)` with `p = P(Y > u)` and
+    S the region's GPD survival, so only p and the GPD enter. With
+    `a = threshold - u` and `b = max(y, threshold) - u`,
+
+        twCRPS = int_a^b (1 - p S)^2 dz + int_b^inf (p S)^2 dz
+               = (b - a) - 2 p (I1(a) - I1(b)) + p^2 I2(a),
+
+    where `I1(c) = int_c^inf S` and `I2(c) = int_c^inf S^2` are closed form
+    (`_gpd_survival_integrals`). A cell with p = 0 (a true fallback) is a
+    point mass below the threshold and scores `b - a`.
+
+    Step 12 asks for this "by numerical integration, tested"; the closed form
+    is exact and is what `tests/test_tail.py` checks against quadrature of the
+    weighted definition and against Monte Carlo draws of the spliced
+    distribution.
+    """
+    u = tail_fit.threshold_u
+    if threshold < u:
+        raise ValueError(
+            f"spliced_twcrps needs threshold >= u = {u} mm: below u the distribution "
+            "is the CSGD's, and csgd_twcrps scores it"
+        )
+    y_arr = np.asarray(y, dtype=float)
+    p_arr = np.clip(np.asarray(p_exceed_u, dtype=float), 0.0, 1.0)
+    shape = np.broadcast_shapes(y_arr.shape, p_arr.shape)
+    default_scale = np.median(list(tail_fit.scale_by_region.values()))
+    if isinstance(region, str):
+        sigma = np.full(shape, float(tail_fit.scale_by_region.get(region, default_scale)))
+    else:
+        lookup = np.vectorize(
+            lambda r: tail_fit.scale_by_region.get(str(r), default_scale), otypes=[float]
+        )
+        sigma = lookup(np.broadcast_to(np.asarray(region), shape))
+    a = np.full(shape, threshold - u, dtype=float)
+    b = np.maximum(np.broadcast_to(y_arr, shape), threshold) - u
+    i1_a, i2_a = _gpd_survival_integrals(a, tail_fit.shape_xi, sigma)
+    i1_b, _ = _gpd_survival_integrals(b, tail_fit.shape_xi, sigma)
+    p = np.broadcast_to(p_arr, shape)
+    return (b - a) - 2.0 * p * (i1_a - i1_b) + p**2 * i2_a
