@@ -20,8 +20,11 @@
  * /api/colors's imd_rain_thresholds_mm rather than hardcoded, and the
  * threshold is always sent explicitly to the API so the label can never
  * disagree with the data.
- * docs/phase4-data-and-combiner-scope.md found the extremely_heavy bin is
- * never fittable at any lead in this project's real 2020 JJAS data.
+ * On the two-season base the extremely_heavy bin is never fittable at any
+ * lead, and very_heavy not in every fit at 96-120h
+ * (docs/v2-evidence-base-results.md section 7, results/bin_fittability.csv).
+ * The grid is fitted on the 2018 season and shows a 2020 day, so the map
+ * never displays a day its own calibration was trained on (#74).
  * Cells whose own forecast fell in a bin EMOS-CSG could not fit for real
  * are drawn with a second, distinct semi-transparent grey pass -- a
  * fallback cell's ~0 probability must not look identical to a genuinely
@@ -72,12 +75,15 @@ let extremeProbabilityThreshold = null;
 const EXTREME_PROBABILITY_GEOGRAPHY_UNAVAILABLE =
   "Basemap unavailable -- showing the plain grid.";
 
-/** True when `grid` marks this cell as fitted with the pooled GPD tail. */
+/**
+ * True when `grid` marks this cell as fitted with the pooled GPD tail:
+ * `csgd+gpd_tail` on the EMOS-CSG map, `quantile_avg+gpd_tail` on a grid
+ * exported with `--combiner quantile_avg` (#75). Any `+gpd_tail` suffix counts.
+ */
 function extremeProbabilityIsTailCell(grid, latIndex, lonIndex) {
-  return (
-    Array.isArray(grid.method) &&
-    grid.method[latIndex][lonIndex] === EXTREME_PROBABILITY_TAIL_METHOD
-  );
+  if (!Array.isArray(grid.method)) return false;
+  const method = String(grid.method[latIndex][lonIndex]);
+  return method === EXTREME_PROBABILITY_TAIL_METHOD || method.endsWith("+gpd_tail");
 }
 
 /**
@@ -101,6 +107,18 @@ function extremeProbabilityMethodCounts(grid) {
   return counts;
 }
 
+/**
+ * True when every fitted cell uses the pooled tail -- the case for any
+ * threshold above the 64.5mm splice point. A per-cell marker then
+ * distinguishes nothing and only hides the probability colours (a dot on
+ * every cell of the plain grid, near-black over every cell of the
+ * geography map), so neither is drawn and the legend and banner say it once
+ * for the whole map instead.
+ */
+function extremeProbabilityTailIsUniform(counts) {
+  return counts.tail > 0 && counts.csgd === 0;
+}
+
 /** "115.6mm" -- thresholds render without a trailing .0 anywhere they show. */
 function formatThreshold(threshold) {
   return `${Number(threshold)}mm`;
@@ -110,6 +128,19 @@ function formatThreshold(threshold) {
 function extremeProbabilityOpacity(p) {
   const fraction = Math.min(1, Math.max(0, p) / EXTREME_PROBABILITY_FULL_OPACITY_AT);
   return fraction * EXTREME_PROBABILITY_MAX_OPACITY;
+}
+
+/**
+ * Why the map looks pale, said in the plain grid as well as the geography
+ * view: extreme-rain probabilities are a few percent at most, on a colour
+ * scale running to 1, so a nearly white map is the data, not a missing layer.
+ */
+function extremeProbabilityPaleNote(maxProbability) {
+  return (
+    `The highest probability on this map is ${(maxProbability * 100).toFixed(1)}%, ` +
+    "so on a colour scale running to 100% it is pale by design -- it is not " +
+    "missing data."
+  );
 }
 
 /** Highest probability on the grid, so the note can say why a map looks pale. */
@@ -127,7 +158,7 @@ const EXTREME_PROBABILITY_CAPTION =
   "blended map's Tier 1 combiner, which has no predictive " +
   "distribution to compute a probability from. The two thresholds are " +
   "IMD's own real rainfall boundaries, 115.6mm ('very heavy') and " +
-  "204.5mm ('extremely heavy'). Dotted cells take their probability from " +
+  "204.5mm ('extremely heavy'). At both thresholds every cell takes its probability from " +
   "a pooled extreme-value tail rather than from EMOS-CSG directly: above " +
   "the splice point of 64.5mm the probability is extrapolated by a " +
   "generalised-Pareto tail fitted to the pooled upper tail of the fittable " +
@@ -137,14 +168,17 @@ const EXTREME_PROBABILITY_CAPTION =
   "it should be read as the least certain number here, and as " +
   "experimental: measured on two seasons, the spliced tail removes every " +
   "false zero-probability cell but makes the extremal dependence index " +
-  "worse at 5 of 5 leads (docs/tail-repair-results.md). It is calibrated " +
-  "for magnitude, not yet for spatial co-occurrence. On the current " +
-  "two-season base the tail is applied uniformly above 64.5mm rather than " +
-  "to specific unfittable cells, because dry, light, heavy and very_heavy " +
-  "bins now all fit; only extremely_heavy still never fits, at any lead " +
-  "(results/bin_fittability.csv). Grey cells are the harder fallback: no " +
-  "real probability at all, because EMOS-CSG could not fit their bin for " +
-  "real at this lead.";
+  "worse at 5 of 5 leads, and it forecasts these extremes about three " +
+  "times as often as they occur (docs/tail-repair-results.md). It is " +
+  "calibrated for magnitude, not yet for spatial co-occurrence. The tail " +
+  "is applied uniformly above 64.5mm rather than only to unfittable cells: " +
+  "on the two-season base dry, light and heavy always fit, very_heavy " +
+  "fits at 24-72h but not in every fit at 96-120h, and extremely_heavy " +
+  "never fits at any lead (results/bin_fittability.csv). The model is " +
+  "fitted on the 2018 season and applied to the 2020 day shown, so the " +
+  "map never shows a day its calibration was trained on. Grey cells are " +
+  "the harder fallback: no real probability at all, because EMOS-CSG " +
+  "could not fit their bin for real at this lead.";
 
 function hexToRgb(hex) {
   const value = hex.replace("#", "");
@@ -241,6 +275,12 @@ function renderExtremeProbabilityCanvas(container, grid, colorscale) {
   // Layer 3: the pooled-tail cells' own marking -- a centred dot, so the
   // probability colour underneath stays readable. Drawn after the grey
   // fallback pass so a tail cell is never confused with a fallback one.
+  // Skipped when every fitted cell is a tail cell: there is nothing to tell
+  // apart (see extremeProbabilityTailIsUniform).
+  if (extremeProbabilityTailIsUniform(extremeProbabilityMethodCounts(grid))) {
+    container.appendChild(canvas);
+    return;
+  }
   const dotInset =
     (EXTREME_PROBABILITY_CELL_SIZE - EXTREME_PROBABILITY_TAIL_DOT_SIZE) / 2;
   ctx.fillStyle = EXTREME_PROBABILITY_TAIL_DOT_RGBA;
@@ -306,10 +346,13 @@ function renderExtremeProbabilityLegend(container, colorscale, grid, counts) {
     '<span class="legend-swatch" style="background:' +
     EXTREME_PROBABILITY_TAIL_GEOGRAPHY_COLOR +
     '"></span>pooled GPD tail <strong>(experimental)</strong>' +
-    (counts.tail > 0
-      ? ` (${counts.tail} cell${counts.tail === 1 ? "" : "s"} at this lead; ` +
-        "probability extrapolated from the pooled upper tail)"
-      : " (no cells at this threshold use it)");
+    (extremeProbabilityTailIsUniform(counts)
+      ? `: every cell on this map (${counts.tail}), because the threshold lies ` +
+        "above the 64.5mm splice point -- so cells are not marked one by one"
+      : counts.tail > 0
+        ? ` (${counts.tail} cell${counts.tail === 1 ? "" : "s"} at this lead; ` +
+          "probability extrapolated from the pooled upper tail)"
+        : " (no cells at this threshold use it)");
   wrapper.appendChild(tailNote);
 
   const fallbackNote = document.createElement("div");
@@ -497,21 +540,27 @@ const ExtremeProbabilityView = {
     container.appendChild(mapContainer);
 
     const counts = extremeProbabilityMethodCounts(grid);
+    const tailUniform = extremeProbabilityTailIsUniform(counts);
     const maxProbability = extremeProbabilityMax(grid);
     const geographyNoteText =
       "Cells are drawn on an OpenStreetMap-derived basemap served from this " +
       "machine, with the same colours as the plain grid. Low probabilities " +
       "fade to transparent so the geography shows through; grey cells are the " +
-      "fallback cells, and near-black cells are the pooled-tail cells. The " +
+      "fallback cells" +
+      (tailUniform
+        ? " (every other cell uses the pooled tail at this threshold). The "
+        : ", and near-black cells are the pooled-tail cells. The ") +
       "highest probability at this lead is " +
       `${(maxProbability * 100).toFixed(1)}%, so the map is pale by design ` +
       "-- it is not missing data. The basemap draws no national boundaries.";
 
+    const paleNote = extremeProbabilityPaleNote(maxProbability);
     const showCanvas = (message) => {
       mapContainer.hidden = true;
       canvasContainer.hidden = false;
-      geographyNote.textContent = message || "";
+      geographyNote.textContent = message ? `${message} ${paleNote}` : paleNote;
     };
+    showCanvas("");
 
     const showGeography = async () => {
       if (!(await BasemapMap.isAvailable())) {
@@ -527,7 +576,7 @@ const ExtremeProbabilityView = {
         // all, so it must not be dressed up as a merely-uncertain one.
         overlayColorAt: (i, j) => {
           if (grid.is_fallback[i][j]) return EXTREME_PROBABILITY_GEOGRAPHY_FALLBACK_COLOR;
-          if (extremeProbabilityIsTailCell(grid, i, j)) {
+          if (!tailUniform && extremeProbabilityIsTailCell(grid, i, j)) {
             return EXTREME_PROBABILITY_TAIL_GEOGRAPHY_COLOR;
           }
           return null;
@@ -571,11 +620,16 @@ const ExtremeProbabilityView = {
     if (counts.tail > 0) {
       const warning = document.createElement("div");
       warning.className = "warning-banner";
-      warning.textContent =
-        `${counts.tail} gridpoint(s) at this lead are dotted: their ` +
-        "exceedance probability is extrapolated by the pooled " +
-        "extreme-value tail rather than fitted to their own bin, so they " +
-        "are the least certain values on this map (see caption above).";
+      warning.textContent = tailUniform
+        ? `Every gridpoint on this map (${counts.tail}) takes its exceedance ` +
+          "probability from the pooled extreme-value tail, because the " +
+          "threshold lies above the 64.5mm splice point: the whole map is " +
+          "an extrapolation, and the least certain kind of value here (see " +
+          "caption above)."
+        : `${counts.tail} gridpoint(s) at this lead are dotted: their ` +
+          "exceedance probability is extrapolated by the pooled " +
+          "extreme-value tail rather than fitted to their own bin, so they " +
+          "are the least certain values on this map (see caption above).";
       container.appendChild(warning);
     }
 
