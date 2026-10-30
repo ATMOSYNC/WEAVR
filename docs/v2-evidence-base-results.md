@@ -1,7 +1,7 @@
 # v2 Evidence Base Results
 
 Two-season daily LOYO evidence base, regenerated under step 07.
-**Two folds, 122 days each, 244 test days per lead.** Every number below is
+**Two folds, about 120 test days each, 234–242 test days per lead.** Every number below is
 measured on `results/` outputs produced by the scripts in `scripts/`, with
 per-day scores so every interval is a paired block bootstrap.
 

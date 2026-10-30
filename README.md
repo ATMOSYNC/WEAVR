@@ -185,25 +185,31 @@ daily cadence, leave-one-year-out:
 
 - **Tier 1 beats Tier 0 at every lead** on both RMSE and ACC. Regional weights
   add value over equal weighting.
-- **GraphCast is the best single member** at every lead (RMSE 14.12–14.56 mm).
-  HRES is the worst (RMSE 17.58–19.68 mm). IFS-ENS mean is intermediate.
+- **GraphCast is the best single member** at every lead (RMSE 13.05–13.53 mm).
+  HRES is the worst (RMSE 16.15–19.69 mm). IFS-ENS mean is intermediate.
 - **The three sources are worth about 1.1 independent models.** Their errors
-  correlate at 0.74–0.84 on the daily two-season base, which is why plain
+  correlate at 0.72–0.87 on the daily two-season base, which is why plain
   averaging fails and why adding a genuinely different source matters more
   than re-weighting.
 - **The blend beats a single ensemble member, but not a single-source
   calibration.** H1 passes twice: the blend beats the best single member on
   RMSE and on CRPS at 5 of 5 leads each, every interval excluding zero.
-  H2 fails: the multi-source combiner is significantly **worse** than either
-  single-source EMOS on CRPS at every lead. Calibrating one good source
-  appears to capture what the mixture adds, and more.
-- **Extremes are the open problem.** GraphCast detects no 115.6 mm event at
-  any lead, and no source detects any 204.5 mm event. RMSE and warning skill
+  H2 fails: the multi-source combiner is significantly **worse** than the
+  best single-source EMOS (GraphCast) on CRPS at every lead; against EMOS-IFS
+  it is better at 72–120 h but significant only at 96 and 120 h. Calibrating
+  one good source appears to capture most of what the mixture adds.
+- **Combining the two calibrations does help.** Averaging the EMOS-CSG and BMA
+  quantile functions beats both at every lead (H10 passes, 5 of 5), by
+  0.01–0.05 mm of daily CRPS.
+- **Extremes are the open problem.** GraphCast detects 6% of 115.6 mm events
+  at 24 h and under 1% by 96 h, and only HRES detects any 204.5 mm event past
+  day 1 (1–4%) -- while being the worst source on RMSE. RMSE and warning skill
   point in opposite directions.
 - **A regime-conditioned tier was tested and rejected** against
   pre-declared criteria, and the no-go is documented.
-- **Two seasons, 244 test days** (122 × 2 folds), so comparisons now have
-  meaningful confidence intervals.
+- **Two seasons, 234–242 test days per lead** (about 120 per fold), so
+  comparisons now have meaningful confidence intervals. All numbers are on the
+  corrected forecast-observation day pairing (#106).
 
 Numbers, method and caveats:
 [v2 evidence base](docs/v2-evidence-base-results.md),
