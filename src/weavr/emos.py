@@ -555,3 +555,38 @@ def exceedance_probability_csgd(
     standardized = (threshold - shift_b) / theta
     result = 1.0 - _gamma_cdf(standardized, kappa)
     return result if broadcast_shape != () else float(result)
+
+
+def csgd_twcrps(
+    mean: np.ndarray | float,
+    std: np.ndarray | float,
+    shift: np.ndarray | float,
+    y: np.ndarray | float,
+    threshold: float,
+) -> np.ndarray | float:
+    """Threshold-weighted CRPS of the CSGD, weight `1{z >= threshold}`, in
+    closed form.
+
+    The chaining-function identity `weavr.verify.twcrps_ensemble` uses
+    (Allen et al. 2023) says this weight scores `max(Y, t)` against
+    `max(y, t)` with the ordinary CRPS. For a CSGD, `Y = max(G + shift, 0)`
+    with `G` the underlying gamma, so for `t >= 0`
+
+        max(Y, t) - t = max(G + (shift - t), 0),
+
+    which is again a CSGD -- the same gamma, shifted by `shift - t` -- and
+    CRPS does not change when the forecast and the observation move together.
+    Hence `twCRPS(F, y; t) = csgd_crps(mean, std, shift - t, max(y - t, 0))`:
+    exact, and as cheap as `csgd_crps`, where integrating the weighted
+    definition numerically on every cell of a season would not be.
+
+    Verified in `tests/test_emos.py` against brute-force integration of
+    `int_t^inf (F(z) - 1{y <= z})^2 dz` and against the ensemble identity on
+    a large sample, not trusted from the derivation alone. Step 11 needs it to
+    score H7's tw-CRPS on EMOS fitted to quantile-mapped members.
+    """
+    if threshold < 0:
+        raise ValueError(f"threshold must be >= 0 (the censoring point), got {threshold}")
+    shift_t = np.asarray(shift, dtype=float) - threshold
+    y_t = np.clip(np.asarray(y, dtype=float) - threshold, 0.0, None)
+    return csgd_crps(mean, std, shift_t, y_t)
