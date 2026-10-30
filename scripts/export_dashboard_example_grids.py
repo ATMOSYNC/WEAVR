@@ -35,18 +35,21 @@ Legacy keys ``probability_lead_{L}`` / ``is_fallback_lead_{L}`` are also
 written, pointing to the 204.5 mm results, for backward compatibility.
 
 The extreme-value GPD tail is fitted from IMD observed precipitation
-(all available samples in the baseline store) pooled across Sreekala &
-Babu zones above u = 64.5 mm via ``weavr.tail.fit_pooled_gpd``. EMOS-CSG
-is also fitted on all samples -- a display snapshot, not the held-out
-skill evaluation ``run_tier2_hierarchical_baseline.py`` performs (a real,
-stated difference from that script's own convention). Bin classification
-uses the GraphCast ensemble mean, the same convention the rest of the
-pipeline uses.
+pooled across Sreekala & Babu zones above u = 64.5 mm via
+``weavr.tail.fit_pooled_gpd``, and EMOS-CSG on the IFS-ENS members. With
+``--fit-store``/``--fit-lagged-store``/``--fit-ifs-ensemble-store`` both are
+fitted on that other season and the displayed day is out of sample, the
+leave-one-year-out split the evidence base uses. Without them both are
+fitted on every sample of the display season -- a display snapshot, not
+a held-out evaluation. Bin classification uses the GraphCast ensemble mean,
+the same convention the rest of the pipeline uses. The probability NPZ
+records which store the fit came from under ``fitted_on``.
 
 Usage:
     python scripts/export_dashboard_example_grids.py
         [--store PATH] [--weights-csv PATH]
         [--lagged-store PATH] [--ifs-ensemble-store PATH]
+        [--fit-store PATH --fit-lagged-store PATH --fit-ifs-ensemble-store PATH]
         [--out-blend PATH] [--out-probability PATH]
 """
 
@@ -222,18 +225,26 @@ def _collect_exceedances_by_region(
 
 
 def build_example_probability_grids(
-    baseline_store: str, lagged_store: str, ifs_store: str, lead_hours: int
+    baseline_store: str,
+    lagged_store: str,
+    ifs_store: str,
+    lead_hours: int,
+    fit_stores: tuple[str, str, str] | None = None,
 ) -> dict[str, np.ndarray | str]:
     """EMOS-CSG (`ifs_ens`) exceedance-probability grids for both thresholds.
 
     Returns results for P(rain > 115.6 mm) and P(rain > 204.5 mm) with
     per-cell method flags ("csgd" | "csgd+gpd_tail" | "fallback").
 
-    The GPD tail is fitted from IMD observations (all available samples,
-    not just the held-out test split) pooled across Sreekala & Babu zones.
-    EMOS-CSG is also fitted on all available samples (a display snapshot,
-    not a held-out skill evaluation -- a real, documented difference from
-    ``run_tier2_hierarchical_baseline.py``).
+    `fit_stores` is an optional `(baseline, lagged, ifs_ens)` triple for
+    another season. When given, EMOS-CSG and the GPD tail are fitted on that
+    season alone and the displayed day comes from the first three stores, so
+    the map is out of sample -- the leave-one-year-out split the evidence base
+    is scored under (#74: re-emit the grids under two-season LOYO). Without
+    it, both are fitted on every sample of the display season itself: a
+    display snapshot, not a held-out skill evaluation.
+
+    The GPD tail is pooled across Sreekala & Babu zones.
 
     Bin classification uses the GraphCast ensemble mean, the same convention
     the rest of the pipeline uses (see ``run_tier2_hierarchical_baseline.py``).
@@ -256,10 +267,24 @@ def build_example_probability_grids(
         graphcast_ensemble, ifs_ensemble, hres_forecast, obs
     )
 
-    all_train_mask = np.ones(obs_aligned.sizes["sample"], dtype=bool)
-    rain_bin_labels = classify_rain_bin(forecasts["graphcast"].mean(dim="member", skipna=True))
+    if fit_stores is None:
+        fit_obs, fit_forecasts, fit_obs_aligned = obs, forecasts, obs_aligned
+    else:
+        fit_baseline, fit_lagged, fit_ifs = fit_stores
+        fit_obs = xr.open_zarr(fit_baseline, group="imd_observed", consolidated=True).load()
+        fit_forecasts, fit_obs_aligned = align_all_sources(
+            load_graphcast_ensemble(fit_lagged, lead_hours),
+            load_ifs_ensemble(fit_ifs, lead_hours),
+            load_hres_forecast(fit_baseline, lead_hours),
+            fit_obs,
+        )
+
+    all_train_mask = np.ones(fit_obs_aligned.sizes["sample"], dtype=bool)
+    rain_bin_labels = classify_rain_bin(
+        fit_forecasts["graphcast"].mean(dim="member", skipna=True)
+    )
     emos_results = fit_emos_csg(
-        forecasts["ifs_ens"], obs_aligned, rain_bin_labels, all_train_mask, source="ifs_ens"
+        fit_forecasts["ifs_ens"], fit_obs_aligned, rain_bin_labels, all_train_mask, source="ifs_ens"
     )
 
     ifs_mean_all = forecasts["ifs_ens"].mean(dim="member", skipna=True)
@@ -282,13 +307,13 @@ def build_example_probability_grids(
     lon_vals = ifs_mean_sample["longitude"].values
     region_labels = np.asarray(assign_regions(lat_vals, lon_vals).values)
 
-    # Fit pooled GPD on all available IMD observations.
+    # Fit the pooled GPD on the fitting season's IMD observations.
     precip_var = next(
-        (v for v in obs.data_vars if "precip" in v.lower() or "rain" in v.lower()),
-        next(iter(obs.data_vars)),  # fallback: first variable
+        (v for v in fit_obs.data_vars if "precip" in v.lower() or "rain" in v.lower()),
+        next(iter(fit_obs.data_vars)),  # fallback: first variable
     )
     exceedances_by_region = _collect_exceedances_by_region(
-        obs, precip_var, DEFAULT_TAIL_THRESHOLD_U, region_labels
+        fit_obs, precip_var, DEFAULT_TAIL_THRESHOLD_U, region_labels
     )
     tail_fit: TailFit = fit_pooled_gpd(exceedances_by_region, DEFAULT_TAIL_THRESHOLD_U)
 
@@ -296,6 +321,7 @@ def build_example_probability_grids(
         "latitude": lat_vals,
         "longitude": lon_vals,
         "sample_time": str(ifs_mean_sample["sample"].values),
+        "fitted_on": baseline_store if fit_stores is None else fit_stores[0],
     }
     for threshold in EXTREME_THRESHOLDS_MM:
         slug = _THRESHOLD_SLUG[threshold]
@@ -323,7 +349,20 @@ def main() -> int:
     parser.add_argument("--ifs-ensemble-store", default=DEFAULT_IFS_ENSEMBLE_STORE)
     parser.add_argument("--out-blend", default=DEFAULT_OUT_BLEND)
     parser.add_argument("--out-probability", default=DEFAULT_OUT_PROBABILITY)
+    parser.add_argument(
+        "--fit-store", default=None,
+        help="Baseline store of another season to fit EMOS-CSG and the GPD tail on "
+        "(leave-one-year-out). Needs --fit-lagged-store and --fit-ifs-ensemble-store.",
+    )
+    parser.add_argument("--fit-lagged-store", default=None)
+    parser.add_argument("--fit-ifs-ensemble-store", default=None)
     args = parser.parse_args()
+    fit_args = (args.fit_store, args.fit_lagged_store, args.fit_ifs_ensemble_store)
+    if any(fit_args) and not all(fit_args):
+        parser.error(
+            "--fit-store, --fit-lagged-store and --fit-ifs-ensemble-store go together"
+        )
+    fit_stores = fit_args if all(fit_args) else None
 
     blend_out_path = Path(args.out_blend)
     blend_out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -354,11 +393,13 @@ def main() -> int:
         print(f"[lead {lead_hours:>3}h] building example extreme-probability grids "
               f"(thresholds: {list(EXTREME_THRESHOLDS_MM)} mm)...")
         probability_grid = build_example_probability_grids(
-            args.store, args.lagged_store, args.ifs_ensemble_store, lead_hours
+            args.store, args.lagged_store, args.ifs_ensemble_store, lead_hours,
+            fit_stores=fit_stores,
         )
         if "latitude" not in probability_arrays:
             probability_arrays["latitude"] = np.asarray(probability_grid["latitude"])
             probability_arrays["longitude"] = np.asarray(probability_grid["longitude"])
+            probability_arrays["fitted_on"] = np.array(str(probability_grid["fitted_on"]))
         for threshold in EXTREME_THRESHOLDS_MM:
             slug = _THRESHOLD_SLUG[threshold]
             probability_arrays[f"probability_{slug}_lead_{lead_hours}"] = np.asarray(

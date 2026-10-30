@@ -910,3 +910,46 @@ def test_tier2b_missing_store_fails_loudly(stores, tmp_path):
         "tier2b wrote its domain CSV despite a missing store; the partial run "
         "must not be readable as a finished one."
     )
+
+
+def test_dashboard_probability_grid_fits_on_the_other_season(stores):
+    """#74: the map is re-emitted under leave-one-year-out, not fitted in sample.
+
+    With `fit_stores`, EMOS-CSG and the GPD tail come from 2018 while the
+    displayed day comes from 2020, and the NPZ says so in `fitted_on`. A fit
+    that quietly fell back to the display season would still draw a plausible
+    map, so the provenance is what is pinned.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    import export_dashboard_example_grids as export
+
+    display = tuple(str(stores[f"{kind}_2020"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    fit = tuple(str(stores[f"{kind}_2018"]) for kind in ("baseline", "lagged", "ifs_ens"))
+
+    loyo = export.build_example_probability_grids(*display, 24, fit_stores=fit)
+    in_sample = export.build_example_probability_grids(*display, 24)
+
+    assert loyo["fitted_on"] == fit[0]
+    assert in_sample["fitted_on"] == display[0]
+    assert loyo["sample_time"] == in_sample["sample_time"]
+    assert loyo["sample_time"].startswith("2020")
+    for slug in ("115p6", "204p5"):
+        probability = np.asarray(loyo[f"probability_{slug}"])
+        finite = probability[np.isfinite(probability)]
+        assert finite.size and ((finite >= 0) & (finite <= 1)).all()
+        assert set(np.unique(loyo[f"method_{slug}"])) <= {"csgd", "csgd+gpd_tail", "fallback"}
+    assert not np.array_equal(
+        np.asarray(loyo["probability_115p6"]), np.asarray(in_sample["probability_115p6"]),
+        equal_nan=True,
+    ), "fitting on 2018 produced the same map as fitting on 2020"
+
+
+def test_dashboard_export_rejects_a_partial_fit_season(stores, tmp_path):
+    result = subprocess.run(
+        [str(PYTHON), str(REPO / "scripts" / "export_dashboard_example_grids.py"),
+         "--fit-store", str(stores["baseline_2018"]),
+         "--out-blend", str(tmp_path / "b.npz"), "--out-probability", str(tmp_path / "p.npz")],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert result.returncode == 2
+    assert "go together" in result.stderr
