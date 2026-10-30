@@ -474,10 +474,10 @@ def expected_contingency_counts(
     o = np.where(finite, obs_event, 0.0)
     q = np.where(finite, 1.0 - p, 0.0)
     return {
-        "hits": (p * o).sum(axis=axis),
-        "misses": (q * o).sum(axis=axis),
-        "false_alarms": (p * (1.0 - o) * finite).sum(axis=axis),
-        "correct_negatives": (q * (1.0 - o) * finite).sum(axis=axis),
+        "hits": np.asarray((p * o).sum(axis=axis)),
+        "misses": np.asarray((q * o).sum(axis=axis)),
+        "false_alarms": np.asarray((p * (1.0 - o) * finite).sum(axis=axis)),
+        "correct_negatives": np.asarray((q * (1.0 - o) * finite).sum(axis=axis)),
     }
 
 

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -139,7 +140,7 @@ def _pooled_far(hits: float, misses: float, false_alarms: float) -> float:
 # score -> (pooled function, how many leading count columns it takes, sign
 # that turns "A minus B" into a loss difference). The count columns are
 # (hits, misses, false_alarms, correct_negatives), in that order.
-CATEGORICAL_SCORES = {
+CATEGORICAL_SCORES: dict[str, tuple[Callable[..., float], int, float]] = {
     "csi": (_pooled_csi, 3, -1.0),
     "sedi": (_pooled_sedi, 4, -1.0),
     "pod": (_pooled_pod, 2, -1.0),
