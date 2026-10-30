@@ -154,6 +154,22 @@ class TestCompareMethods:
         per_day = _per_day("a", 24, 30, 100.0)
         assert compare_methods(per_day, "a", "missing", 24, 7, 100, 0) == []
 
+    def test_a_method_without_a_point_forecast_gets_no_rmse_or_categorical_rows(self):
+        # Tier 2b writes only probabilistic scores: no MSE, no contingency counts.
+        probabilistic = _per_day("p", 24, 30, 100.0, seed=9)
+        probabilistic["mse_mm2"] = np.nan
+        for threshold in V.IMD_RAIN_THRESHOLDS_MM:
+            for name in ("hits", "misses", "false_alarms", "correct_negatives"):
+                probabilistic[f"{name}_{threshold}"] = np.nan
+        per_day = pd.concat([probabilistic, _per_day("b", 24, 30, 120.0)], ignore_index=True)
+
+        rows = compare_methods(per_day, "p", "b", 24, 7, 100, 0)
+
+        metrics = {row["metric"] for row in rows}
+        assert "crps_mm" in metrics
+        assert not metrics & {"rmse_mm", "csi", "sedi"}
+        assert all(np.isfinite(row["diff"]) for row in rows)
+
     def test_returns_nothing_with_fewer_than_two_shared_days(self):
         per_day = pd.concat(
             [_per_day("a", 24, 1, 100.0), _per_day("b", 24, 1, 120.0)], ignore_index=True

@@ -242,19 +242,21 @@ def compare_methods(
             }
         )
 
-    # RMSE, from daily MSE.
+    # RMSE, from daily MSE. A probabilistic-only method (Tier 2b) has no
+    # point forecast, so its MSE is all NaN and it gets no RMSE row.
     mse_a, mse_b = _rmse_from_mse(frame_a), _rmse_from_mse(frame_b)
-    ci = paired_difference_ci(
-        mse_a, mse_b, block_days, n_resamples, seed, aggregate="rmse"
-    )
-    record(
-        "rmse_mm",
-        "",
-        float(np.sqrt(np.mean(mse_a))),
-        float(np.sqrt(np.mean(mse_b))),
-        ci,
-        diebold_mariano(mse_a, mse_b).p_value,
-    )
+    if np.isfinite(mse_a).any() and np.isfinite(mse_b).any():
+        ci = paired_difference_ci(
+            mse_a, mse_b, block_days, n_resamples, seed, aggregate="rmse"
+        )
+        record(
+            "rmse_mm",
+            "",
+            float(np.sqrt(np.mean(mse_a))),
+            float(np.sqrt(np.mean(mse_b))),
+            ci,
+            diebold_mariano(mse_a, mse_b).p_value,
+        )
 
     for metric, column in MEAN_METRICS.items():
         if column not in frame_a.columns or column not in frame_b.columns:
@@ -291,6 +293,8 @@ def compare_methods(
 
         counts_a = _categorical_from_counts(frame_a, threshold, "csi")
         counts_b = _categorical_from_counts(frame_b, threshold, "csi")
+        if not (np.isfinite(counts_a[0]).any() and np.isfinite(counts_b[0]).any()):
+            continue
         for score in ("csi", "sedi"):
             ci = _bootstrap_categorical_difference(
                 counts_a, counts_b, score, block_days, n_resamples, seed
