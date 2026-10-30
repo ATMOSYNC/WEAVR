@@ -96,6 +96,7 @@ from weavr.significance import paired_difference_ci  # noqa: E402
 from weavr.splits import iter_evaluation_folds  # noqa: E402
 from weavr.stacking import (
     DEFAULT_QUANTILE_LEVELS,
+    PerBinSelectionResult,
     crps_from_quantiles,
     predictive_quantiles_csgd,
     quantile_average,
@@ -330,6 +331,23 @@ def fit_quantile_weight(
     return best_w, best_crps
 
 
+def train_crps_at_weight(
+    train_crps_grid: np.ndarray, weight: float, grid: np.ndarray = WEIGHT_GRID
+) -> float:
+    """Train-fold CRPS of `quantile_avg` at the weight it will actually run with.
+
+    The nomination compares this against `per_bin`, so it must describe the
+    arm as scored on test. The grid minimum only does that when the fitted
+    weight is used; with an unfitted fold (the arm falls back to 0.5) or a
+    manual `--quantile-weight` it would nominate on one weight and score
+    another. A weight off the grid has no train CRPS and is rejected.
+    """
+    match = np.flatnonzero(np.isclose(grid, weight))
+    if match.size == 0:
+        raise ValueError(f"weight {weight} is not on the train weight grid {list(grid)}")
+    return float(train_crps_grid[match[0]])
+
+
 def select_emos_source(
     train_crps: dict[str, float], tie_breaker: str = "graphcast"
 ) -> str:
@@ -416,7 +434,15 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
             "what H10's 3-of-5 rule needs."
         ),
     )
-    return parser.parse_args(args)
+    parsed = parser.parse_args(args)
+    if parsed.quantile_weight is not None and not np.isclose(
+        WEIGHT_GRID, parsed.quantile_weight
+    ).any():
+        parser.error(
+            f"--quantile-weight must be on the train weight grid (steps of 0.05), "
+            f"got {parsed.quantile_weight}: the nomination needs its train CRPS"
+        )
+    return parsed
 
 
 def cell_weighted_mean(values: np.ndarray, counts: np.ndarray) -> float:
@@ -438,6 +464,31 @@ def cell_weighted_mean(values: np.ndarray, counts: np.ndarray) -> float:
     if values.size == 0 or counts.sum() <= 0:
         return float("nan")
     return float(np.average(values, weights=counts))
+
+
+def per_bin_train_crps_from_selection(
+    selection_table: pd.DataFrame, selection: PerBinSelectionResult, lead_hours: int
+) -> float:
+    """Train-fold CRPS of the `per_bin` arm: each bin scored by the parent it picked.
+
+    The lookup must use `selection_table`, whose EMOS rows are already
+    relabelled `emos_csg` -- the label `select_per_bin` returns. Looking the
+    choices up in the raw train table instead, where the same rows are still
+    `emos_graphcast` or `emos_ifs_ens`, matches no bin that picked EMOS. Those
+    bins silently drop out, and the "arm" CRPS becomes the mean over the BMA
+    bins alone: 8.1 mm against `quantile_avg`'s 4.5 mm at 72 h, deciding the
+    H10 nomination on a subset rather than on the arm.
+    """
+    if selection_table.empty:
+        return float("nan")
+    chosen = [
+        selection.mapping.get((str(row.bin), lead_hours), selection.pooled_best)
+        for row in selection_table.itertuples()
+    ]
+    picked = selection_table[selection_table["combiner"].to_numpy() == np.array(chosen)]
+    if picked.empty:
+        return float("nan")
+    return cell_weighted_mean(picked["crps"].to_numpy(), picked["n_cells"].to_numpy())
 
 
 #: Two train-fold CRPS values that are compared with `<` to nominate the
@@ -937,20 +988,13 @@ def main() -> int:
             else:
                 best_w = 0.5
 
-            per_bin_train_crps = float("nan")
-            if not train_table.empty:
-                chosen_rows = train_table.copy()
-                chosen_rows["chosen"] = [
-                    selection.mapping.get((str(row.bin), lead_hours), selection.pooled_best)
-                    for row in chosen_rows.itertuples()
-                ]
-                picked = chosen_rows[
-                    chosen_rows["combiner"] == chosen_rows["chosen"]
-                ]
-                if not picked.empty:
-                    per_bin_train_crps = cell_weighted_mean(
-                        picked["crps"].to_numpy(), picked["n_cells"].to_numpy()
-                    )
+            # The arm as it will run: at the fitted weight this is the grid
+            # minimum, otherwise the train CRPS at the weight actually used.
+            if weight_count:
+                best_w_crps = train_crps_at_weight(train_crps_grid, best_w)
+            per_bin_train_crps = per_bin_train_crps_from_selection(
+                selection_table, selection, lead_hours
+            )
             # A per-bin map that picks the same parent for every bin is not a
             # combination: its predictive distribution *is* that parent, so it
             # can tie the parent it collapsed onto but never beat it, and H10
@@ -1219,7 +1263,11 @@ def main() -> int:
             f"H10 PASS: the nominated combined arm beat both parents at "
             f"{leads_beating_both}/{len(leads)} leads."
         )
-        print("Slide 2's 'strongest combiner per bin' claim may return, with the CI.")
+        if set(nominated_by_lead.values()) == {"per_bin"}:
+            print("Slide 2's 'strongest combiner per bin' claim may return, with the CI.")
+        else:
+            print("The passing arm is not only per_bin: Slide 2's per-bin claim needs "
+                  "the per-arm table, not this verdict.")
     else:
         print(
             f"H10 FAIL: the nominated combined arm beat both parents at "

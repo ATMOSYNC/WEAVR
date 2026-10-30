@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -16,13 +17,18 @@ from run_tier2b_combined import (
     compute_brier_score,
     fit_quantile_weight,
     nominate_by_lead,
+    parse_args,
+    per_bin_train_crps_from_selection,
     pit_summary,
     pit_values,
     predictive_mean_from_cdf,
     quantiles_from_cdf,
     score_quantiles_crps,
     select_emos_source,
+    train_crps_at_weight,
 )
+
+from weavr.stacking import PerBinSelectionResult  # noqa: E402
 
 
 class TestComputeBrierScore:
@@ -338,6 +344,83 @@ class TestCellWeightedMean:
 
     def test_zero_counts_is_nan_not_a_division_error(self):
         assert np.isnan(cell_weighted_mean(np.array([4.0]), np.array([0.0])))
+
+
+class TestTrainCrpsAtWeight:
+    """`quantile_avg` is nominated on the weight it runs with, not the grid minimum."""
+
+    GRID = np.round(np.arange(0.0, 1.0 + 0.05, 0.05), 2)
+
+    def test_picks_the_used_weight_not_the_minimum(self):
+        grid_crps = np.linspace(5.0, 4.0, self.GRID.size)  # minimum at w=1.0
+        assert train_crps_at_weight(grid_crps, 0.5, self.GRID) == pytest.approx(grid_crps[10])
+        assert train_crps_at_weight(grid_crps, 0.5, self.GRID) > grid_crps.min()
+
+    def test_matches_the_minimum_at_the_fitted_weight(self):
+        grid_crps = (self.GRID - 0.7) ** 2 + 4.0
+        fitted = float(self.GRID[np.argmin(grid_crps)])
+        assert train_crps_at_weight(grid_crps, fitted, self.GRID) == pytest.approx(grid_crps.min())
+
+    def test_off_grid_weight_is_rejected(self):
+        with pytest.raises(ValueError):
+            train_crps_at_weight(np.zeros(self.GRID.size), 0.33, self.GRID)
+
+    def test_cli_rejects_an_off_grid_quantile_weight(self):
+        with pytest.raises(SystemExit):
+            parse_args(["--quantile-weight", "0.33"])
+        assert parse_args(["--quantile-weight", "0.35"]).quantile_weight == 0.35
+
+
+class TestPerBinTrainCrps:
+    """`per_bin`'s train CRPS must cover every bin, including the ones that chose EMOS."""
+
+    @staticmethod
+    def _selection_table() -> pd.DataFrame:
+        # As built in main(): the chosen EMOS source is relabelled `emos_csg`.
+        return pd.DataFrame(
+            {
+                "bin": ["dry", "dry", "heavy", "heavy"],
+                "lead": 72,
+                "combiner": ["emos_csg", "bma", "emos_csg", "bma"],
+                "crps": [1.0, 1.2, 9.0, 8.0],
+                "n_cells": [900, 900, 100, 100],
+            }
+        )
+
+    def test_bins_that_picked_emos_are_counted(self):
+        selection = PerBinSelectionResult(
+            mapping={("dry", 72): "emos_csg", ("heavy", 72): "bma"}
+        )
+
+        got = per_bin_train_crps_from_selection(self._selection_table(), selection, 72)
+
+        # dry -> EMOS (1.0, 900 cells), heavy -> BMA (8.0, 100 cells).
+        assert got == pytest.approx((1.0 * 900 + 8.0 * 100) / 1000)
+
+    def test_never_worse_than_either_parent_on_train(self):
+        # Picking the better parent per bin cannot lose to either parent overall.
+        table = self._selection_table()
+        selection = PerBinSelectionResult(
+            mapping={("dry", 72): "emos_csg", ("heavy", 72): "bma"}
+        )
+
+        got = per_bin_train_crps_from_selection(table, selection, 72)
+
+        for parent in ("emos_csg", "bma"):
+            rows = table[table["combiner"] == parent]
+            assert got <= cell_weighted_mean(rows["crps"].to_numpy(), rows["n_cells"].to_numpy())
+
+    def test_an_unmapped_bin_uses_the_pooled_best(self):
+        selection = PerBinSelectionResult(mapping={("heavy", 72): "bma"}, pooled_best="emos_csg")
+
+        got = per_bin_train_crps_from_selection(self._selection_table(), selection, 72)
+
+        assert got == pytest.approx((1.0 * 900 + 8.0 * 100) / 1000)
+
+    def test_empty_table_is_nan(self):
+        assert np.isnan(
+            per_bin_train_crps_from_selection(pd.DataFrame(), PerBinSelectionResult(mapping={}), 72)
+        )
 
 
 class TestComparableTrainCrps:
