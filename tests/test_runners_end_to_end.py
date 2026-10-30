@@ -59,6 +59,8 @@ RUNNER_STORE_KINDS: dict[str, tuple[str, ...]] = {
     "run_tier2_hierarchical_baseline.py": ("baseline", "lagged", "ifs_ens", "climatology"),
     "run_tier3_regime_conditioned_baseline.py": ("baseline", "lagged", "ifs_ens", "climatology"),
     "run_tier2b_combined.py": ("baseline", "lagged", "ifs_ens", "climatology"),
+    "run_tail_repair_qm.py": ("baseline", "climatology"),
+    "run_tail_repair_qm_emos.py": ("baseline", "lagged", "ifs_ens", "climatology"),
 }
 
 
@@ -188,6 +190,9 @@ AGGREGATE_RUNNERS = [
     ("run_tier3_regime_conditioned_baseline.py", "tier3_regime_conditioned_baseline.csv", True),
     ("run_independence_diagnostic.py", "independence_diagnostic.csv", False),
     ("run_tier2b_combined.py", "tier2b_combined.csv", True),
+    # Step 11: both QM runners, the member-level one with both sources.
+    ("run_tail_repair_qm.py", "tail_repair_qm.csv", True),
+    ("run_tail_repair_qm_emos.py", "tail_repair_qm_emos.csv", True),
 ]
 
 #: Step 13's arms. The two parents plus the four combinations; a run that
@@ -1065,3 +1070,24 @@ def test_dashboard_export_rejects_a_partial_fit_season(stores, tmp_path):
     )
     assert result.returncode == 2
     assert "go together" in result.stderr
+
+
+def test_qm_emos_scores_both_sources_and_every_arm(stores, tmp_path):
+    """Step 11 item 4c: EMOS-CSG on QM-corrected IFS members as well as GraphCast.
+
+    A run that silently dropped a source or an arm would still write a
+    non-empty CSV, which is all the aggregate check above can see.
+    """
+    out = tmp_path / "qm_emos"
+    run_script("run_tail_repair_qm_emos.py", stores, out)
+    scores = pd.read_csv(out / "tail_repair_qm_emos.csv")
+    assert set(scores["emos_source"]) == {"graphcast", "ifs_ens"}
+    for source, group in scores.groupby("emos_source"):
+        assert set(group["arm"]) == {
+            "raw_members", "qm_members_same_period", "qm_members_climatology",
+        }, source
+    paired = pd.read_csv(out / "tail_repair_qm_emos_paired.csv")
+    assert set(paired["emos_source"]) == {"graphcast", "ifs_ens"}
+    assert "h7_lead_improved" in paired.columns
+    names = {p.name.split("__lead")[0] for p in (out / "per_day").glob("*.csv")}
+    assert {"qmemos_raw_members", "qmemos_ifs_ens_raw_members"} <= names
