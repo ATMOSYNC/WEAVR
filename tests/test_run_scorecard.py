@@ -13,6 +13,7 @@ from run_scorecard import (  # noqa: E402
     _pooled_csi,
     _pooled_sedi,
     _verdict_for_claim,
+    _verdict_from_runner_table,
     _verdicts_with_legs,
     build_scorecard,
     compare_methods,
@@ -105,6 +106,24 @@ class TestPooledCategoricalScores:
 
         assert result.estimate == pytest.approx(0.0)
         assert not result.significant
+
+    def test_pod_and_far_keep_the_loss_orientation(self):
+        # A detects more (POD 20/22 vs 5/15) and raises fewer false alarms
+        # (FAR 2/22 vs 10/15): both differences must read "A is better".
+        better = tuple(np.full(20, x, dtype=float) for x in (20.0, 2.0, 2.0, 76.0))
+        worse = tuple(np.full(20, x, dtype=float) for x in (5.0, 10.0, 10.0, 75.0))
+
+        pod = _bootstrap_categorical_difference(better, worse, "pod", 7, 200, 0)
+        far = _bootstrap_categorical_difference(better, worse, "far", 7, 200, 0)
+
+        assert pod.estimate == pytest.approx(-(20 / 22 - 5 / 15))
+        assert far.estimate == pytest.approx(2 / 22 - 10 / 15)
+        assert pod.estimate < 0 and far.estimate < 0
+
+    def test_unknown_score_is_rejected_not_scored_as_sedi(self):
+        counts = tuple(np.full(20, x, dtype=float) for x in (10.0, 5.0, 5.0, 80.0))
+        with pytest.raises(ValueError):
+            _bootstrap_categorical_difference(counts, counts, "ets", 7, 100, 0)
 
 
 class TestCompareMethods:
@@ -392,3 +411,62 @@ class TestVerdicts:
         per_day = _per_day("tier0", 24, 5, 100.0)
         with pytest.raises(FileNotFoundError, match="meaningless without"):
             write_verdicts(pd.DataFrame(), per_day, tmp_path, str(tmp_path / "absent.md"))
+
+
+
+class TestVerdictFromRunnerTable:
+    """H7 and H10 are read from their runners' paired tables (31 Oct, F2)."""
+
+    H7 = {
+        "claim": "H7-QM (x)", "summary": "s", "method_a": "a", "method_b": "b",
+        "metric": "m", "threshold": "", "produced_by": "11",
+        "runner_table": "qm.csv", "rule": "h7", "rows": {"scope": "tier1_blend"},
+    }
+    H10 = {
+        "claim": "H10", "summary": "s", "method_a": "a", "method_b": "b",
+        "metric": "crps_mm", "threshold": "", "produced_by": "13",
+        "runner_table": "t2b.csv", "rule": "h10",
+    }
+
+    def _h7(self, tmp_path, tw_delta, tw_sig, sedi_delta, sedi_sig, brier_bad):
+        pd.DataFrame(
+            {
+                "scope": "tier1_blend",
+                "lead_hours": [24, 48, 72, 96, 120],
+                "twcrps_64.5_delta": tw_delta,
+                "twcrps_64.5_improved": tw_sig,
+                "sedi_115.6_delta": sedi_delta,
+                "sedi_115.6_improved": sedi_sig,
+                "brier_7.5_degraded": brier_bad,
+            }
+        ).to_csv(tmp_path / "qm.csv", index=False)
+        return _verdict_from_runner_table(self.H7, tmp_path)
+
+    def test_h7_passes_on_either_leg(self, tmp_path):
+        v = self._h7(tmp_path, [0.4] * 5, [False] * 5, [-0.2] * 5, [True] * 4 + [False],
+                     [False] * 5)
+        assert v["status"] == "PASS" and v["n_leads_significant"] == 4
+        assert "SEDI" in v["reason"]
+
+    def test_h7_fails_when_brier_is_worse_at_any_lead(self, tmp_path):
+        v = self._h7(tmp_path, [-0.4] * 5, [True] * 5, [-0.2] * 5, [True] * 5,
+                     [False] * 4 + [True])
+        assert v["status"] == "FAIL" and "non-inferiority" in v["reason"]
+
+    def test_h7_direction_without_ci_is_insufficient(self, tmp_path):
+        v = self._h7(tmp_path, [-0.1] * 5, [False] * 5, [0.1] * 5, [False] * 5, [False] * 5)
+        assert v["status"] == "INSUFFICIENT_DATA"
+
+    def test_h10_needs_both_parents_beaten_at_a_lead(self, tmp_path):
+        rows = []
+        for lead in (24, 48, 72, 96, 120):
+            for parent, diff in (("emos_csg", -0.02), ("bma", -0.01 if lead < 72 else 0.01)):
+                rows.append({"lead_hours": lead, "arm": "quantile_avg", "is_nominated": True,
+                             "vs_parent": parent, "crps_difference_mm": diff,
+                             "beats_parent": diff < 0, "degenerate": False})
+        pd.DataFrame(rows).to_csv(tmp_path / "t2b.csv", index=False)
+        v = _verdict_from_runner_table(self.H10, tmp_path)
+        assert v["status"] == "FAIL" and v["n_leads_improved"] == 2
+
+    def test_missing_table_is_not_yet_tested(self, tmp_path):
+        assert _verdict_from_runner_table(self.H10, tmp_path)["status"] == "NOT_YET_TESTED"
