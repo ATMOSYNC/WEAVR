@@ -1,0 +1,11 @@
+lead_hours,fold,emos_source,train_crps_emos_graphcast,train_crps_emos_ifs_ens,train_crps_bma,vincentization_weight,vincentization_weight_fitted,vincentization_train_crps,per_bin_train_crps,nominated_primary_arm,nomination_reason,per_bin_degenerate,per_bin_fallback_bins,weight_grid_cells
+24,2018,graphcast,4.441821236431961,4.459045517856015,4.386521800067306,0.8,True,4.381415795549519,4.3789140011207754,per_bin,lowest train-fold CRPS among the combinations,False,,139916
+24,2020,graphcast,3.7791302983821047,3.7834225343842887,3.713783684731923,0.8,True,3.708715198062691,3.7080027641378246,per_bin,lowest train-fold CRPS among the combinations,False,,139917
+48,2018,graphcast,4.4688600679694135,4.620208755616149,4.4437922859247205,0.65,True,4.4350291189623245,4.439067538281439,quantile_avg,lowest train-fold CRPS among the combinations,False,,138760
+48,2020,graphcast,3.817717790445122,3.892326046985164,3.780666370252035,0.7,True,3.773867273194353,3.776526167413222,quantile_avg,lowest train-fold CRPS among the combinations,False,,138759
+72,2018,graphcast,4.500173452302382,4.740767175659287,4.480572840521255,0.65,True,4.471014674033332,4.472751373315816,quantile_avg,lowest train-fold CRPS among the combinations,False,,137601
+72,2020,graphcast,3.8730873180848167,4.0285232385863585,3.847643027463661,0.65,True,3.838234465019779,3.8413513717943344,quantile_avg,lowest train-fold CRPS among the combinations,False,,137603
+96,2018,graphcast,4.56789971005734,4.847115940862755,4.541677467281163,0.7,True,4.535155778886764,4.538705522466736,quantile_avg,lowest train-fold CRPS among the combinations,False,,136444
+96,2020,graphcast,3.9839372920406744,4.161239153584111,3.9570031606645917,0.7,True,3.9492745173428054,3.9570031606645917,quantile_avg,lowest train-fold CRPS among the combinations,False,,136446
+120,2018,graphcast,4.661270060143134,4.937075502883503,4.624248713560497,0.75,True,4.619979390080293,4.6241430189015995,quantile_avg,lowest train-fold CRPS among the combinations,False,,135287
+120,2020,graphcast,4.109117822417241,4.2753216087189045,4.077173051127749,0.7,True,4.070942630864368,4.077173051127749,quantile_avg,lowest train-fold CRPS among the combinations,False,,135289

@@ -85,6 +85,7 @@ from run_tier1_regional_baseline import (  # noqa: E402
 
 from weavr.quantile_mapping import (  # noqa: E402
     apply_regional_quantile_maps,
+    climatology_excluding_years,
     fit_regional_quantile_maps,
 )
 from weavr.regions import assign_regions  # noqa: E402
@@ -311,6 +312,11 @@ def main() -> int:
             test_obs = obs_aligned.isel(sample=test_mask)
             forecast_train = {n: da.isel(sample=train_mask) for n, da in forecasts.items()}
             forecast_test = {n: da.isel(sample=test_mask) for n, da in forecasts.items()}
+            # The climatology spans both test seasons; the test year is removed
+            # so the `climatology` map never sees the observations it is scored on.
+            fold_climatology = climatology_excluding_years(
+                climatology_rain, sample_times[test_mask]
+            )
             split_kind = (
                 "leave_one_year_out"
                 if split_label != "seasonal_block_split"
@@ -357,7 +363,7 @@ def main() -> int:
                         forecast_train[name],
                         train_obs,
                         region_labels,
-                        climatology_rain,
+                        fold_climatology,
                         variant,
                         lead_hours,
                         name,
