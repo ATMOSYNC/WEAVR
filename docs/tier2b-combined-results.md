@@ -45,7 +45,8 @@ Verified against closed-form `csgd_crps` with $< 1.5\%$ relative error across al
 ## 3a. Measured Results
 
 Two-season daily LOYO (2018 JJAS / 2020 JJAS), leads 24–120 h, Tier 1 blend
-scope, against the IMD observed grid. Pooled scores are cell-weighted over both
+scope, against the IMD observed grid, on the corrected forecast-observation
+pairing (#106; 234–242 test days per lead). Pooled scores are cell-weighted over both
 folds and all five leads. Reproduce with
 `scripts/run_tier2b_combined.py --fit-weight` (`--fit-weight` adds the
 train-fitted `quantile_avg` arm alongside the fixed w=0.5 one; without it both
@@ -54,23 +55,23 @@ arms use 0.5). Results: `results/tier2b_combined.csv`, `_paired.csv`,
 
 | arm | pooled CRPS (mm) | PIT mean | role |
 |---|---|---|---|
-| `linear_pool` | **4.5412** | 0.492 | comparison only |
-| `quantile_avg_fixed` (w=0.5) | 4.5420 | 0.492 | combination |
-| `quantile_avg` (w fitted on train) | 4.5484 | 0.493 | combination |
-| `per_bin` | 4.5591 | 0.498 | combination |
-| `bma` | 4.5645 | 0.498 | parent |
-| `emos_csg` | 4.5657 | 0.499 | parent |
+| `quantile_avg_fixed` (w=0.5) | **4.2024** | 0.494 | combination |
+| `linear_pool` | 4.2024 | 0.494 | comparison only |
+| `quantile_avg` (w fitted on train) | 4.2040 | 0.494 | combination |
+| `per_bin` | 4.2134 | 0.500 | combination |
+| `bma` | 4.2194 | 0.499 | parent |
+| `emos_csg` | 4.2288 | 0.499 | parent |
 
 Brier score by IMD threshold (cell-weighted, lower is better):
 
 | arm | 7.5 mm | 35.5 mm | 64.5 mm | 115.6 mm | 204.5 mm |
 |---|---|---|---|---|---|
-| `linear_pool` | 0.14308 | **0.03879** | **0.01240** | 0.00259 | 0.00027 |
-| `quantile_avg_fixed` | 0.14309 | 0.03880 | 0.01243 | 0.00259 | 0.00027 |
-| `quantile_avg` | **0.14307** | 0.03891 | 0.01249 | 0.00260 | 0.00027 |
-| `per_bin` | 0.14341 | 0.03899 | 0.01248 | 0.00261 | 0.00028 |
-| `bma` | 0.14348 | 0.03905 | 0.01253 | 0.00261 | 0.00028 |
-| `emos_csg` | 0.14401 | 0.03899 | 0.01243 | 0.00259 | 0.00027 |
+| `quantile_avg_fixed` | 0.12978 | **0.03660** | 0.01191 | 0.00255 | 0.00027 |
+| `linear_pool` | 0.12976 | 0.03663 | **0.01190** | **0.00254** | 0.00027 |
+| `quantile_avg` | **0.12975** | 0.03664 | 0.01192 | 0.00255 | 0.00027 |
+| `per_bin` | 0.13010 | 0.03672 | 0.01191 | 0.00254 | 0.00027 |
+| `bma` | 0.13020 | 0.03678 | 0.01195 | 0.00255 | 0.00027 |
+| `emos_csg` | 0.13033 | 0.03693 | 0.01200 | 0.00257 | 0.00027 |
 
 The Brier spread across arms is small -- the fifth decimal at 204.5 mm, the
 third at 7.5 mm -- so Brier does not separate these methods. CRPS does, which
@@ -88,13 +89,14 @@ test pins it (`tests/test_run_tier2b_combined.py`). Only `pit_mean` changed:
 every CRPS, Brier and paired difference is byte-identical between the two
 codes.
 
-**What changed against the previous run.** Both parents and every combination
-moved because BMA did. The previous run used BMA quantiles from a library with
-two defects, fixed on #102: a variance floor compounded by an independent
-`theta` clip, and Monte Carlo quantiles. With them fixed, BMA's pooled CRPS
-fell from 4.5918 to 4.5645 mm and it now edges EMOS-CSG (4.5657), so the two
-parents are close -- which is exactly the regime where combining them can
-help.
+**What changed against the previous runs.** On the corrected pairing (#106),
+every arm's pooled CRPS fell by about 0.34 mm (BMA 4.5645 → 4.2194, EMOS-CSG
+4.5657 → 4.2288), and the ordering held: every combination beats both parents
+on pooled CRPS, and BMA stays ahead of EMOS-CSG, now by 0.009 mm instead of
+0.001. Before that, both parents and every combination moved because BMA did:
+the run before used BMA quantiles from a library with two defects, fixed on
+#102 (a variance floor compounded by an independent `theta` clip, and Monte
+Carlo quantiles), which put BMA at 4.5918 mm.
 
 ---
 
@@ -103,95 +105,116 @@ help.
 - **Null Hypothesis**: The combined combiner (quantile averaging or per-bin selection) does not improve upon both individual constituent combiners.
 - **Pass Rule**: Significantly lower CRPS than both standalone EMOS-CSG and BMA at $\ge 3$ of 5 leads, with the 95% paired block-bootstrap CI strictly excluding 0, for the **primary arm nominated on train-fold CRPS**.
 
-### 4.1 H10 verdict: **FAIL** (2 of 5 leads) -- but quantile averaging beats both parents at 5 of 5
+### 4.1 H10 verdict: **PASS** (5 of 5 leads)
 
-The primary arm is nominated on **train**-fold CRPS, never on test. It was
-`per_bin` at 24, 48 and 72 h and `quantile_avg` at 96 and 120 h. Paired daily
-CRPS differences, negative meaning the combination is better, 95% paired
-moving-block bootstrap over both seasons (236–244 test days per lead):
+The primary arm is nominated on **train**-fold CRPS, pooled over the two
+folds, never on test. On the corrected pairing (#106) and with the per-bin
+train CRPS fixed (§7), it is `per_bin` at 24 h and `quantile_avg` at 48–120 h.
+Paired daily CRPS differences, negative meaning the combination is better, 95%
+paired moving-block bootstrap over both seasons (234–242 test days per lead):
 
-| lead | nominated | vs `emos_csg` | verdict | vs `bma` | verdict |
-|---|---|---|---|---|---|
-| 24 h | `per_bin` | −0.00428 CI[−0.02123, +0.01340] | fail | −0.01040 CI[−0.02098, −0.00296] | **pass** |
-| 48 h | `per_bin` | −0.00178 CI[−0.01845, +0.01375] | fail | −0.00699 CI[−0.01496, −0.00183] | **pass** |
-| 72 h | `per_bin` | −0.00890 CI[−0.03058, +0.01223] | fail | −0.00701 CI[−0.01499, −0.00178] | **pass** |
-| 96 h | `quantile_avg` | −0.02479 CI[−0.04439, −0.00717] | **pass** | −0.01514 CI[−0.02396, −0.00833] | **pass** |
-| 120 h | `quantile_avg` | −0.02075 CI[−0.03944, −0.00597] | **pass** | −0.01502 CI[−0.02187, −0.00842] | **pass** |
+| lead | nominated | vs `emos_csg` | vs `bma` | both? |
+|---|---|---|---|---|
+| 24 h | `per_bin` | −0.0453 CI[−0.0654, −0.0262] | −0.0094 CI[−0.0168, −0.0034] | **pass** |
+| 48 h | `quantile_avg` | −0.0265 CI[−0.0392, −0.0141] | −0.0141 CI[−0.0218, −0.0070] | **pass** |
+| 72 h | `quantile_avg` | −0.0192 CI[−0.0311, −0.0085] | −0.0174 CI[−0.0262, −0.0095] | **pass** |
+| 96 h | `quantile_avg` | −0.0141 CI[−0.0293, −0.0012] | −0.0182 CI[−0.0290, −0.0086] | **pass** |
+| 120 h | `quantile_avg` | −0.0166 CI[−0.0339, −0.0007] | −0.0162 CI[−0.0257, −0.0080] | **pass** |
 
-**2 of 5 leads beat both parents, short of the pre-registered 3. H10 fails as
-registered.** The failure is entirely the nomination: `per_bin` has the lowest
-*train* CRPS at the three short leads, by 0.001–0.007 mm pooled over the folds,
-and then never separates from EMOS-CSG on test.
+**5 of 5 leads beat both parents, above the pre-registered 3. H10 passes as
+registered.** The nomination margins on train are small: `per_bin` leads
+`quantile_avg` by 0.0016 mm at 24 h, and trails it by 0.0024–0.0056 mm at
+48–120 h.
 
 Every arm is reported separately, so the verdict on the nominated arm cannot
-hide a method that did beat both parents:
+hide how the others did:
 
 | arm | leads where it beat **both** parents |
 |---|---|
-| `per_bin` | **0 / 5** |
-| `quantile_avg` (fitted) | **4 / 5** |
-| `quantile_avg_fixed` (w=0.5) | **5 / 5** |
-| `linear_pool` | **5 / 5** (comparison only) |
+| `quantile_avg` (weight fitted on train, 0.65–0.80 towards BMA) | **5 / 5** |
+| `quantile_avg_fixed` (w=0.5, the pre-registered weight) | **4 / 5** (not 24 h vs `bma`: −0.0105, CI[−0.0231, +0.0020]) |
+| `linear_pool` | **4 / 5** (comparison only; not 24 h vs `bma`) |
+| `per_bin` | **2 / 5** (24 and 48 h; at 72–120 h it never separates from `emos_csg`) |
 
-`quantile_avg_fixed` against each parent, every interval excluding 0:
+**The pass does not depend on the weight.** These results use `--fit-weight`,
+as the committed Tier 2b results have since 2048060. With the pre-registered
+fixed weight of 0.5 the quantile-averaging arm still beats both parents at 4
+of 5 leads, so H10 passes either way.
 
-| lead | vs `emos_csg` | vs `bma` |
-|---|---|---|
-| 24 h | −0.0180 CI[−0.0279, −0.0086] | −0.0241 CI[−0.0387, −0.0124] |
-| 48 h | −0.0184 CI[−0.0270, −0.0107] | −0.0236 CI[−0.0352, −0.0130] |
-| 72 h | −0.0254 CI[−0.0362, −0.0154] | −0.0235 CI[−0.0390, −0.0102] |
-| 96 h | −0.0303 CI[−0.0430, −0.0201] | −0.0206 CI[−0.0384, −0.0060] |
-| 120 h | −0.0264 CI[−0.0389, −0.0164] | −0.0207 CI[−0.0333, −0.0083] |
+**Why this differs from the previous verdict (FAIL, 2 of 5).** Two things
+changed, and both are recorded rather than averaged away:
 
-**The previous verdict was PASS (3 of 5), and it does not survive.** It rested
-on BMA quantiles from the defective library, under which the combinations
-beat BMA by 0.02–0.07 mm and `quantile_avg` was the nominee at four leads. With
-BMA fixed, every arm's margin over BMA shrinks and the nominations change; the
-result above is the one the corrected parents support.
+1. **The pairing (#106).** Every arm and both parents moved by about 0.34 mm
+   (§3a); the margins between them changed too.
+2. **The nomination was decided on the wrong numbers.** `per_bin`'s train CRPS
+   averaged only the bins where BMA had been picked (§7, last row), so at the
+   leads where BMA won only small heavy-rain bins it looked better than it
+   was. The previous run nominated `per_bin` at 24, 48 and 72 h by margins of
+   0.001–0.007 mm, which is the size of that bias, so the previous FAIL may
+   itself have rested on it. It is not re-decided here on the old data; the
+   verdict above is the one the corrected pairing and the corrected nomination
+   support.
 
-**Nomination is now pooled over folds.** At 48 h and 96 h the two folds' train
-CRPS prefer different arms, and the runner used to take whichever fold came
-first. `nominate_by_lead` now averages each candidate's train CRPS over the
-folds (ties to `quantile_avg`; `per_bin` ineligible where it collapsed onto one
-parent). On this run it nominates exactly the same arms, so the verdict does not
-depend on the change -- but it no longer depends on fold order either.
+The verdict before that (PASS, 3 of 5) rested on BMA quantiles from the
+defective library (#102) and was already withdrawn.
 
 ---
 
-## 5. What the verdict does and does not license
+## 5. What the verdict licenses
 
-**It does not license H10.** The pre-registered claim fails, and it is not
-re-litigated here by swapping in the arm that did best on test. Choosing the
-fixed-weight arm *after* seeing these results is exactly what nominating on
-train was meant to prevent.
+**It licenses H10:** a combination of EMOS-CSG and BMA beats both on CRPS at 5
+of 5 leads, every interval excluding 0, nominated on train before test was
+seen.
 
-**It does license a narrower, honest statement:** averaging the two parents'
-quantile functions with the pre-registered fixed weight of 0.5 beats both
-parents at every lead, by 0.018–0.030 mm of daily CRPS, every interval
-excluding 0. That arm was declared before the run (w=0.5 is the
-pre-registered weight), so it is a real result -- but it is not the H10
-primary, and a follow-up claim built on it needs its own pre-registration.
+**The recommended probabilistic combiner is quantile averaging**
+(Vincentization) of EMOS-CSG and BMA. It is the nominated arm at four of five
+leads and the only arm that beats both parents at all five, by 0.014–0.027 mm
+of daily CRPS against EMOS-CSG and 0.014–0.018 mm against BMA (48–120 h).
 
-**It does not license the claim Step 13 was partly built to rescue.** Slide 2
-says WEAVR "uses the strongest combiner per bin". That is `per_bin`, and
-`per_bin` beats both parents at **0 of 5** leads. Selecting a winner per rain
-bin on train CRPS and applying it unconditionally throws away the hedge exactly
-where it is needed. Slide 2 should carry no per-bin claim.
+**It still does not license Slide 2's "uses the strongest combiner per
+bin".** That claim is `per_bin`, which beats both parents at only 2 of 5
+leads. What the evidence supports is: *WEAVR combines EMOS-CSG and BMA by
+averaging their quantile functions, which beats both at every lead (95%
+intervals excluding 0).*
 
 **Three qualifications:**
 
-1. **Fitting the Vincentization weight still does not help.** The train-fitted
-   weight (0.55–0.80 by lead and fold) beats both parents at 4 of 5 leads; the
-   fixed 0.5 at 5 of 5. On this evidence the extra freedom costs a lead, so
-   w=0.5 stays the runner's default.
-2. **The margin is small.** About 0.02–0.03 mm of daily CRPS against a ~4.5 mm
-   total: real and significant under the paired test, not the magnitude of a
+1. **The margin is small.** 0.01–0.05 mm of daily CRPS against a ~4.2 mm
+   total: real and significant under the paired test, not the size of a
    method change.
-3. **Day alignment (#106).** Every forecast here is paired with the IMD day
-   before the one it covers, as in every runner today. Both parents and every
-   combination pay that penalty on the same days, so the paired differences
-   are like for like, but the absolute CRPS is understated and H10 should be
-   re-decided once #106 is resolved.
+2. **The weight is fitted.** 0.65–0.80 towards BMA by lead and fold, read from
+   `results/tier2b_combined_train.csv`; the pre-registered 0.5 gives one lead
+   fewer, as above.
+3. **CRPS is the verdict's metric, not tail reliability.** H10 says nothing
+   about how well-calibrated the combined distribution is above 64.5 mm; see
+   §5a for what that means for the extreme-rain map.
+
+### 5a. The dashboard flag (#75)
+
+`scripts/export_dashboard_example_grids.py --combiner quantile_avg` (with the
+`--fit-*` stores) draws the extreme-probability map from the recommended
+combiner, configured exactly as evaluated: the EMOS source and weight come
+from the Tier 2b fold whose test season is the displayed one (2020, trained on
+2018), and EMOS-CSG and BMA quantiles are averaged per (bin, region) as Tier
+2b scores them. The GPD tail needs only P(Y > 64.5 mm) from the distribution
+below it, so it splices onto the averaged distribution unchanged; that
+probability is read off the averaged quantile function on levels reaching
+1 − 1e-10 (`weavr.stacking.exceedance_from_quantiles`), because the 99 levels
+used for CRPS cannot resolve anything below 1%. With weight 0 the path
+reproduces the EMOS map to 1.3e-5 relative error in every cell
+(`test_dashboard_quantile_avg_at_weight_zero_is_the_emos_map`).
+
+**The default stays `emos_csg`, and the flag is experimental.** On the real
+2020 display day the quantile-averaged map's probabilities are bounded,
+ordered (P(>204.5) ≤ P(>115.6) everywhere) and never fall back, but they are
+1.9 times the EMOS map's on average at 24 h and 1.4 times at 120 h, with a
+median per-cell ratio of 10 and 4.9 (the highest cell is about the same:
+0.021 against 0.023 at 115.6 mm, 24 h). BMA's upper tail is heavier
+than EMOS-CSG's, and at a weight of 0.8 towards BMA that lifts the anchor of
+the splice. The EMOS tail already over-forecasts these extremes about three
+times (`docs/tail-repair-results.md` §4b), and the combined map's reliability
+has not been measured, so it is offered beside the published map rather than
+replacing it.
 
 ---
 
@@ -202,6 +225,10 @@ where it is needed. Slide 2 should carry no per-bin claim.
 - **The linear pool's inverse is interpolated**, not closed-form (§2 C). It is
   kept comparison-only for that reason, and a test pins it inside the parents'
   CRPS range so an inversion failure cannot pass as a pooling result.
+- **The quantile-averaged extreme map's reliability is unmeasured** (§5a). Its
+  probabilities run about twice the EMOS map's; whether that is better or worse
+  calibrated above 64.5 mm needs the step 12 reliability table rerun on this
+  combiner.
 
 **Resolved since the first version of this file:**
 
@@ -216,7 +243,7 @@ where it is needed. Slide 2 should carry no per-bin claim.
 
 ## 7. Bugs found by reading the numbers, not the tests
 
-This step needed four runs before this one. Every run exited 0, passed the test suite, and wrote
+This step needed five runs before this one. Every run exited 0, passed the test suite, and wrote
 finite numbers; each was wrong in a way only inspection caught. They are
 recorded because the pattern is the finding, not the individual slips.
 
@@ -226,10 +253,15 @@ recorded because the pattern is the finding, not the individual slips.
 | Train table keyed `lead=0` while the test lookup asked for the real lead | `per_bin` silently collapsed to one parent everywhere, showing `0.000000` differences | A collapse looks exactly like a clean result |
 | `sum(means) / sum(counts)` used as a mean | `per_bin` train CRPS read 7e-5 mm against `quantile_avg`'s 4.8 mm -- 56,000x -- so `<=` always picked `per_bin`, and H10 was decided on the weakest arm at 4 of 5 leads | Both values were finite and plausible-looking |
 | Raw rainfall passed where a binary indicator belonged | Every `brier_*` column read ~281 mm^2 instead of a value in [0,1] | Nothing bounded a Brier score |
+| `per_bin`'s train CRPS looked up its choices in the raw train table, where EMOS is labelled `emos_graphcast`, instead of the selection table, where it is `emos_csg` | Every bin that picked EMOS silently dropped out: `per_bin` train CRPS read 8.1 mm against 4.5 mm at 72 h on the 2018 fold, and at other leads was biased by the size of the nomination margins | Within 10x of the other arm, so the scale guard passed; the value was finite and, at most leads, plausible |
+| `quantile_avg` was nominated on its train CRPS at the grid-minimum weight even when it ran at another | Inert in every run so far (every fold fitted an interior weight), but a fold that did not would have been nominated on one weight and scored on another | No run had exercised it |
 
 Each is now covered by a test built from the numbers that exposed it, and the
 third has a runtime guard (`comparable_train_crps`) that aborts the run rather
-than nominating an arm from incomparable quantities. The general lesson: the
+than nominating an arm from incomparable quantities. The fifth is now caught by
+an invariant checked after every regeneration: picking the better parent per
+bin can never be worse on train than either parent, and the broken value broke
+it by 3.6 mm. The general lesson: the
 suite checks that the code runs and that outputs are well-formed, and none of
 that catches a computation that is well-formed and means the wrong thing.
 Sanity bounds on internal quantities -- a Brier score in [0,1], two CRPS values
