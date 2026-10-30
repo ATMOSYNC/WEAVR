@@ -17,9 +17,12 @@ for two things that run cannot show:
    the resamples. The ratio of the two interval widths is the dependence
    inflation the information-matrix interval leaves out.
 
-Everything is fitted on each LOYO training season's IMD observations -- the
-exact data the runner fits on -- and nothing here touches a forecast, so it
-runs in minutes rather than hours.
+Everything is fitted on the IMD JJAS archive (2006-2020) minus each LOYO
+fold's test year -- the exact data the runner fits on since 31 Oct (step 12:
+"IMD archive exceedances above u, EXCLUDING the test year"; it used to be the
+training season alone) -- and nothing here touches a forecast. The block
+bootstrap resamples archive days in 7-day blocks; a block can span the gap
+between two seasons, which only adds a little independence it should not.
 
 Output: `results/tail_evt_diagnostics.csv`, one row per (fold, threshold).
 """
@@ -35,6 +38,9 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from build_seeps_climatology import load_climatology  # noqa: E402
+
+from weavr.quantile_mapping import climatology_excluding_years  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
 from weavr.score_io import FORCE_HELP, guard_result_overwrites  # noqa: E402
 from weavr.splits import iter_evaluation_folds  # noqa: E402
@@ -128,6 +134,7 @@ def diagnose_threshold(
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-stores", nargs="+", default=None)
+    parser.add_argument("--climatology", default="data/imd_seeps_climatology_jjas.zarr")
     parser.add_argument("--results-dir", default="results")
     parser.add_argument("--out-csv", type=Path, default=None)
     parser.add_argument("--test-fraction", type=float, default=0.2)
@@ -153,14 +160,17 @@ def main(argv: list[str] | None = None) -> int:
     region_2d = region_labels.transpose("latitude", "longitude").values
     rng = np.random.default_rng(args.seed)
 
+    archive = load_climatology(args.climatology).load()["rain"]
+    archive = archive.transpose("time", "latitude", "longitude")
     rows = []
     times = pd.DatetimeIndex(obs["time"].values)
     for train_mask, _test_mask, fold in iter_evaluation_folds(
         times, test_fraction=args.test_fraction
     ):
-        rain = obs.values[train_mask]
+        rain = climatology_excluding_years(archive, times[_test_mask]).values
         for threshold_u in CANDIDATE_THRESHOLDS_MM:
-            row = {"fold": fold, "n_train_days": int(train_mask.sum())}
+            # `n_train_days`: archive days the tail is fitted on (test year removed).
+            row = {"fold": fold, "n_train_days": int(rain.shape[0])}
             row.update(
                 diagnose_threshold(
                     rain, region_2d, threshold_u, args.n_resamples, args.block_days, rng

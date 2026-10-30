@@ -61,9 +61,11 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from build_seeps_climatology import load_climatology  # noqa: E402
 from run_tier1_regional_baseline import (  # noqa: E402
     FORECAST_SOURCE_NAMES,
     LEAD_HOURS,
@@ -81,6 +83,7 @@ from run_tier2_hierarchical_baseline import (  # noqa: E402
 
 from weavr.bma import bma_predictive_quantiles, fit_hierarchical_bma  # noqa: E402
 from weavr.emos import fit_emos_csg, predict_csgd_params  # noqa: E402
+from weavr.quantile_mapping import climatology_excluding_years  # noqa: E402
 from weavr.rain_bins import classify_rain_bin  # noqa: E402
 from weavr.regions import SREEKALA_BABU_ZONES, assign_regions  # noqa: E402
 from weavr.stacking import (  # noqa: E402
@@ -351,8 +354,15 @@ def build_example_probability_grids(
     fit_stores: tuple[str, str, str] | None = None,
     combiner: str = "emos_csg",
     tier2b_train_csv: str | Path = DEFAULT_TIER2B_TRAIN_CSV,
+    climatology: str | Path | None = None,
 ) -> dict[str, np.ndarray | str | float]:
     """EMOS-CSG (`ifs_ens`) exceedance-probability grids for both thresholds.
+
+    `climatology`, when given, is the IMD JJAS archive store the GPD tail is
+    fitted on, minus the displayed day's year -- step 12's "IMD archive
+    exceedances above u, EXCLUDING the test year" (`main` passes the default
+    store). Without it the tail is fitted on the fitting season's observations,
+    as before 31 Oct.
 
     Returns results for P(rain > 115.6 mm) and P(rain > 204.5 mm) with
     per-cell method flags ("csgd" | "csgd+gpd_tail" | "fallback").
@@ -441,8 +451,15 @@ def build_example_probability_grids(
         (v for v in fit_obs.data_vars if "precip" in v.lower() or "rain" in v.lower()),
         next(iter(fit_obs.data_vars)),  # fallback: first variable
     )
+    tail_obs, tail_var, tail_fitted_on = fit_obs, precip_var, "fit season observations"
+    if climatology is not None:
+        archive = load_climatology(climatology).load()["rain"]
+        shown = pd.DatetimeIndex([pd.Timestamp(str(ifs_mean_sample["sample"].values))])
+        tail_obs = climatology_excluding_years(archive, shown.values).to_dataset(name="rain")
+        tail_var = "rain"
+        tail_fitted_on = f"IMD JJAS archive without {shown.year[0]} ({tail_obs.sizes['time']} days)"
     exceedances_by_region = _collect_exceedances_by_region(
-        fit_obs, precip_var, DEFAULT_TAIL_THRESHOLD_U, region_labels
+        tail_obs, tail_var, DEFAULT_TAIL_THRESHOLD_U, region_labels
     )
     tail_fit: TailFit = fit_pooled_gpd(exceedances_by_region, DEFAULT_TAIL_THRESHOLD_U)
 
@@ -451,6 +468,7 @@ def build_example_probability_grids(
         "longitude": lon_vals,
         "sample_time": str(ifs_mean_sample["sample"].values),
         "fitted_on": baseline_store if fit_stores is None else fit_stores[0],
+        "tail_fitted_on": tail_fitted_on,
         "combiner": combiner,
     }
     if combiner == "quantile_avg":
@@ -515,6 +533,10 @@ def main() -> int:
         "and needing the --fit-* stores. Default emos_csg keeps the published map.",
     )
     parser.add_argument("--tier2b-train-csv", default=DEFAULT_TIER2B_TRAIN_CSV)
+    parser.add_argument(
+        "--climatology", default="data/imd_seeps_climatology_jjas.zarr",
+        help="IMD JJAS archive the GPD tail is fitted on, minus the displayed year",
+    )
     args = parser.parse_args()
     fit_args = (args.fit_store, args.fit_lagged_store, args.fit_ifs_ensemble_store)
     if any(fit_args) and not all(fit_args):
@@ -554,12 +576,15 @@ def main() -> int:
         probability_grid = build_example_probability_grids(
             args.store, args.lagged_store, args.ifs_ensemble_store, lead_hours,
             fit_stores=fit_stores, combiner=args.combiner,
-            tier2b_train_csv=args.tier2b_train_csv,
+            tier2b_train_csv=args.tier2b_train_csv, climatology=args.climatology,
         )
         if "latitude" not in probability_arrays:
             probability_arrays["latitude"] = np.asarray(probability_grid["latitude"])
             probability_arrays["longitude"] = np.asarray(probability_grid["longitude"])
             probability_arrays["fitted_on"] = np.array(str(probability_grid["fitted_on"]))
+            probability_arrays["tail_fitted_on"] = np.array(
+                str(probability_grid["tail_fitted_on"])
+            )
             probability_arrays["combiner"] = np.array(str(probability_grid["combiner"]))
         if args.combiner == "quantile_avg":
             probability_arrays[f"quantile_avg_weight_lead_{lead_hours}"] = np.array(

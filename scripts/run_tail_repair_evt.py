@@ -176,16 +176,20 @@ def load_graphcast_ensemble(paths: list[str | Path], lead_hours: int) -> xr.Data
     return _tier2_load_graphcast_ensemble(paths, lead_hours)
 
 
-def fit_tail_on_training_obs(
-    obs_train: xr.DataArray, region_labels: xr.DataArray, threshold_u: float
+def fit_tail_on_obs(
+    obs: xr.DataArray, region_labels: xr.DataArray, threshold_u: float
 ):
-    """Pooled GPD fitted on the training fold's own exceedances, per region.
+    """Pooled GPD fitted on `obs`'s exceedances above u, pooled per region.
 
-    Fitting the tail on the training observations (not on the test fold, and
-    not on the full 15-year climatology) keeps the tail inside the same
-    cross-validation boundary as the CSGD parameters it is spliced onto.
+    `main` passes the IMD JJAS archive (2006-2020) with the fold's test year
+    removed, as step 12's prompt specifies ("IMD archive exceedances above u,
+    EXCLUDING the test year"). Until 31 Oct it passed the training season
+    alone, ~122 days, on the grounds of staying inside the cross-validation
+    boundary; dropping the test year from the archive does that too, with
+    about 14 times the exceedances the pooled fit exists to use. `obs` is
+    `(time, latitude, longitude)`.
     """
-    values = obs_train.values
+    values = obs.values
     exceedances: dict[str, np.ndarray] = {}
     for region in np.unique(region_labels.values):
         mask = region_labels.values == region
@@ -830,7 +834,9 @@ def main() -> int:
                 train_mask,
                 source=GRAPHCAST_ENSEMBLE_SOURCE,
             )
-            tail_fit = fit_tail_on_training_obs(train_obs, region_labels, args.threshold_u)
+            # The 15-year IMD archive minus this fold's test year (step 12 item 1).
+            tail_archive = climatology_excluding_years(climatology_rain, sample_times[test_mask])
+            tail_fit = fit_tail_on_obs(tail_archive, region_labels, args.threshold_u)
             fitable = sorted(emos_results.keys())
 
             # Step 11's QM variant: members mapped on the training days only
@@ -953,6 +959,7 @@ def main() -> int:
                                 float(tail_fit.xi_ci[1])
                                 if tail_fit.xi_ci is not None else float("nan")
                             ),
+                            "tail_fit_days": int(tail_archive.sizes["time"]),
                             "fit_bins": ";".join(
                                 sorted(results.keys()) if prefix else fitable
                             ),
