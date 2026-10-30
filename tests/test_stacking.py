@@ -2,10 +2,13 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from weavr.emos import csgd_crps
 from weavr.stacking import (
+    EXCEEDANCE_LEVELS,
     crps_from_quantiles,
+    exceedance_from_quantiles,
     linear_pool,
     predictive_quantiles_bma,
     predictive_quantiles_csgd,
@@ -154,3 +157,53 @@ class TestLinearPool:
         pb = np.array([0.6, 0.4])
         pool = linear_pool(pa, pb, weight=0.5)
         np.testing.assert_allclose(pool, np.array([0.4, 0.6]))
+
+
+class TestExceedanceFromQuantiles:
+    """P(Y > u) read off a quantile function, as the quantile_avg map needs."""
+
+    @staticmethod
+    def _csgd(mean, std, shift):
+        return predictive_quantiles_csgd(
+            np.atleast_1d(mean), np.atleast_1d(std), np.atleast_1d(shift), EXCEEDANCE_LEVELS
+        )
+
+    @staticmethod
+    def _p(q, u):
+        return float(exceedance_from_quantiles(q, EXCEEDANCE_LEVELS, u)[0])
+
+    def test_matches_the_csgd_closed_form_far_into_the_tail(self):
+        # With weight 0 a quantile average IS the EMOS parent, so its exceedance
+        # must reproduce the closed form -- including the sub-1% tail the map uses.
+        from weavr.emos import exceedance_probability_csgd
+
+        cases = [
+            (8.0, 12.0, -1.0, 64.5),
+            (20.0, 25.0, -2.0, 64.5),
+            (3.0, 5.0, -0.5, 64.5),
+            (40.0, 30.0, -1.0, 115.6),
+        ]
+        for mean, std, shift, u in cases:
+            want = float(exceedance_probability_csgd(mean, std, shift, u))
+            assert want > 1e-9
+            assert self._p(self._csgd(mean, std, shift), u) == pytest.approx(want, rel=0.02)
+
+    def test_is_monotone_in_the_threshold(self):
+        q = self._csgd(10.0, 15.0, -1.0)
+        probs = [self._p(q, u) for u in np.linspace(0.5, 300, 60)]
+        assert all(a >= b for a, b in zip(probs, probs[1:]))
+        assert all(0.0 < p <= 1.0 for p in probs)
+
+    def test_out_of_range_thresholds_return_the_bounds_not_zero(self):
+        top = 1.0 - EXCEEDANCE_LEVELS[-1]
+        assert self._p(self._csgd(5.0, 4.0, -0.5), 1e6) == pytest.approx(top)
+        flat = np.full((1, EXCEEDANCE_LEVELS.size), 50.0)
+        assert self._p(flat, 10.0) == pytest.approx(1.0 - EXCEEDANCE_LEVELS[0])
+
+    def test_nan_quantiles_give_nan(self):
+        q = np.full((1, EXCEEDANCE_LEVELS.size), np.nan)
+        assert np.isnan(exceedance_from_quantiles(q, EXCEEDANCE_LEVELS, 64.5)[0])
+
+    def test_levels_reach_deep_into_the_tail(self):
+        assert EXCEEDANCE_LEVELS.max() >= 1 - 1e-10
+        assert np.all(np.diff(EXCEEDANCE_LEVELS) > 0)

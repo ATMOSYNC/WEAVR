@@ -272,6 +272,47 @@ def quantile_average(
     return q_avg
 
 
+#: Levels for reading an exceedance probability off a quantile function: the
+#: 99 used for CRPS plus an upper tail packed down to 1 - 1e-10. The extreme
+#: map needs P(Y > 64.5 mm), which is far below the 1% the 99 levels resolve.
+EXCEEDANCE_LEVELS = np.unique(
+    np.concatenate([DEFAULT_QUANTILE_LEVELS, 1.0 - np.logspace(-10.0, -1.0, 181)])
+)
+
+
+def exceedance_from_quantiles(
+    quantiles: np.ndarray,
+    levels: np.ndarray,
+    threshold: float,
+) -> np.ndarray:
+    """P(Y > threshold) for a distribution given by its quantile function.
+
+    `quantiles` holds non-decreasing q(tau) on `levels` along the last axis --
+    as `quantile_average` returns, for which no closed-form CDF exists. Between
+    two levels, log(1 - tau) is interpolated linearly in q: exact for an
+    exponential tail, and it keeps a probability of 1e-6 from being rounded to
+    the nearest level. Outside the levels the probability is only bounded, so
+    the bound is returned: `1 - levels[0]` when even the lowest quantile
+    exceeds the threshold, `1 - levels[-1]` when the highest does not -- a
+    tiny positive value rather than a false zero.
+    """
+    q = np.asarray(quantiles, dtype=float)
+    lv = np.asarray(levels, dtype=float)
+    survival = np.log1p(-lv)
+    # Index of the last level whose quantile is <= threshold (-1 if none).
+    j = np.sum(q <= threshold, axis=-1) - 1
+    inner = np.clip(j, 0, lv.size - 2)
+    q_lo = np.take_along_axis(q, inner[..., None], axis=-1)[..., 0]
+    q_hi = np.take_along_axis(q, (inner + 1)[..., None], axis=-1)[..., 0]
+    span = np.where(q_hi > q_lo, q_hi - q_lo, 1.0)
+    frac = np.clip((threshold - q_lo) / span, 0.0, 1.0)
+    log_s = survival[inner] + frac * (survival[inner + 1] - survival[inner])
+    prob = np.exp(log_s)
+    prob = np.where(j < 0, 1.0 - lv[0], prob)
+    prob = np.where(j >= lv.size - 1, 1.0 - lv[-1], prob)
+    return np.where(np.isnan(q).any(axis=-1), np.nan, prob)
+
+
 def linear_pool(
     prob_a: np.ndarray | float,
     prob_b: np.ndarray | float,

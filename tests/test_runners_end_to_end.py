@@ -32,6 +32,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -942,6 +943,117 @@ def test_dashboard_probability_grid_fits_on_the_other_season(stores):
         np.asarray(loyo["probability_115p6"]), np.asarray(in_sample["probability_115p6"]),
         equal_nan=True,
     ), "fitting on 2018 produced the same map as fitting on 2020"
+
+
+def test_dashboard_probability_grid_classifies_bins_like_the_fit(stores, monkeypatch):
+    """The display day's bins come from the GraphCast mean, as the fit's do.
+
+    The tail function picks each cell's bin from `forecast_values`. Passing
+    the IFS mean there scored cells with a bin model fitted on cells chosen
+    by a different forecast; the IFS mean and spread stay the predictors.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    import export_dashboard_example_grids as export
+
+    seen = []
+    real = export.exceedance_probability_with_tail
+
+    def spy(**kwargs):
+        seen.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(export, "exceedance_probability_with_tail", spy)
+    display = tuple(str(stores[f"{kind}_2020"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    fit = tuple(str(stores[f"{kind}_2018"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    grid = export.build_example_probability_grids(*display, 24, fit_stores=fit)
+
+    forecasts, _ = export.align_all_sources(
+        export.load_graphcast_ensemble(display[1], 24),
+        export.load_ifs_ensemble(display[2], 24),
+        export.load_hres_forecast(display[0], 24),
+        xr.open_zarr(display[0], group="imd_observed", consolidated=True).load(),
+    )
+    index = export.latest_complete_sample_index(forecasts)
+    graphcast_mean = forecasts["graphcast"].mean(dim="member", skipna=True).isel(sample=index)
+    ifs_mean = forecasts["ifs_ens"].mean(dim="member", skipna=True).isel(sample=index)
+
+    assert seen, "the export never called the tail function"
+    for call in seen:
+        np.testing.assert_array_equal(np.asarray(call["forecast_values"]), graphcast_mean.values)
+        np.testing.assert_array_equal(np.asarray(call["ensemble_mean"]), ifs_mean.values)
+    assert grid["sample_time"] == str(graphcast_mean["sample"].values)
+
+
+def _tier2b_train_csv(path, weight, source="ifs_ens"):
+    path.write_text(
+        "lead_hours,fold,emos_source,vincentization_weight\n"
+        f"24,2020,{source},{weight}\n24,2018,{source},{weight}\n"
+    )
+    return path
+
+
+def test_dashboard_quantile_avg_at_weight_zero_is_the_emos_map(stores, tmp_path):
+    """#75: a quantile average with weight 0 *is* EMOS-CSG, so the new path must
+    reproduce the existing map wherever both use a fitted bin -- an end-to-end
+    check of the quantiles, P(Y > u) read off them, and the GPD splice."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import export_dashboard_example_grids as export
+
+    display = tuple(str(stores[f"{kind}_2020"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    fit = tuple(str(stores[f"{kind}_2018"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    csv_path = _tier2b_train_csv(tmp_path / "train.csv", 0.0)
+    emos = export.build_example_probability_grids(*display, 24, fit_stores=fit)
+    qavg = export.build_example_probability_grids(
+        *display, 24, fit_stores=fit, combiner="quantile_avg", tier2b_train_csv=csv_path
+    )
+    assert qavg["combiner"] == "quantile_avg" and qavg["quantile_avg_weight"] == 0.0
+    for slug in ("115p6", "204p5"):
+        a = np.asarray(emos[f"probability_{slug}"])
+        b = np.asarray(qavg[f"probability_{slug}"])
+        both = (np.asarray(emos[f"method_{slug}"]) == "csgd+gpd_tail") & ~np.asarray(
+            qavg[f"is_fallback_{slug}"]
+        ) & (a > 1e-12)
+        assert both.sum() > 20, "too few comparable cells to say anything"
+        rel = np.abs(b[both] - a[both]) / a[both]
+        assert np.median(rel) < 0.02, f"{slug}: median relative gap {np.median(rel):.3f}"
+
+
+def test_dashboard_quantile_avg_is_bounded_ordered_and_labelled(stores, tmp_path):
+    sys.path.insert(0, str(REPO / "scripts"))
+    import export_dashboard_example_grids as export
+
+    display = tuple(str(stores[f"{kind}_2020"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    fit = tuple(str(stores[f"{kind}_2018"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    grid = export.build_example_probability_grids(
+        *display, 24, fit_stores=fit, combiner="quantile_avg",
+        tier2b_train_csv=_tier2b_train_csv(tmp_path / "train.csv", 0.7, source="graphcast"),
+    )
+    assert grid["emos_source"] == "graphcast" and grid["quantile_avg_weight"] == 0.7
+    p115 = np.asarray(grid["probability_115p6"])
+    p204 = np.asarray(grid["probability_204p5"])
+    for p in (p115, p204):
+        assert np.isfinite(p).all() and ((p >= 0) & (p <= 1)).all()
+    assert (p204 <= p115 + 1e-12).all(), "P(>204.5) must never exceed P(>115.6)"
+    for slug in ("115p6", "204p5"):
+        assert set(np.unique(grid[f"method_{slug}"])) <= {"quantile_avg+gpd_tail", "fallback"}
+    assert (np.asarray(grid["method_115p6"]) == "quantile_avg+gpd_tail").any()
+
+
+def test_dashboard_quantile_avg_needs_the_fit_season_and_its_tier2b_row(stores, tmp_path):
+    sys.path.insert(0, str(REPO / "scripts"))
+    import export_dashboard_example_grids as export
+
+    display = tuple(str(stores[f"{kind}_2020"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    fit = tuple(str(stores[f"{kind}_2018"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    csv_path = _tier2b_train_csv(tmp_path / "train.csv", 0.5)
+    with pytest.raises(ValueError, match="--fit-"):
+        export.build_example_probability_grids(
+            *display, 24, combiner="quantile_avg", tier2b_train_csv=csv_path
+        )
+    with pytest.raises(ValueError, match="no Tier 2b train row"):
+        export.build_example_probability_grids(
+            *display, 48, fit_stores=fit, combiner="quantile_avg", tier2b_train_csv=csv_path
+        )
 
 
 def test_dashboard_export_rejects_a_partial_fit_season(stores, tmp_path):

@@ -79,14 +79,22 @@ from run_tier2_hierarchical_baseline import (  # noqa: E402
     load_ifs_ensemble,
 )
 
-from weavr.emos import fit_emos_csg  # noqa: E402
+from weavr.bma import bma_predictive_quantiles, fit_hierarchical_bma  # noqa: E402
+from weavr.emos import fit_emos_csg, predict_csgd_params  # noqa: E402
 from weavr.rain_bins import classify_rain_bin  # noqa: E402
 from weavr.regions import SREEKALA_BABU_ZONES, assign_regions  # noqa: E402
+from weavr.stacking import (  # noqa: E402
+    EXCEEDANCE_LEVELS,
+    exceedance_from_quantiles,
+    predictive_quantiles_csgd,
+    quantile_average,
+)
 from weavr.tail import (  # noqa: E402
     DEFAULT_TAIL_THRESHOLD_U,
     TailFit,
     exceedance_probability_with_tail,
     fit_pooled_gpd,
+    spliced_exceedance_probability,
 )
 from weavr.weighting import RegionWeightResult  # noqa: E402
 
@@ -99,6 +107,11 @@ DEFAULT_OUT_PROBABILITY = "dashboard/data/example_probability_grid.npz"
 # Both extreme thresholds exported (step 12 deliverable).
 EXTREME_THRESHOLDS_MM: tuple[float, float] = (115.6, 204.5)
 _THRESHOLD_SLUG: dict[float, str] = {115.6: "115p6", 204.5: "204p5"}
+#: `emos_csg`: EMOS-CSG on the IFS ensemble (the map's long-standing default).
+#: `quantile_avg`: the H10 winner -- EMOS-CSG and BMA averaged on the quantile
+#: scale, configured exactly as Tier 2b evaluated it (#75).
+COMBINERS = ("emos_csg", "quantile_avg")
+DEFAULT_TIER2B_TRAIN_CSV = "results/tier2b_combined_train.csv"
 
 
 def load_fitted_weights(csv_path: str | Path, lead_hours: int) -> dict[str, dict[str, float]]:
@@ -224,13 +237,121 @@ def _collect_exceedances_by_region(
     return {r: np.asarray(v, dtype=float) for r, v in exceedances.items()}
 
 
+def tier2b_quantile_avg_config(
+    train_csv: str | Path, lead_hours: int, test_season: str
+) -> tuple[str, float]:
+    """The EMOS source and Vincentization weight Tier 2b used for this lead and fold.
+
+    Read from `results/tier2b_combined_train.csv`, not refitted, so the map shows
+    the configuration H10 was decided on. The fold is named by its *test*
+    season, which is the season the dashboard displays.
+    """
+    with open(train_csv, newline="") as f:
+        for row in csv.DictReader(f):
+            if int(row["lead_hours"]) == lead_hours and str(row["fold"]) == test_season:
+                return row["emos_source"], float(row["vincentization_weight"])
+    raise ValueError(
+        f"no Tier 2b train row for lead {lead_hours}h, fold {test_season} in {train_csv}"
+    )
+
+
+def quantile_avg_exceedance_grids(
+    forecasts: dict[str, xr.DataArray],
+    display_index: int,
+    fit_forecasts: dict[str, xr.DataArray],
+    fit_obs_aligned: xr.DataArray,
+    fit_bin_labels: xr.DataArray,
+    region_labels: xr.DataArray,
+    tail_fit: TailFit,
+    source: str,
+    weight: float,
+    thresholds: tuple[float, ...],
+) -> dict[float, tuple[np.ndarray, np.ndarray]]:
+    """`quantile_avg` exceedance grids for the display day, one per threshold.
+
+    Built the way Tier 2b scores the arm: per (bin, region), EMOS-CSG on
+    `source` and hierarchical BMA give exact quantiles, averaged with `weight`.
+    The pooled GPD tail needs only P(Y > u) from whatever sits below it, so it
+    splices onto the averaged distribution exactly as it does onto EMOS-CSG;
+    P(Y > u) is read off the averaged quantile function on levels reaching
+    1 - 1e-10 (`exceedance_from_quantiles`). Cells no fit covers, or with a
+    missing forecast, are fallback (probability 0), as on the EMOS map.
+    """
+    train_all = np.ones(fit_obs_aligned.sizes["sample"], dtype=bool)
+    emos_results = fit_emos_csg(
+        fit_forecasts[source], fit_obs_aligned, fit_bin_labels, train_all, source=source
+    )
+    bma_results = fit_hierarchical_bma(
+        fit_forecasts, fit_obs_aligned, fit_bin_labels, region_labels, train_all
+    )
+
+    day_mean: dict[str, np.ndarray] = {}
+    day_spread: dict[str, np.ndarray | None] = {}
+    for name, da in forecasts.items():
+        day = da.isel(sample=display_index)
+        if "member" in day.dims:
+            day_mean[name] = np.asarray(day.mean(dim="member", skipna=True).values, dtype=float)
+            day_spread[name] = np.asarray(
+                day.std(dim="member", ddof=1, skipna=True).values, dtype=float
+            )
+        else:
+            day_mean[name] = np.asarray(day.values, dtype=float)
+            day_spread[name] = None
+    # Bins from the GraphCast ensemble mean, as the fits were (Tier 2 convention).
+    bins = np.asarray(classify_rain_bin(xr.DataArray(day_mean["graphcast"])).values)
+    regions = np.asarray(region_labels.values)
+    finite = np.all([np.isfinite(m) for m in day_mean.values()], axis=0)
+
+    u = tail_fit.threshold_u
+    probs = {t: np.zeros(bins.shape, dtype=float) for t in thresholds}
+    fallback = np.ones(bins.shape, dtype=bool)
+    for (bin_label, region), bma_result in bma_results.items():
+        mask = (bins == bin_label) & (regions == region) & finite
+        if not mask.any():
+            continue
+        cell_mean = {name: m[mask] for name, m in day_mean.items()}
+        cell_spread = {name: (None if sd is None else sd[mask]) for name, sd in day_spread.items()}
+        emos_result = emos_results.get(bin_label)
+        if emos_result is not None and cell_spread[source] is not None:
+            loc, scale, shift = predict_csgd_params(
+                emos_result, cell_mean[source], cell_spread[source]
+            )
+            q_emos = predictive_quantiles_csgd(loc, scale, shift, EXCEEDANCE_LEVELS)
+        else:
+            q_emos = np.zeros((int(mask.sum()), EXCEEDANCE_LEVELS.size), dtype=float)
+        q_bma = bma_predictive_quantiles(bma_result, cell_mean, cell_spread, EXCEEDANCE_LEVELS)
+        q_avg = quantile_average(q_emos, q_bma, weight=weight)
+        p_u = exceedance_from_quantiles(q_avg, EXCEEDANCE_LEVELS, u)
+        for threshold in thresholds:
+            if threshold <= u:
+                probs[threshold][mask] = exceedance_from_quantiles(
+                    q_avg, EXCEEDANCE_LEVELS, threshold
+                )
+            else:
+                probs[threshold][mask] = spliced_exceedance_probability(
+                    p_u, tail_fit, regions[mask], threshold
+                )
+        no_emos = emos_result is None or emos_result.is_fallback
+        fallback[mask] = no_emos and bma_result.is_fallback
+
+    out: dict[float, tuple[np.ndarray, np.ndarray]] = {}
+    for threshold in thresholds:
+        p = np.where(fallback, 0.0, np.nan_to_num(probs[threshold], nan=0.0))
+        label = "quantile_avg" if threshold <= u else "quantile_avg+gpd_tail"
+        methods = np.where(fallback, "fallback", label).astype(object)
+        out[threshold] = (p, methods)
+    return out
+
+
 def build_example_probability_grids(
     baseline_store: str,
     lagged_store: str,
     ifs_store: str,
     lead_hours: int,
     fit_stores: tuple[str, str, str] | None = None,
-) -> dict[str, np.ndarray | str]:
+    combiner: str = "emos_csg",
+    tier2b_train_csv: str | Path = DEFAULT_TIER2B_TRAIN_CSV,
+) -> dict[str, np.ndarray | str | float]:
     """EMOS-CSG (`ifs_ens`) exceedance-probability grids for both thresholds.
 
     Returns results for P(rain > 115.6 mm) and P(rain > 204.5 mm) with
@@ -295,6 +416,14 @@ def build_example_probability_grids(
     ifs_spread_sample = forecasts["ifs_ens"].std(dim="member", ddof=1, skipna=True).isel(
         sample=display_index
     )
+    # Each cell's rain bin must be classified the way the bins were fitted:
+    # from the GraphCast ensemble mean (as in Tier 2, for every source). The
+    # IFS mean and spread are still the EMOS predictors. Classifying the
+    # display day by the IFS mean instead scored cells with a bin model fitted
+    # on different cells.
+    graphcast_mean_sample = (
+        forecasts["graphcast"].mean(dim="member", skipna=True).isel(sample=display_index)
+    )
 
     # Region labels for each gridpoint (shape: lat x lon).
     # assign_regions already returns a (latitude, longitude) DataArray, so the
@@ -317,16 +446,39 @@ def build_example_probability_grids(
     )
     tail_fit: TailFit = fit_pooled_gpd(exceedances_by_region, DEFAULT_TAIL_THRESHOLD_U)
 
-    out: dict[str, np.ndarray | str] = {
+    out: dict[str, np.ndarray | str | float] = {
         "latitude": lat_vals,
         "longitude": lon_vals,
         "sample_time": str(ifs_mean_sample["sample"].values),
         "fitted_on": baseline_store if fit_stores is None else fit_stores[0],
+        "combiner": combiner,
     }
+    if combiner == "quantile_avg":
+        if fit_stores is None:
+            raise ValueError(
+                "--combiner quantile_avg needs the --fit-* stores: its weight comes "
+                "from the Tier 2b fold that trained on the other season"
+            )
+        test_season = str(int(ifs_mean_sample["sample"].dt.year.item()))
+        source, weight = tier2b_quantile_avg_config(tier2b_train_csv, lead_hours, test_season)
+        out["emos_source"] = source
+        out["quantile_avg_weight"] = weight
+        grids = quantile_avg_exceedance_grids(
+            forecasts, display_index, fit_forecasts, fit_obs_aligned, rain_bin_labels,
+            assign_regions(lat_vals, lon_vals), tail_fit, source, weight, EXTREME_THRESHOLDS_MM,
+        )
+        for threshold, (probs, methods) in grids.items():
+            slug = _THRESHOLD_SLUG[threshold]
+            out[f"probability_{slug}"] = probs
+            out[f"is_fallback_{slug}"] = methods == "fallback"
+            out[f"method_{slug}"] = methods
+        return out
+    if combiner != "emos_csg":
+        raise ValueError(f"unknown combiner {combiner!r}; choose from {COMBINERS}")
     for threshold in EXTREME_THRESHOLDS_MM:
         slug = _THRESHOLD_SLUG[threshold]
         probs, methods = exceedance_probability_with_tail(
-            forecast_values=ifs_mean_sample,
+            forecast_values=graphcast_mean_sample,
             ensemble_mean=ifs_mean_sample,
             ensemble_spread=ifs_spread_sample,
             emos_results_by_bin=emos_results,
@@ -356,6 +508,13 @@ def main() -> int:
     )
     parser.add_argument("--fit-lagged-store", default=None)
     parser.add_argument("--fit-ifs-ensemble-store", default=None)
+    parser.add_argument(
+        "--combiner", choices=COMBINERS, default="emos_csg",
+        help="Probability model for the extreme map. quantile_avg is H10's winner "
+        "(EMOS-CSG + BMA, quantile-averaged; #75), configured from --tier2b-train-csv "
+        "and needing the --fit-* stores. Default emos_csg keeps the published map.",
+    )
+    parser.add_argument("--tier2b-train-csv", default=DEFAULT_TIER2B_TRAIN_CSV)
     args = parser.parse_args()
     fit_args = (args.fit_store, args.fit_lagged_store, args.fit_ifs_ensemble_store)
     if any(fit_args) and not all(fit_args):
@@ -394,12 +553,21 @@ def main() -> int:
               f"(thresholds: {list(EXTREME_THRESHOLDS_MM)} mm)...")
         probability_grid = build_example_probability_grids(
             args.store, args.lagged_store, args.ifs_ensemble_store, lead_hours,
-            fit_stores=fit_stores,
+            fit_stores=fit_stores, combiner=args.combiner,
+            tier2b_train_csv=args.tier2b_train_csv,
         )
         if "latitude" not in probability_arrays:
             probability_arrays["latitude"] = np.asarray(probability_grid["latitude"])
             probability_arrays["longitude"] = np.asarray(probability_grid["longitude"])
             probability_arrays["fitted_on"] = np.array(str(probability_grid["fitted_on"]))
+            probability_arrays["combiner"] = np.array(str(probability_grid["combiner"]))
+        if args.combiner == "quantile_avg":
+            probability_arrays[f"quantile_avg_weight_lead_{lead_hours}"] = np.array(
+                float(probability_grid["quantile_avg_weight"])
+            )
+            probability_arrays[f"emos_source_lead_{lead_hours}"] = np.array(
+                str(probability_grid["emos_source"])
+            )
         for threshold in EXTREME_THRESHOLDS_MM:
             slug = _THRESHOLD_SLUG[threshold]
             probability_arrays[f"probability_{slug}_lead_{lead_hours}"] = np.asarray(
