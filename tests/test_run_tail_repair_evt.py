@@ -321,3 +321,79 @@ class TestReliabilityCounts:
             n_train=1, n_test=1,
         )
         assert row["brier"] == pytest.approx(1.0)
+
+
+class TestExpectedCountsOrientation:
+    """A forecast that always says yes has false alarms, never misses."""
+
+    def test_always_yes(self):
+        prob = np.ones((1, 1, 4))
+        obs = np.array([[[1.0, 0.0, 0.0, 1.0]]])
+        counts = expected_counts(prob, obs)
+        assert counts["misses"].sum() == pytest.approx(0.0)
+        assert counts["false_alarms"].sum() == pytest.approx(2.0)
+
+
+class TestReliabilityWithCi:
+    def test_ci_brackets_the_pooled_frequency_and_widens_with_fewer_events(self):
+        from run_tail_repair_evt import reliability_day_sums, reliability_with_ci
+
+        rng = np.random.default_rng(0)
+        probs = rng.uniform(0.0, 0.3, size=(60, 8, 8))
+        obs = (rng.uniform(size=probs.shape) < probs).astype(float)
+        table = reliability_with_ci(reliability_day_sums(probs, obs), 7, 300, 0)
+        filled = table[table["n"] > 0]
+        assert (filled["observed_frequency_ci_lo"] <= filled["observed_frequency"] + 1e-12).all()
+        assert (filled["observed_frequency"] <= filled["observed_frequency_ci_hi"] + 1e-12).all()
+
+    def test_too_few_days_gives_no_interval(self):
+        from run_tail_repair_evt import reliability_day_sums, reliability_with_ci
+
+        probs = np.full((3, 2, 2), 0.05)
+        table = reliability_with_ci(reliability_day_sums(probs, np.zeros_like(probs)), 7, 100, 0)
+        assert table["observed_frequency_ci_lo"].isna().all()
+
+
+class TestCsgdOnlyTwcrps:
+    def test_fitted_cells_use_the_csgd_and_fallback_cells_a_point_mass_at_zero(self):
+        from run_tail_repair_evt import csgd_only_twcrps
+
+        from weavr.emos import CensoredShiftedGammaResult, csgd_twcrps, predict_csgd_params
+
+        heavy = CensoredShiftedGammaResult(
+            bin_label="heavy", source="s", shift=-1.0, climatological_mean=70.0,
+            climatological_std=25.0, coefficients={"a1": 1.0, "a2": 0.9, "a3": 2.0, "a4": 0.5},
+        )
+        mean = np.array([[[80.0, 250.0]]])
+        spread = np.array([[[10.0, 20.0]]])
+        labels = np.array([[["heavy", "extremely_heavy"]]], dtype=object)
+        obs = np.array([[[90.0, 150.0]]])
+        got = csgd_only_twcrps(mean, spread, labels, {"heavy": heavy}, obs, 64.5)
+        loc, scale, shift = predict_csgd_params(heavy, mean[0, 0, :1], spread[0, 0, :1])
+        assert got[0, 0, 0] == pytest.approx(float(csgd_twcrps(loc, scale, shift, 90.0, 64.5)[0]))
+        assert got[0, 0, 1] == pytest.approx(150.0 - 64.5)
+
+
+class TestPairedArmComparison:
+    def _days(self, scale, hits, false_alarms, n=40):
+        import pandas as pd
+
+        rng = np.random.default_rng(int(scale * 10))
+        frame = pd.DataFrame({"date": pd.date_range("2020-06-01", periods=n)})
+        for col in ("brier_115.6", "brier_7.5", "twcrps_64.5_mm", "twcrps_115.6_mm"):
+            frame[col] = scale * (1.0 + 0.1 * rng.random(n))
+        frame["hits_115.6"] = hits
+        frame["misses_115.6"] = 10.0 - hits
+        frame["false_alarms_115.6"] = false_alarms
+        frame["correct_negatives_115.6"] = 500.0
+        return frame
+
+    def test_a_better_arm_reads_negative_and_carries_the_guard(self):
+        from run_tail_repair_evt import paired_arm_comparison
+
+        row = paired_arm_comparison(
+            self._days(1.0, 8.0, 2.0), self._days(2.0, 3.0, 8.0), 115.6, 7, 200, 0
+        )
+        for key in ("brier_delta", "sedi_delta", "twcrps_64.5_delta", "twcrps_115.6_delta"):
+            assert row[key] < 0, key
+        assert row["twcrps_64.5_improved"] and not row["brier_7.5_degraded"]

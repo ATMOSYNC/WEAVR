@@ -61,6 +61,15 @@ RUNNER_STORE_KINDS: dict[str, tuple[str, ...]] = {
     "run_tier2b_combined.py": ("baseline", "lagged", "ifs_ens", "climatology"),
     "run_tail_repair_qm.py": ("baseline", "climatology"),
     "run_tail_repair_qm_emos.py": ("baseline", "lagged", "ifs_ens", "climatology"),
+    "run_tail_repair_evt.py": ("baseline", "lagged", "ifs_ens", "climatology"),
+}
+
+
+#: Extra flags a runner needs on the synthetic stores. The replica's rain is too
+#: light for 10 exceedances of 64.5 mm per region, so the EVT runner fits its
+#: tail above a lower u (tw-CRPS is still scored at 64.5 and 115.6 mm, >= u).
+RUNNER_EXTRA_ARGS: dict[str, list[str]] = {
+    "run_tail_repair_evt.py": ["--threshold-u", "10"],
 }
 
 
@@ -81,7 +90,8 @@ def run_script(
     ]
     if "climatology" in kinds:
         cmd += ["--climatology", str(paths["climatology"])]
-    cmd += ["--results-dir", str(results_dir), "--force", *(extra or [])]
+    cmd += ["--results-dir", str(results_dir), "--force"]
+    cmd += [*RUNNER_EXTRA_ARGS.get(script, []), *(extra or [])]
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO / "src")
     proc = subprocess.run(
@@ -193,6 +203,8 @@ AGGREGATE_RUNNERS = [
     # Step 11: both QM runners, the member-level one with both sources.
     ("run_tail_repair_qm.py", "tail_repair_qm.csv", True),
     ("run_tail_repair_qm_emos.py", "tail_repair_qm_emos.csv", True),
+    # Step 12: every arm, including step 11's QM variant and the IFS benchmark.
+    ("run_tail_repair_evt.py", "tail_repair_evt.csv", True),
 ]
 
 #: Step 13's arms. The two parents plus the four combinations; a run that
@@ -1091,3 +1103,25 @@ def test_qm_emos_scores_both_sources_and_every_arm(stores, tmp_path):
     assert "h7_lead_improved" in paired.columns
     names = {p.name.split("__lead")[0] for p in (out / "per_day").glob("*.csv")}
     assert {"qmemos_raw_members", "qmemos_ifs_ens_raw_members"} <= names
+
+
+def test_evt_scores_every_arm_and_comparison(stores, tmp_path):
+    """Step 12 item 3: the tail against the fallback, step 11's QM variant and
+    raw IFS member counting, with tw-CRPS, the Brier@7.5 guard and H7 per lead."""
+    out = tmp_path / "evt"
+    run_script("run_tail_repair_evt.py", stores, out)
+    scores = pd.read_csv(out / "tail_repair_evt.csv")
+    assert set(scores["arm"]) == {
+        "csgd_only", "csgd_gpd_tail", "qm_csgd_only", "qm_csgd_gpd_tail",
+        "raw_ifs_ens_member_counting",
+    }
+    for column in ("twcrps_64.5_mm", "twcrps_115.6_mm", "brier_7.5"):
+        assert scores[column].notna().all(), column
+    paired = pd.read_csv(out / "tail_repair_evt_paired.csv")
+    assert set(paired["comparison"]) == {
+        "csgd_gpd_tail_vs_csgd_only", "csgd_gpd_tail_vs_raw_ifs_ens_member_counting",
+        "csgd_gpd_tail_vs_qm_csgd_only", "qm_csgd_gpd_tail_vs_qm_csgd_only",
+    }
+    assert {"h7_lead_improved", "brier_7.5_degraded", "sedi_115.6_improved"} <= set(paired.columns)
+    reliability = pd.read_csv(out / "tail_repair_evt_reliability.csv")
+    assert {"observed_frequency_ci_lo", "observed_frequency_ci_hi"} <= set(reliability.columns)
