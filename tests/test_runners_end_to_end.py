@@ -589,6 +589,42 @@ def test_result_gate_flags_a_degenerate_bin_region_fit(tmp_path):
     assert any("SI" in a for a in flagged)
 
 
+def test_result_gate_blocks_a_fitted_bin_that_scores_zero(tmp_path):
+    """An impossibly good score is as broken as an impossibly bad one.
+
+    Measured on the #106 regeneration: EMOS-GraphCast's dry bin at 120 h, 2020
+    fold, read CRPS 0.000 over 312,251 cells with a +399.8 mm bias -- a CSGD
+    whose shape fell under the clip floor, so the closed form lost every digit
+    and clipped to 0. The outlier check only looks upward and passed it.
+    """
+    results = tmp_path / "results"
+    _write_valid_results(results, season_days=8)
+    by_bin = results / "tier2_hierarchical_baseline_by_bin.csv"
+    frame = pd.read_csv(by_bin)
+    mask = (frame["combiner"] == "emos_graphcast") & (frame["lead_hours"] == 120)
+    frame.loc[mask, "crps_mm"] = 0.0
+    frame.to_csv(by_bin, index=False)
+
+    gate = _gate(results)
+    assert gate.main() == 1, "a zero-CRPS fitted bin did not block"
+    assert any("cannot score zero" in f for f in gate.failures), gate.failures
+
+
+def test_result_gate_allows_a_zero_crps_fallback_bin(tmp_path):
+    """A point-mass fallback scoring 0 on dry cells is correct, not broken."""
+    results = tmp_path / "results"
+    _write_valid_results(results, season_days=8)
+    by_bin = results / "tier2_hierarchical_baseline_by_bin.csv"
+    frame = pd.read_csv(by_bin)
+    mask = (frame["combiner"] == "emos_graphcast") & (frame["lead_hours"] == 120)
+    frame.loc[mask, "crps_mm"] = 0.0
+    frame.loc[mask, "is_fallback"] = True
+    frame.to_csv(by_bin, index=False)
+
+    gate = _gate(results)
+    assert gate.main() == 0, gate.failures
+
+
 def test_result_gate_does_not_flag_a_uniformly_hard_bin(tmp_path):
     """A bin that is hard for every region is hard, not degenerate.
 

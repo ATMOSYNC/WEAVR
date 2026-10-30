@@ -67,6 +67,10 @@ MIN_BIN_CELLS = 50
 #: exists to catch. Real BMA groups have six.
 MIN_REGIONS_FOR_MEDIAN = 5
 
+#: A fitted group's CRPS at or below this is a broken score, not skill
+#: (`check_zero_crps`).
+ZERO_CRPS_MM = 1e-6
+
 #: Largest daily 24h accumulation on the IMD grid, measured from
 #: `imd_observed` (370.9mm in 2018, 259.9mm in 2020 at the sampled times). A
 #: score cannot exceed the range of what it predicts.
@@ -280,6 +284,37 @@ def check_by_bin_outliers(df: pd.DataFrame, name: str) -> None:
                 )
 
 
+def check_zero_crps(df: pd.DataFrame, name: str) -> None:
+    """A fitted, non-fallback group cannot score a CRPS of zero.
+
+    `check_by_bin_outliers` only looks upward, so a score that is impossibly
+    *good* passed it. A fitted CSGD or BMA mixture puts mass above zero, so its
+    CRPS is strictly positive even where every observation is dry; zero over
+    hundreds of cells means the score itself broke. Measured on the #106
+    regeneration: EMOS-GraphCast's dry bin at 120 h, 2020 fold, read 0.000 over
+    312,251 cells with a +399.8 mm bias, and pulled that fold's domain CRPS to
+    3.40 against ~4.6 at every other lead. Blocking, because unlike a small
+    outlier it moves the headline numbers.
+    """
+    if df is None or df.empty or not {"crps_mm", "n_test_cells"} <= set(df.columns):
+        return
+    fitted = df[pd.to_numeric(df["n_test_cells"], errors="coerce") >= MIN_BIN_CELLS]
+    if "is_fallback" in fitted.columns:
+        fitted = fitted[~fitted["is_fallback"].astype(str).str.lower().eq("true")]
+    zero = fitted[pd.to_numeric(fitted["crps_mm"], errors="coerce") <= ZERO_CRPS_MM]
+    for row in zero.itertuples():
+        where = ", ".join(
+            f"{k}={getattr(row, k)}"
+            for k in ("lead_hours", "fold", "combiner", "bin", "region")
+            if hasattr(row, k) and str(getattr(row, k)) not in ("", "nan")
+        )
+        failures.append(
+            f"{name}: fitted group ({where}) scores CRPS {row.crps_mm:.2g}mm over "
+            f"{int(row.n_test_cells)} cells. A fitted predictive distribution "
+            "cannot score zero; the CRPS computation broke for this fit."
+        )
+
+
 def check_physical_bounds(df: pd.DataFrame, name: str) -> None:
     """No score can exceed the range of the quantity being predicted.
 
@@ -335,6 +370,7 @@ def main() -> int:
             failures.append(f"unreadable {csv_name}: {type(exc).__name__}: {exc}")
             continue
         check_by_bin_outliers(breakdown, csv_name)
+        check_zero_crps(breakdown, csv_name)
         check_physical_bounds(breakdown, csv_name)
 
     # 2. Per-day files must carry BOTH folds at every lead. This is the check
