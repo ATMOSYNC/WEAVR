@@ -690,19 +690,19 @@ def _bma_sources(result: BmaFitResult) -> tuple[str, ...]:
     return tuple(result.weights)
 
 
-#: Value grid the analytic CRPS is integrated on: 1 mm steps to 150 mm, 5 mm
-#: steps to 1000 mm, then geometric to 100 m. The integral stops at the grid
-#: top, so the grid has to reach where `1 - F` is negligible rather than where
-#: rain physically stops: a fitted mixture is not obliged to respect physics,
-#: and when one put 58% of its mass above 1000 mm a grid ending there scored
-#: CRPS 45.6 mm against a true 145.4 mm.
-BMA_CRPS_GRID_MM = np.concatenate(
-    [
-        np.arange(0.0, 150.0 + 1.0, 1.0),
-        np.arange(155.0, 1000.0 + 5.0, 5.0),
-        np.geomspace(1100.0, 1e5, 40),
-    ]
-)
+#: Value grid the analytic CRPS is integrated on and the quantiles are inverted
+#: on, in mm, but **evenly spaced in cube root**: steps of 0.02 in `u = v**(1/3)`
+#: to u = 12 (1728 mm), then 0.1 to u = 60 (216 m). Each component is
+#: `p0 + (1 - p0) * gamma.cdf(u)`, smooth in `u` but vertical at `v = 0+` in
+#: millimetres, so both integration and interpolation are done in `u` (see
+#: `_bma_crps_block`). The 1 mm grid this replaced was off by up to 95% on dry
+#: observations (31 Oct; `tests/test_bma.py::TestBmaCrpsAccuracy`). The
+#: integral still stops at the grid top, so the grid has to reach where `1 - F`
+#: is negligible rather than where rain physically stops: a fitted mixture is
+#: not obliged to respect physics, and when one put 58% of its mass above
+#: 1000 mm a grid ending there scored CRPS 45.6 mm against a true 145.4 mm.
+BMA_CBRT_GRID = np.concatenate([np.arange(0.0, 12.0, 0.02), np.arange(12.0, 60.0 + 1e-9, 0.1)])
+BMA_CRPS_GRID_MM = BMA_CBRT_GRID**3
 
 
 def bma_mixture_cdf(
@@ -822,6 +822,32 @@ def _cumulative_trapezoid(values: np.ndarray, grid: np.ndarray) -> np.ndarray:
     )
 
 
+def _cube_weighted_piece(
+    g_a: np.ndarray, g_b: np.ndarray, u_a: np.ndarray, u_b: np.ndarray
+) -> np.ndarray:
+    """`int_{u_a}^{u_b} g(u) 3 u^2 du` for `g` linear between `g_a` and `g_b`.
+
+    Exact for that `g`, so a constant CDF (a point mass) integrates to exactly
+    `g * (v_b - v_a)` -- a trapezoid on `g * 3u^2` is not, because `3u^2` is
+    not linear.
+    """
+    du = u_b - u_a
+    cubes = u_b**3 - u_a**3
+    # int (u - u_a) 3u^2 du over [u_a, u_b]
+    first_moment = 0.75 * (u_b**4 - u_a**4) - u_a * cubes
+    slope = np.divide(g_b - g_a, du, out=np.zeros(np.broadcast(g_a, du).shape), where=du > 0)
+    return g_a * cubes + slope * first_moment
+
+
+def _cumulative_cube_weighted(values: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """Running `int values(u) 3 u^2 du` over the cube-root grid `u`, from 0."""
+    increments = _cube_weighted_piece(values[..., :-1], values[..., 1:], u[:-1], u[1:])
+    return np.concatenate(
+        [np.zeros(values.shape[:-1] + (1,), dtype=float), np.cumsum(increments, axis=-1)],
+        axis=-1,
+    )
+
+
 def bma_predictive_quantiles(
     result: BmaFitResult,
     forecast_mean: dict[str, np.ndarray],
@@ -877,9 +903,10 @@ def bma_predictive_quantiles(
         cdf = bma_mixture_cdf(result, sub_mean, sub_spread, grid)
         cdf = cdf.reshape(stop - start, grid.size)
 
-        # First grid point at or above each level, then linear interpolation in
-        # value between the bracketing pair -- the convention
-        # `weavr.stacking.cdf_at_threshold` uses, read in reverse.
+        # First grid point at or above each level, then linear interpolation
+        # between the bracketing pair -- in cube root, where the CDF is smooth,
+        # not in millimetres, where it is vertical just above zero and a
+        # straight line between grid points misplaces the quantile.
         reach = cdf[:, :, None] >= levels_arr[None, None, :]
         idx = np.clip(reach.argmax(axis=1), 1, grid.size - 1)
         rows = np.arange(stop - start)[:, None]
@@ -889,9 +916,10 @@ def bma_predictive_quantiles(
         frac = np.where(
             span > 1e-12, (levels_arr[None, :] - lo) / safe, 0.0
         )
-        x_lo = grid[idx - 1]
-        x_hi = grid[idx]
-        values = x_lo + frac * (x_hi - x_lo)
+        u_grid = np.cbrt(grid)
+        u_lo = u_grid[idx - 1]
+        u_hi = u_grid[idx]
+        values = (u_lo + frac * (u_hi - u_lo)) ** 3
         # A level the CDF never reaches on the grid has no bracketing pair:
         # `argmax` of an all-False row is 0, and interpolating from the first
         # interval -- where a wet, fat-tailed cell's CDF is nearly flat -- divides
@@ -929,7 +957,16 @@ def bma_crps(
 
     Uses the split form `CRPS = int_0^y F^2 + int_y^inf (1 - F)^2`, in which
     both integrands are continuous, and handles the single interval that
-    straddles `y` separately using the CDF evaluated exactly at `y`.
+    straddles `y` separately using the CDF evaluated exactly at `y`. Both
+    integrals are taken in `u = v**(1/3)` (`dv = 3 u**2 du`), where the
+    mixture CDF is smooth; see `BMA_CRPS_GRID_MM`.
+
+    Until 31 Oct the second integral started at the grid point *below* `y`
+    and then added the straddling piece `[y, g_hi]` on top, so every
+    observation's interval was counted in `(1 - F)^2` once whole and once in
+    part. On a dry observation that is all of `int_0^1 (1 - F)^2`, and on the
+    real two-season fits it lifted mean BMA CRPS by about 0.18 mm -- more than
+    the margins H2 and H10 are decided on.
 
     The one-sided form `int (F - 1{x >= y})^2` has a jump at `x = y`, and a plain
     trapezoid across that interval is biased by about half a grid step -- enough
@@ -984,34 +1021,36 @@ def _bma_crps_block(
     obs: np.ndarray,
     grid: np.ndarray,
 ) -> np.ndarray:
-    """`bma_crps` for one chunk of 1-D cells."""
+    """`bma_crps` for one chunk of 1-D cells, integrated in `u = v**(1/3)`."""
     obs = np.asarray(obs, dtype=float)
     cdf = bma_mixture_cdf(result, forecast_mean, forecast_spread, grid)
     cdf_at_obs = bma_mixture_cdf(result, forecast_mean, forecast_spread, obs[..., None])[..., 0]
 
-    cum_f2 = _cumulative_trapezoid(cdf**2, grid)
-    cum_g2 = _cumulative_trapezoid((1.0 - cdf) ** 2, grid)
+    u = np.cbrt(grid)
+    cum_f2 = _cumulative_cube_weighted(cdf**2, u)
+    cum_g2 = _cumulative_cube_weighted((1.0 - cdf) ** 2, u)
 
     last = grid.size - 1
     j = np.clip(np.searchsorted(grid, obs, side="right") - 1, 0, last)
     j_up = np.minimum(j + 1, last)
 
-    j3 = j[..., None]
-    below_f2 = np.take_along_axis(cum_f2, j3, axis=-1)[..., 0]
-    below_g2 = np.take_along_axis(cum_g2, j3, axis=-1)[..., 0]
-    f_lo = np.take_along_axis(cdf, j3, axis=-1)[..., 0]
-    f_hi = np.take_along_axis(cdf, j_up[..., None], axis=-1)[..., 0]
+    def at(values: np.ndarray, index: np.ndarray) -> np.ndarray:
+        return np.take_along_axis(values, index[..., None], axis=-1)[..., 0]
 
-    g_lo = grid[j]
-    g_hi = grid[j_up]
-    left = below_f2 + 0.5 * (f_lo**2 + cdf_at_obs**2) * np.clip(obs - g_lo, 0.0, None)
-    right = (cum_g2[..., last] - below_g2) + 0.5 * (
-        (1.0 - cdf_at_obs) ** 2 + (1.0 - f_hi) ** 2
-    ) * np.clip(g_hi - obs, 0.0, None)
+    f_lo = at(cdf, j)
+    f_hi = at(cdf, j_up)
+    # The observation's own interval is split at `u_y`: `[u_j, u_y]` belongs to
+    # the F^2 integral, `[u_y, u_j+1]` to the (1 - F)^2 one, and the latter's
+    # cumulative part starts at `j_up` so that interval is not counted twice.
+    u_y = np.clip(np.cbrt(obs), u[j], u[j_up])
+    left = at(cum_f2, j) + _cube_weighted_piece(f_lo**2, cdf_at_obs**2, u[j], u_y)
+    right = (cum_g2[..., last] - at(cum_g2, j_up)) + _cube_weighted_piece(
+        (1.0 - cdf_at_obs) ** 2, (1.0 - f_hi) ** 2, u_y, u[j_up]
+    )
     # An observation above the grid is entirely in the saturated region, where
     # F is 1 and the second integral is zero, so the first integral grows by the
     # full excess.
-    right = right + np.clip(obs - grid[last], 0.0, None)
+    left = left + np.clip(obs - grid[last], 0.0, None)
     return np.clip(left + right, 0.0, None)
 
 
