@@ -2,7 +2,8 @@
 
 Locked decision (see docs/grid-and-time-convention.md for the full
 rationale): 0.25 degree lat/lon over India, and IMD's 03 UTC -> 03 UTC
-(next day) 24-hour accumulation window — not UTC midnight-to-midnight.
+(next day) 24-hour accumulation window, labelled by the date it ends on —
+not UTC midnight-to-midnight.
 
 Every ingestion script must call `regrid_to_common` / `resample_to_imd_day`
 rather than reimplementing regridding or resampling inline, so alignment
@@ -89,19 +90,59 @@ def regrid_to_common(
 
 # --- IMD day convention ------------------------------------------------------
 
-# IMD's daily accumulation window: 03:00 UTC to 03:00 UTC the next day (this
-# is 08:30 IST to 08:30 IST, IMD's own observation-day convention), not UTC
-# midnight-to-midnight. A day labelled "2024-06-15" in IMD data covers
-# 2024-06-15 03:00 UTC through 2024-06-16 03:00 UTC.
+# IMD's daily accumulation window runs from 03:00 UTC to the next 03:00 UTC
+# (08:30 IST to 08:30 IST), not UTC midnight-to-midnight. IMD labels a day by
+# the date the window **ends** on: the total recorded "from 0830 hrs of
+# 21-10-2026 to 0830 hrs of 22-10-2026" is the value for 22-10-2026
+# (https://mausam.imd.gov.in/responsive/rainfallinformation_msd.php). So a day
+# labelled "2024-06-15" covers 2024-06-14 03:00 UTC through 2024-06-15 03:00
+# UTC. This was previously read the other way round (labelled by the start),
+# which paired every forecast with the IMD day before the one it covers -- see
+# docs/grid-and-time-convention.md and issue #106.
 IMD_DAY_START_HOUR_UTC = 3
+
+_ONE_NANOSECOND = pd.Timedelta(1, unit="ns")
+
+
+def imd_day_containing(instant):
+    """The IMD day label (by end date) of the window that contains `instant`.
+
+    Accepts a `pd.Timestamp` or a `pd.DatetimeIndex`. Windows are half-open,
+    `[03:00 UTC, next 03:00 UTC)`, so an instant at exactly 03:00 UTC starts
+    the next day's window: 2024-06-15 03:00 UTC is in day 2024-06-16, and
+    2024-06-15 02:59 UTC is in day 2024-06-15.
+    """
+    shifted = pd.to_datetime(instant) - pd.Timedelta(hours=IMD_DAY_START_HOUR_UTC)
+    return shifted.normalize() + pd.Timedelta(days=1)
+
+
+def imd_day_for(init_time, lead_hours: int):
+    """The IMD day a forecast's accumulation window `(init, init + lead]` validates on.
+
+    This is the one place a forecast is paired with an observed day; every
+    runner calls it so the convention cannot drift between scripts.
+
+    `total_precipitation_24hr` valid at `init + lead` is the accumulation over
+    the 24 h *ending* at that instant. The IMD day that matches it is the one
+    whose window ends at or just after that instant, so the last nanosecond of
+    the forecast window is what is placed: a 24 h forecast initialised at
+    00 UTC on day `t` covers 00 UTC `t` to 00 UTC `t+1`, which overlaps IMD day
+    `t+1` (03 UTC `t` to 03 UTC `t+1`) for 21 of 24 hours. IMD day `t` shares
+    only 3 hours with it.
+
+    Accepts a `pd.Timestamp` or a `pd.DatetimeIndex` of init times.
+    """
+    valid_time = pd.to_datetime(init_time) + pd.Timedelta(hours=lead_hours)
+    return imd_day_containing(valid_time - _ONE_NANOSECOND)
 
 
 def resample_to_imd_day(ds: xr.Dataset, time_dim: str = "time") -> xr.Dataset:
     """Resample/accumulate a sub-daily or differently-aligned dataset onto IMD's day.
 
     Sums over each 24h window from 03:00 UTC to the next 03:00 UTC, and
-    labels the resulting day with the date the window *starts* on (matching
-    IMD's own convention of labelling a day by its 03 UTC start).
+    labels the resulting day with the date the window *ends* on (matching
+    IMD's own convention of labelling a day by the date its 08:30 IST total
+    ends -- see `imd_day_containing`).
 
     Implementation note: `Dataset.resample(..., offset=...)` does not shift
     calendar-day ("1D") bin boundaries in the xarray/pandas versions this was
@@ -118,8 +159,8 @@ def resample_to_imd_day(ds: xr.Dataset, time_dim: str = "time") -> xr.Dataset:
     resampled = shifted.resample({time_dim: "1D"}).sum(skipna=True)
 
     # Bin labels are now midnight in shifted-time, i.e. exactly 03:00 UTC in
-    # real time for the window's start; normalise to a plain date label
-    # (matching IMD's own day-by-start-date convention) rather than exposing
-    # the shifted timestamp.
-    new_labels = pd.DatetimeIndex(resampled[time_dim].values).normalize()
+    # real time for the window's *start*. IMD labels a day by the date its
+    # window *ends* on, so move each label forward one day and normalise to a
+    # plain date rather than exposing the shifted timestamp.
+    new_labels = pd.DatetimeIndex(resampled[time_dim].values).normalize() + pd.Timedelta(days=1)
     return resampled.assign_coords({time_dim: new_labels})

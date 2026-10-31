@@ -16,7 +16,11 @@ from run_tier2_hierarchical_baseline import (  # noqa: E402
     score_emos_source,
 )
 
-from weavr.emos import CensoredShiftedGammaResult  # noqa: E402
+from weavr.emos import (  # noqa: E402
+    CensoredShiftedGammaResult,
+    exceedance_probability_csgd,
+    predict_csgd_params,
+)
 
 
 class TestClipNegativePrecip:
@@ -169,6 +173,39 @@ class TestScoreEmosSource:
         assert per_bin["light"]["crps_mm"] < 1.0
         assert abs(per_bin["light"]["bias_mm"]) < 1.0
         assert per_bin["light"]["is_fallback"] is False
+
+    def test_probability_grids_come_from_the_fitted_distribution(self):
+        # The regression moves the predictive mean well away from the raw
+        # ensemble mean (5 -> 17 mm), so the exceedance probability of the
+        # fitted CSGD and that of a gamma built on the raw ensemble mean and
+        # spread differ at 7.5 mm. The old code passed the raw mean and spread
+        # to `exceedance_probability_csgd`, which is what the per-day Brier
+        # scores of Tier 2 EMOS were computed from.
+        forecast, obs, rain_bin_labels = self._forecast_and_obs()
+        result = CensoredShiftedGammaResult(
+            bin_label="light",
+            source="synthetic",
+            shift=-0.5,
+            climatological_mean=5.0,
+            climatological_std=1.0,
+            coefficients={"a1": 2.0, "a2": 3.0, "a3": 4.0, "a4": 0.0},
+        )
+        test_mask = np.ones(forecast.sizes["sample"], dtype=bool)
+        grids = {7.5: np.zeros(obs.shape), 64.5: np.zeros(obs.shape)}
+
+        score_emos_source(
+            {"light": result}, forecast, obs, rain_bin_labels, test_mask,
+            np.random.default_rng(0), n_samples=50, probability_grids=grids,
+        )
+
+        mean = np.full(obs.shape, 5.0)
+        spread = np.full(obs.shape, 1.0)
+        location, scale, shift = predict_csgd_params(result, mean, spread)
+        for threshold, grid in grids.items():
+            expected = exceedance_probability_csgd(location, scale, shift, threshold)
+            np.testing.assert_allclose(grid, expected, rtol=1e-12)
+        raw_gamma = exceedance_probability_csgd(mean, spread, shift, 7.5)
+        assert np.all(np.abs(grids[7.5] - raw_gamma) > 0.5)
 
     def test_bin_with_zero_test_cells_reports_nan_not_a_crash(self):
         forecast, obs, rain_bin_labels = self._forecast_and_obs()

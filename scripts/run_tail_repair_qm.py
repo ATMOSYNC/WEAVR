@@ -40,12 +40,16 @@ buried.
 Outputs
 -------
 `results/tail_repair_qm.csv`
-    Per `(variant, lead, fold, scope, source, method)`: RMSE, bias, MAE,
-    tw-CRPS@64.5, Brier@7.5, and the pooled contingency scores at every IMD
-    threshold.
+    Per `(variant, lead, fold, scope, source, method)`, raw rows included for
+    every single source as well as the blend: RMSE, MAE, CRPS, tw-CRPS@64.5,
+    Brier@7.5, and POD/FAR/CSI/SEDI pooled over the fold at 64.5, 115.6 and
+    204.5 mm. `crps_mm` equals `mae_mm` by identity: every source here is a
+    point forecast, and the CRPS of a point mass at x is |y - x|.
 `results/tail_repair_qm_paired.csv`
-    The paired raw-vs-QM differences with 95% CIs and a `significant` flag
-    per metric, pooled over both test folds, plus the per-lead H7 outcome.
+    QM minus raw, for the blend and for each single source, pooled over both
+    test folds: every metric above with its 95% paired block-bootstrap CI,
+    plus the per-lead H7 outcome. The pre-registered H7 verdict is the
+    blend's; the single-source rows show where the effect comes from.
 `results/per_day/<method>__lead<lead>.csv`
     Per-day rows for both arms, in the schema `weavr.score_io.per_day_scores`
     emits so `scripts/run_scorecard.py` can bootstrap them.
@@ -72,8 +76,7 @@ from build_seeps_climatology import load_climatology  # noqa: E402
 from run_scorecard import (  # noqa: E402
     _bootstrap_categorical_difference,
     _categorical_from_counts,
-    _pooled_csi,
-    _pooled_sedi,
+    _pooled_categorical,
     _rmse_from_mse,
 )
 from run_tier0_baseline import PRECIP_M_TO_MM, _align_to_imd_day  # noqa: E402
@@ -85,6 +88,7 @@ from run_tier1_regional_baseline import (  # noqa: E402
 
 from weavr.quantile_mapping import (  # noqa: E402
     apply_regional_quantile_maps,
+    climatology_excluding_years,
     fit_regional_quantile_maps,
 )
 from weavr.regions import assign_regions  # noqa: E402
@@ -110,6 +114,10 @@ TWCRPS_THRESHOLD = 64.5
 BRIER_THRESHOLD = 7.5
 SEDI_THRESHOLD = 115.6
 MIN_LEADS_FOR_PASS = 3
+# The heavy, very heavy and extremely heavy IMD thresholds, which step 11's
+# prompt asks POD/FAR/CSI/SEDI at.
+CATEGORICAL_THRESHOLDS = (64.5, 115.6, 204.5)
+CATEGORICAL_SCORE_NAMES = ("pod", "far", "csi", "sedi")
 
 
 def load_aligned(
@@ -176,21 +184,151 @@ def fit_maps_for_variant(
 def pooled_categorical(frame: pd.DataFrame, threshold: float, score: str) -> float:
     """A pooled categorical score from this frame's daily contingency counts.
 
-    `csi` needs the first three count columns, `sedi` all four. The scorecard's
-    own `_bootstrap_categorical_difference` slices the same way (`n_args = 3 if
-    score == "csi" else 4`) -- keeping that convention is what lets the point
-    estimate here and the bootstrap replicates inside it agree. The wrong
-    arity is rejected explicitly rather than allowed to raise a bare
+    Delegates to the scorecard's own `CATEGORICAL_SCORES` table, which
+    `_bootstrap_categorical_difference` also reads -- that shared table is
+    what lets the point estimate here and the bootstrap replicates agree. An
+    unknown score is rejected explicitly rather than allowed to raise a bare
     TypeError from inside the scoring library.
     """
-    if score == "csi":
-        fn, n_args = _pooled_csi, 3
-    elif score == "sedi":
-        fn, n_args = _pooled_sedi, 4
-    else:
-        raise ValueError(f"Unsupported categorical score: {score!r} (expected 'csi' or 'sedi')")
-    counts = _categorical_from_counts(frame, threshold, score)[:n_args]
-    return fn(*[float(np.sum(c)) for c in counts])
+    from run_scorecard import CATEGORICAL_SCORES
+
+    if score not in CATEGORICAL_SCORES:
+        known = sorted(CATEGORICAL_SCORES)
+        raise ValueError(f"Unsupported categorical score: {score!r} (expected one of {known})")
+    return _pooled_categorical(_categorical_from_counts(frame, threshold, score), score)
+
+
+def summary_metrics(day: pd.DataFrame) -> dict:
+    """Every metric step 11 reports, from one arm's per-day frame.
+
+    The first six keys are the columns this file has always written, in the
+    same order, so existing readers of `tail_repair_qm.csv` are unaffected.
+    """
+    row = {
+        "rmse_mm": float(np.sqrt(day["mse_mm2"].mean())),
+        "mae_mm": float(day["mae_mm"].mean()),
+        "twcrps_64.5_mm": float(day["twcrps_64.5_mm"].mean()),
+        "brier_7.5": float(day["brier_7.5"].mean()),
+        "sedi_115.6": pooled_categorical(day, SEDI_THRESHOLD, "sedi"),
+        "csi_64.5": pooled_categorical(day, 64.5, "csi"),
+        # A point forecast's CRPS is its absolute error (see deterministic_per_day).
+        "crps_mm": float(day["mae_mm"].mean()),
+    }
+    for threshold in CATEGORICAL_THRESHOLDS:
+        for score in CATEGORICAL_SCORE_NAMES:
+            key = f"{score}_{threshold}"
+            if key not in row:
+                row[key] = pooled_categorical(day, threshold, score)
+    return row
+
+
+def _sig(ci) -> bool:
+    """CI wholly below 0: the QM arm is better (every difference is a loss)."""
+    return bool(np.isfinite(ci.ci_lo) and np.isfinite(ci.ci_hi) and ci.ci_hi < 0.0)
+
+
+def _excludes_zero(ci) -> bool:
+    # Direction-agnostic: for a cost metric like RMSE the question is whether
+    # the CI clears zero at all, not which side it lands on. Reusing `_sig`
+    # here would report a CI of [+3.76, +4.51] as "not significant" purely
+    # because it is an increase.
+    return bool(
+        np.isfinite(ci.ci_lo) and np.isfinite(ci.ci_hi) and (ci.ci_hi < 0.0 or ci.ci_lo > 0.0)
+    )
+
+
+def paired_metrics(
+    qm_all: pd.DataFrame, raw_all: pd.DataFrame, block_days: int, n_resamples: int, seed: int
+) -> dict:
+    """QM minus raw on the same days, every metric with a 95% paired CI.
+
+    The H7 columns (`twcrps_64.5_*`, `sedi_115.6_*`, `brier_7.5_*`,
+    `h7_lead_improved`) keep the names and rules they always had. Categorical
+    differences use the scorecard's orientation: negative means QM is better,
+    for FAR as for POD/CSI/SEDI.
+    """
+    def mean_ci(column: str):
+        return paired_difference_ci(
+            qm_all[column].to_numpy(float),
+            raw_all[column].to_numpy(float),
+            block_days=block_days,
+            n_resamples=n_resamples,
+            seed=seed,
+            aggregate="mean",
+        )
+
+    def categorical_ci(threshold: float, score: str):
+        return _bootstrap_categorical_difference(
+            _categorical_from_counts(qm_all, threshold, score),
+            _categorical_from_counts(raw_all, threshold, score),
+            score,
+            block_days,
+            n_resamples,
+            seed,
+        )
+
+    rmse_ci = paired_difference_ci(
+        _rmse_from_mse(qm_all),
+        _rmse_from_mse(raw_all),
+        block_days=block_days,
+        n_resamples=n_resamples,
+        seed=seed,
+        aggregate="rmse",
+    )
+    tw_ci = mean_ci("twcrps_64.5_mm")
+    brier_ci = mean_ci("brier_7.5")
+    sedi_ci = categorical_ci(SEDI_THRESHOLD, "sedi")
+    tw_improved = _sig(tw_ci)
+    sedi_improved = _sig(sedi_ci)
+    brier_worse = bool(np.isfinite(brier_ci.ci_lo) and brier_ci.ci_lo > 0.0)
+
+    row = {
+        "n_test_days": int(len(qm_all)),
+        "rmse_delta_mm": rmse_ci.estimate,
+        "rmse_ci_lo": rmse_ci.ci_lo,
+        "rmse_ci_hi": rmse_ci.ci_hi,
+        "rmse_significant": _excludes_zero(rmse_ci),
+        "rmse_worse": bool(np.isfinite(rmse_ci.ci_lo) and rmse_ci.ci_lo > 0.0),
+        "twcrps_64.5_delta": tw_ci.estimate,
+        "twcrps_64.5_ci_lo": tw_ci.ci_lo,
+        "twcrps_64.5_ci_hi": tw_ci.ci_hi,
+        "twcrps_64.5_improved": tw_improved,
+        "sedi_115.6_delta": sedi_ci.estimate,
+        "sedi_115.6_ci_lo": sedi_ci.ci_lo,
+        "sedi_115.6_ci_hi": sedi_ci.ci_hi,
+        "sedi_115.6_improved": sedi_improved,
+        "brier_7.5_delta": brier_ci.estimate,
+        "brier_7.5_ci_lo": brier_ci.ci_lo,
+        "brier_7.5_ci_hi": brier_ci.ci_hi,
+        "brier_7.5_degraded": brier_worse,
+        "h7_lead_improved": tw_improved or sedi_improved,
+        "bootstrap_degenerate": bool(rmse_ci.degenerate),
+    }
+    # CRPS = MAE for these point forecasts, so one interval serves both.
+    crps_ci = mean_ci("mae_mm")
+    row.update(
+        {
+            "crps_delta_mm": crps_ci.estimate,
+            "crps_ci_lo": crps_ci.ci_lo,
+            "crps_ci_hi": crps_ci.ci_hi,
+            "crps_significant": _excludes_zero(crps_ci),
+        }
+    )
+    for threshold in CATEGORICAL_THRESHOLDS:
+        for score in CATEGORICAL_SCORE_NAMES:
+            key = f"{score}_{threshold}"
+            if f"{key}_delta" in row:
+                continue
+            ci = categorical_ci(threshold, score)
+            row.update(
+                {
+                    f"{key}_delta": ci.estimate,
+                    f"{key}_ci_lo": ci.ci_lo,
+                    f"{key}_ci_hi": ci.ci_hi,
+                    f"{key}_significant": _excludes_zero(ci),
+                }
+            )
+    return row
 
 
 def deterministic_per_day(
@@ -305,12 +443,20 @@ def main() -> int:
 
         raw_blend_frames: list[pd.DataFrame] = []
         raw_blend_obs: list[xr.DataArray] = []
+        # Raw single sources, per source, pooled over folds: the "raw" arm of
+        # step 11 item 4a's raw-vs-QM comparison, which used to be missing.
+        raw_source_frames: dict[str, list[pd.DataFrame]] = {n: [] for n in FORECAST_SOURCE_NAMES}
 
         for train_mask, test_mask, split_label in folds:
             train_obs = obs_aligned.isel(sample=train_mask)
             test_obs = obs_aligned.isel(sample=test_mask)
             forecast_train = {n: da.isel(sample=train_mask) for n, da in forecasts.items()}
             forecast_test = {n: da.isel(sample=test_mask) for n, da in forecasts.items()}
+            # The climatology spans both test seasons; the test year is removed
+            # so the `climatology` map never sees the observations it is scored on.
+            fold_climatology = climatology_excluding_years(
+                climatology_rain, sample_times[test_mask]
+            )
             split_kind = (
                 "leave_one_year_out"
                 if split_label != "seasonal_block_split"
@@ -329,25 +475,38 @@ def main() -> int:
             raw_blend_frames.append(raw_day)
             raw_blend_obs.append(test_obs)
 
+            row_key = {
+                "lead_hours": lead_hours,
+                "fold": split_label,
+                "split": split_kind,
+                "n_train": int(train_mask.sum()),
+                "n_test": int(test_mask.sum()),
+            }
             metric_rows.append(
                 {
                     "variant": "raw",
-                    "lead_hours": lead_hours,
-                    "fold": split_label,
-                    "split": split_kind,
-                    "n_train": int(train_mask.sum()),
-                    "n_test": int(test_mask.sum()),
+                    **row_key,
                     "scope": "tier1_blend",
                     "source": "blend",
                     "method": "raw",
-                    "rmse_mm": float(np.sqrt(raw_day["mse_mm2"].mean())),
-                    "mae_mm": float(raw_day["mae_mm"].mean()),
-                    "twcrps_64.5_mm": float(raw_day["twcrps_64.5_mm"].mean()),
-                    "brier_7.5": float(raw_day["brier_7.5"].mean()),
-                    "sedi_115.6": pooled_categorical(raw_day, SEDI_THRESHOLD, "sedi"),
-                    "csi_64.5": pooled_categorical(raw_day, 64.5, "csi"),
+                    **summary_metrics(raw_day),
                 }
             )
+            for name in FORECAST_SOURCE_NAMES:
+                source_day = deterministic_per_day(
+                    forecast_test[name], test_obs, split_label, TWCRPS_THRESHOLD
+                )
+                raw_source_frames[name].append(source_day)
+                metric_rows.append(
+                    {
+                        "variant": "raw",
+                        **row_key,
+                        "scope": "single_source",
+                        "source": name,
+                        "method": "raw",
+                        **summary_metrics(source_day),
+                    }
+                )
 
             for variant in args.variants:
                 qm_train: dict[str, xr.DataArray] = {}
@@ -357,7 +516,7 @@ def main() -> int:
                         forecast_train[name],
                         train_obs,
                         region_labels,
-                        climatology_rain,
+                        fold_climatology,
                         variant,
                         lead_hours,
                         name,
@@ -376,20 +535,11 @@ def main() -> int:
                     metric_rows.append(
                         {
                             "variant": variant,
-                            "lead_hours": lead_hours,
-                            "fold": split_label,
-                            "split": split_kind,
-                            "n_train": int(train_mask.sum()),
-                            "n_test": int(test_mask.sum()),
+                            **row_key,
                             "scope": "single_source",
                             "source": name,
                             "method": "qm",
-                            "rmse_mm": float(np.sqrt(day["mse_mm2"].mean())),
-                            "mae_mm": float(day["mae_mm"].mean()),
-                            "twcrps_64.5_mm": float(day["twcrps_64.5_mm"].mean()),
-                            "brier_7.5": float(day["brier_7.5"].mean()),
-                            "sedi_115.6": pooled_categorical(day, SEDI_THRESHOLD, "sedi"),
-                            "csi_64.5": pooled_categorical(day, 64.5, "csi"),
+                            **summary_metrics(day),
                         }
                     )
                     pooled_per_day.setdefault((variant, lead_hours, f"qm_{name}"), []).append(day)
@@ -409,20 +559,11 @@ def main() -> int:
                 metric_rows.append(
                     {
                         "variant": variant,
-                        "lead_hours": lead_hours,
-                        "fold": split_label,
-                        "split": split_kind,
-                        "n_train": int(train_mask.sum()),
-                        "n_test": int(test_mask.sum()),
+                        **row_key,
                         "scope": "tier1_blend",
                         "source": "blend",
                         "method": "qm",
-                        "rmse_mm": float(np.sqrt(qm_day["mse_mm2"].mean())),
-                        "mae_mm": float(qm_day["mae_mm"].mean()),
-                        "twcrps_64.5_mm": float(qm_day["twcrps_64.5_mm"].mean()),
-                        "brier_7.5": float(qm_day["brier_7.5"].mean()),
-                        "sedi_115.6": pooled_categorical(qm_day, SEDI_THRESHOLD, "sedi"),
-                        "csi_64.5": pooled_categorical(qm_day, 64.5, "csi"),
+                        **summary_metrics(qm_day),
                     }
                 )
                 pooled_per_day.setdefault((variant, lead_hours, "qm_blend"), []).append(qm_day)
@@ -449,97 +590,33 @@ def main() -> int:
         raw_all = pd.concat(raw_blend_frames, ignore_index=True)
         for variant in args.variants:
             qm_all = pd.concat(pooled_per_day[(variant, lead_hours, "qm_blend")], ignore_index=True)
-
-            rmse_ci = paired_difference_ci(
-                _rmse_from_mse(qm_all),
-                _rmse_from_mse(raw_all),
-                block_days=args.block_days,
-                n_resamples=args.n_resamples,
-                seed=args.seed,
-                aggregate="rmse",
-            )
-            tw_ci = paired_difference_ci(
-                qm_all["twcrps_64.5_mm"].to_numpy(float),
-                raw_all["twcrps_64.5_mm"].to_numpy(float),
-                block_days=args.block_days,
-                n_resamples=args.n_resamples,
-                seed=args.seed,
-                aggregate="mean",
-            )
-            brier_ci = paired_difference_ci(
-                qm_all["brier_7.5"].to_numpy(float),
-                raw_all["brier_7.5"].to_numpy(float),
-                block_days=args.block_days,
-                n_resamples=args.n_resamples,
-                seed=args.seed,
-                aggregate="mean",
-            )
-            sedi_ci = _bootstrap_categorical_difference(
-                _categorical_from_counts(qm_all, SEDI_THRESHOLD, "sedi"),
-                _categorical_from_counts(raw_all, SEDI_THRESHOLD, "sedi"),
-                "sedi",
-                args.block_days,
-                args.n_resamples,
-                args.seed,
-            )
-
-            def sig(ci) -> bool:
-                return bool(np.isfinite(ci.ci_lo) and np.isfinite(ci.ci_hi) and ci.ci_hi < 0.0)
-
-            def excludes_zero(ci) -> bool:
-                # Direction-agnostic: for a cost metric like RMSE the question
-                # is whether the CI clears zero at all, not which side it lands
-                # on. Reusing `sig` here would report a CI of [+3.76, +4.51] as
-                # "not significant" purely because it is an increase.
-                return bool(
-                    np.isfinite(ci.ci_lo)
-                    and np.isfinite(ci.ci_hi)
-                    and (ci.ci_hi < 0.0 or ci.ci_lo > 0.0)
-                )
-
-            tw_improved = sig(tw_ci)
-            sedi_improved = sig(sedi_ci)
-            brier_worse = bool(np.isfinite(brier_ci.ci_lo) and brier_ci.ci_lo > 0.0)
-
+            row = paired_metrics(qm_all, raw_all, args.block_days, args.n_resamples, args.seed)
             paired_rows.append(
-                {
-                    "variant": variant,
-                    "lead_hours": lead_hours,
-                    "scope": "tier1_blend",
-                    "n_test_days": int(len(qm_all)),
-                    "rmse_delta_mm": rmse_ci.estimate,
-                    "rmse_ci_lo": rmse_ci.ci_lo,
-                    "rmse_ci_hi": rmse_ci.ci_hi,
-                    "rmse_significant": excludes_zero(rmse_ci),
-                    "rmse_worse": bool(
-                        np.isfinite(rmse_ci.ci_lo) and rmse_ci.ci_lo > 0.0
-                    ),
-                    "twcrps_64.5_delta": tw_ci.estimate,
-                    "twcrps_64.5_ci_lo": tw_ci.ci_lo,
-                    "twcrps_64.5_ci_hi": tw_ci.ci_hi,
-                    "twcrps_64.5_improved": tw_improved,
-                    "sedi_115.6_delta": sedi_ci.estimate,
-                    "sedi_115.6_ci_lo": sedi_ci.ci_lo,
-                    "sedi_115.6_ci_hi": sedi_ci.ci_hi,
-                    "sedi_115.6_improved": sedi_improved,
-                    "brier_7.5_delta": brier_ci.estimate,
-                    "brier_7.5_ci_lo": brier_ci.ci_lo,
-                    "brier_7.5_ci_hi": brier_ci.ci_hi,
-                    "brier_7.5_degraded": brier_worse,
-                    "h7_lead_improved": tw_improved or sedi_improved,
-                    "bootstrap_degenerate": bool(rmse_ci.degenerate),
-                }
+                {"variant": variant, "lead_hours": lead_hours, "scope": "tier1_blend",
+                 "source": "blend", **row}
             )
             print(
                 f"[lead {lead_hours:>3}h | {variant:>12}] "
-                f"twCRPS d={tw_ci.estimate:+.4f} "
-                f"CI[{tw_ci.ci_lo:+.4f},{tw_ci.ci_hi:+.4f}] "
-                f"{'IMPROVED' if tw_improved else 'ns'} | "
-                f"SEDI@115.6 d={sedi_ci.estimate:+.4f} "
-                f"{'IMPROVED' if sedi_improved else 'ns'} | "
-                f"RMSE d={rmse_ci.estimate:+.3f}mm | "
-                f"Brier@7.5 {'DEGRADED' if brier_worse else 'ok'}"
+                f"twCRPS d={row['twcrps_64.5_delta']:+.4f} "
+                f"CI[{row['twcrps_64.5_ci_lo']:+.4f},{row['twcrps_64.5_ci_hi']:+.4f}] "
+                f"{'IMPROVED' if row['twcrps_64.5_improved'] else 'ns'} | "
+                f"SEDI@115.6 d={row['sedi_115.6_delta']:+.4f} "
+                f"{'IMPROVED' if row['sedi_115.6_improved'] else 'ns'} | "
+                f"RMSE d={row['rmse_delta_mm']:+.3f}mm | "
+                f"Brier@7.5 {'DEGRADED' if row['brier_7.5_degraded'] else 'ok'}"
             )
+            for name in FORECAST_SOURCE_NAMES:
+                source_qm = pd.concat(
+                    pooled_per_day[(variant, lead_hours, f"qm_{name}")], ignore_index=True
+                )
+                source_raw = pd.concat(raw_source_frames[name], ignore_index=True)
+                paired_rows.append(
+                    {"variant": variant, "lead_hours": lead_hours, "scope": "single_source",
+                     "source": name,
+                     **paired_metrics(
+                         source_qm, source_raw, args.block_days, args.n_resamples, args.seed
+                     )}
+                )
 
     metrics = pd.DataFrame(metric_rows)
     metrics.to_csv(args.out_csv, index=False)
@@ -553,8 +630,9 @@ def main() -> int:
     print("H7 (QM part) -- tw-CRPS@64.5 or SEDI@115.6 must improve at >= 3 of 5 leads")
     print("with the 95% paired CI excluding 0, and Brier@7.5 must not degrade.")
     print("=" * 78)
+    blend = paired[paired["scope"] == "tier1_blend"]
     for variant in args.variants:
-        subset = paired[paired["variant"] == variant]
+        subset = blend[blend["variant"] == variant]
         improved = int(subset["h7_lead_improved"].sum())
         degraded = int(subset["brier_7.5_degraded"].sum())
         degenerate = bool(subset["bootstrap_degenerate"].any())
@@ -570,7 +648,7 @@ def main() -> int:
         + "\n".join(
             f"  {r.variant:>12} lead {r.lead_hours:>3}h: {r.rmse_delta_mm:+.3f} mm "
             f"CI[{r.rmse_ci_lo:+.3f},{r.rmse_ci_hi:+.3f}]"
-            for r in paired.itertuples()
+            for r in blend.itertuples()
         )
     )
     return 0

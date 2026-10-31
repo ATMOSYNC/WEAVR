@@ -17,11 +17,12 @@ from run_phase2_ensemble_baseline import (  # noqa: E402
 
 class TestValidTimeToImdDay:
     def test_maps_valid_time_to_the_imd_day_it_falls_within(self):
-        # init 2020-06-01T00:00 UTC + 24h lead -> valid at 2020-06-02T00:00 UTC,
-        # inside the IMD day window 06-01T03:00 -> 06-02T03:00, so labelled
-        # 2020-06-01 -- same convention scripts/run_tier0_baseline.py uses.
+        # init 2020-06-01T00:00 UTC + 24h lead -> the forecast covers
+        # 06-01T00:00 -> 06-02T00:00 UTC, which matches the IMD window
+        # 06-01T03:00 -> 06-02T03:00 -- labelled by its end date, 2020-06-02,
+        # the same convention scripts/run_tier0_baseline.py uses (issue #106).
         result = _valid_time_to_imd_day(np.datetime64("2020-06-01T00:00:00"), lead_hours=24)
-        assert pd.Timestamp(result) == pd.Timestamp("2020-06-01")
+        assert pd.Timestamp(result) == pd.Timestamp("2020-06-02")
 
     def test_longer_lead_can_cross_into_the_next_calendar_day(self):
         result_24h = _valid_time_to_imd_day(np.datetime64("2020-06-01T00:00:00"), lead_hours=24)
@@ -178,4 +179,32 @@ class TestScorePrecipLead:
         assert [r["fold"] for r in rows] == ["2018", "2020", "pooled"]
         assert rows[2]["split"] == "leave_one_year_out"
         assert rows[2]["n_test"] == 20
+
+    def test_brier_scores_only_observed_cells(self):
+        # The lagged ensemble covers the whole box; IMD observes land only. An
+        # unobserved cell must leave the Brier mean, not enter it as a
+        # correctly forecast non-event (F8: that halved this test's score).
+        times = pd.date_range("2018-06-01", periods=10, freq="D").union(
+            pd.date_range("2020-06-01", periods=10, freq="D")
+        )
+        lat, lon = [10.0, 11.0], [75.0, 76.0]
+        members = np.zeros((20, 4, 2, 2))
+        members[:, :, 1, :] = 20.0  # observed row: every member says rain
+        ensemble = xr.DataArray(
+            members,
+            coords={"sample": times, "member": np.arange(4), "latitude": lat, "longitude": lon},
+            dims=["sample", "member", "latitude", "longitude"],
+        )
+        obs_values = np.zeros((20, 2, 2))
+        obs_values[:, 0, :] = np.nan  # unobserved row: forecast dry, nothing seen
+        obs = xr.DataArray(
+            obs_values,
+            coords={"time": times, "latitude": lat, "longitude": lon},
+            dims=["time", "latitude", "longitude"],
+        )
+
+        rows = score_precip_lead(ensemble, obs, thresholds=(7.5,), test_fraction=0.2)
+
+        # Observed cells: p = 1, no rain -> (1 - 0)^2 = 1 on every fold.
+        assert [r["brier"][7.5] for r in rows] == [1.0, 1.0, 1.0]
 

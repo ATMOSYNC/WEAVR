@@ -443,6 +443,44 @@ def contingency_counts(
     return results
 
 
+def expected_contingency_counts(
+    probability: np.ndarray, obs_event: np.ndarray, axis: int | tuple[int, ...] | None = None
+) -> dict[str, np.ndarray]:
+    """The 2x2 counts a probability forecast implies, in expectation.
+
+    A cell forecast with probability `p` is a forecast "yes" with weight `p`
+    and a "no" with weight `1 - p`, so against an observed event `o` (0/1):
+
+    - hits              = sum p * o          (forecast yes, observed yes)
+    - misses            = sum (1 - p) * o    (forecast no,  observed yes)
+    - false_alarms      = sum p * (1 - o)    (forecast yes, observed no)
+    - correct_negatives = sum (1 - p) * (1 - o)
+
+    Same keys as `contingency_counts`, so the pooled scores in
+    `scripts/run_scorecard.py` apply unchanged and no arbitrary decision
+    threshold (0.5 would discard the low-probability extreme cells) is needed.
+    Cells where either input is NaN contribute nothing. `axis` is summed over
+    (default: everything).
+
+    `scripts/run_tail_repair_evt.expected_counts` had misses and false alarms
+    the other way round. Its only test used a perfect forecast, where both are
+    zero, so the swap could not show; `tests/test_verify.py` uses forecasts
+    that tell them apart.
+    """
+    probability = np.asarray(probability, dtype=float)
+    obs_event = np.asarray(obs_event, dtype=float)
+    finite = np.isfinite(probability) & np.isfinite(obs_event)
+    p = np.where(finite, probability, 0.0)
+    o = np.where(finite, obs_event, 0.0)
+    q = np.where(finite, 1.0 - p, 0.0)
+    return {
+        "hits": np.asarray((p * o).sum(axis=axis)),
+        "misses": np.asarray((q * o).sum(axis=axis)),
+        "false_alarms": np.asarray((p * (1.0 - o) * finite).sum(axis=axis)),
+        "correct_negatives": np.asarray((q * (1.0 - o) * finite).sum(axis=axis)),
+    }
+
+
 def sedi(
     forecast: xr.DataArray,
     obs: xr.DataArray,

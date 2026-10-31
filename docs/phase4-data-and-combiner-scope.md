@@ -100,6 +100,15 @@ seasons, no shared dates to align on).
 
 ## Real per-bin sample counts: dry/light/moderate are fittable everywhere, heavy is marginal, extreme is not fittable at all
 
+> **Scope of this section (corrected 2026-10-01).** The counts below are real
+> and the decision rule they produce is still in force, but they are measured
+> over the **14 `seasonal_block_split` train days** of the v1 weekly split, and
+> every statement here is conditional on that training-window size. They are
+> not a general property of the rain bins. See
+> [Two-season caveat](#two-season-caveat-fittability-under-a-full-season-training-window)
+> at the end of this section for what changes when the training window is a
+> full season, which is what step 07's two-season LOYO uses.
+
 Using `weavr.verify.IMD_RAIN_THRESHOLDS_MM` (7.5/64.5/115.6/204.5mm) as bin
 edges and GraphCast's forecast values (the "classify each day's
 ensemble-mean forecast" quantity, checked per gridpoint-day, matching how
@@ -133,6 +142,40 @@ EMOS-CSG and BMA) is the same documented, flagged pattern
 `is_fallback=True`/`reason` set, with a plain climatological point-mass
 fallback distribution (not a fitted CSG/mixture) for a bin that can't be
 fit for real.
+
+### Two-season caveat: fittability under a full-season training window
+
+The 14-day window above is what makes `extreme` unfittable, not the bin
+itself. `MIN_TRAIN_DAYS_PER_BIN = 5` counts *distinct contributing train
+days*, and `extreme` collects 0–3 of them across 14 days. Give it a full
+season instead and the count is roughly an order of magnitude larger.
+
+Step 07's two-season LOYO (`src/weavr/splits.py::leave_one_year_out`) trains
+on one whole season and tests on the other, so the training window is
+~118–122 days rather than 14. Measured there, **all five bins — including
+`extremely_heavy` — fit at every lead in every fold**, and no point-mass
+fallback remains (`results/tail_repair_evt.csv`, from #74's two-season
+evaluation; all 17,415 example-grid cells come out `csgd+gpd_tail`).
+
+Two consequences worth stating plainly, because both were misread:
+
+- **"Extreme is never fittable" is true of the v1 weekly window and false of
+  the v2 evidence base.** Anything that generalises it — notably the
+  extreme-probability map caption, which tells the reader that dotted cells
+  are bins with too few training days — is describing a fallback that does
+  not fire on the current results.
+- **The GPD tail is therefore not a per-cell rescue on the v2 base.** With
+  every bin fittable, the `csgd+gpd_tail` flag reflects the splice design
+  applying above $u = 64.5$ mm uniformly, not a bin-by-bin shortfall. The
+  tail remains justified on its own terms (see
+  [docs/tail-repair-results.md](tail-repair-results.md)); it just is not
+  doing the job this section originally described.
+
+Whether a full-season window is the *right* window is a separate question
+this section does not settle. Fitting `extremely_heavy` from a season of
+rare events is not automatically better than declaring it unfittable, and
+the honest form of the v2 claim is "it now fits", not "it was wrong to
+exclude it".
 
 ## EMOS-CSG and BMA: the real cited methodologies, checked before implementing
 
@@ -193,6 +236,6 @@ restructured to insert it as its own step, renumbering what were steps
 | Training window | `seasonal_block_split(test_fraction=0.2)` | Forced — no rolling calendar exists in any static store |
 | Ensemble source | GraphCast's lagged pseudo-ensemble **+** a newly-pulled real IFS 50-member ensemble | User-confirmed tradeoff; IFS pull was pre-flagged in Phase 0/1, cost already measured (~2-2.5h/~30-35GB) |
 | HEPPI's role | Methodology/validation reference only | Forced — no calendar axis to join it to weavr's dated stores |
-| Bin fittability | dry/light/moderate: every lead; heavy: 24h/48h only; extreme: never | Real per-bin train-day counts, `MIN_TRAIN_DAYS_PER_BIN = 5` |
+| Bin fittability | dry/light/moderate: every lead; heavy: 24h/48h only; extreme: never | Real per-bin train-day counts over the v1 14-day weekly window, `MIN_TRAIN_DAYS_PER_BIN = 5`. Under a full-season window (step 07 LOYO) all five bins fit -- see the two-season caveat above |
 | EMOS-CSG recipe | Scheuerer & Hamill (2015) CSG, CRPS-minimized | The real cited paper's own method |
 | BMA recipe | Sloughter et al. (2007) precipitation-BMA (point mass + gamma) | Raftery et al. (2005)'s own component form (Gaussian) doesn't fit precipitation; this is the real precip-specific extension |

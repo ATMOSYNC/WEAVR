@@ -32,7 +32,9 @@ def _synthetic_store(tmp_path: Path, n_init: int = 10, year: int = 2020) -> Path
 
     obs = xr.Dataset(
         {"rain": (("time", "latitude", "longitude"), obs_values)},
-        coords={"time": init_times, "latitude": LAT, "longitude": LON},
+        # IMD labels a day by the date its window ends on, so the observation a
+        # 24 h forecast from `t` is scored against carries the label `t + 1`.
+        coords={"time": init_times + pd.Timedelta(days=1), "latitude": LAT, "longitude": LON},
     )
     obs.to_zarr(store, group="imd_observed", mode="w", consolidated=True)
 

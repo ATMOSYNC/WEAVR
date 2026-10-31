@@ -8,6 +8,7 @@ import xarray as xr
 from weavr import verify as V
 from weavr.score_io import (
     PerDayScoreWriter,
+    exceedance_event,
     guard_result_overwrites,
     per_day_scores,
     read_per_day_scores,
@@ -32,6 +33,35 @@ def _forecast_and_obs(n_days=6, n_lat=4, n_lon=5, seed=0):
         rng.normal(0, 10, size=(n_days, n_lat, n_lon)), coords=coords, dims=list(coords)
     )
     return forecast, obs
+
+
+class TestExceedanceEvent:
+    @staticmethod
+    def _da(values):
+        return xr.DataArray(np.asarray(values, dtype=float), dims="x")
+
+    def test_one_at_or_above_the_threshold_zero_below(self):
+        event = exceedance_event(self._da([7.4, 7.5, 64.5, 0.0]), 7.5)
+        np.testing.assert_array_equal(event.values, [0.0, 1.0, 1.0, 0.0])
+
+    def test_nan_where_nothing_was_observed(self):
+        # `(obs >= t).astype(float)` gives 0.0 here, because NaN >= t is False:
+        # the cell became an observed non-event (F8, 31 Oct).
+        event = exceedance_event(self._da([np.nan, 100.0]), 64.5)
+        assert np.isnan(event.values[0])
+        assert event.values[1] == 1.0
+
+    def test_numpy_in_numpy_out(self):
+        # Steps 11 and 12 build expected contingency counts from NumPy grids.
+        event = exceedance_event(np.array([[np.nan, 120.0], [0.0, 115.6]]), 115.6)
+        assert isinstance(event, np.ndarray)
+        np.testing.assert_array_equal(event, [[np.nan, 1.0], [0.0, 1.0]])
+
+    def test_a_missing_observation_leaves_the_brier_mean(self):
+        obs = self._da([10.0, 0.0, np.nan])
+        forecast = self._da([0.5, 0.5, 0.0])
+        score = V.brier_score(forecast, exceedance_event(obs, 7.5), dim="x")
+        assert float(score) == pytest.approx(0.25)
 
 
 class TestPerDayScores:
@@ -135,6 +165,23 @@ class TestPerDayScores:
             )
         )
         assert frame["brier_64.5"].iloc[0] == pytest.approx(expected)
+
+    def test_brier_scores_only_cells_with_an_observation(self):
+        # A forecast that covers the whole box (a raw ensemble, or climatology
+        # at 0 off-land) is finite where IMD observes nothing. Those cells are
+        # not non-events; scoring them as 0 diluted every such Brier (F8).
+        forecast, obs = _forecast_and_obs(n_days=2, n_lat=2, n_lon=2)
+        obs = obs.copy()
+        obs[:] = 100.0
+        obs[:, 0, :] = np.nan  # half the box unobserved
+        prob = xr.DataArray(
+            np.full(forecast.shape, 0.0), coords=forecast.coords, dims=forecast.dims
+        )
+
+        frame = per_day_scores(forecast, obs, probabilities={64.5: prob})
+
+        # Every observed cell saw the event and was given probability 0.
+        np.testing.assert_allclose(frame["brier_64.5"], [1.0, 1.0])
 
     def test_per_cell_scores_are_averaged_not_recomputed(self):
         # The route for EMOS/BMA, which already return per-cell CRPS.

@@ -89,7 +89,7 @@ from weavr.drift import (
     rescore_trailing_window,
     trailing_window_value,
 )
-from weavr.grid import IMD_DAY_START_HOUR_UTC
+from weavr.grid import imd_day_for
 from weavr.score_io import FORCE_HELP, guard_result_overwrites, resolve_result_paths, write_rows_csv
 from weavr.stores import DEFAULT_BASELINE_DAILY_STORES, open_multi_season, resolve_store_paths
 
@@ -102,14 +102,10 @@ PRECIP_SOURCE_NAMES = ["graphcast", "hres", "ifs_ens_mean"]
 
 
 def _align_to_imd_day(da: xr.DataArray, lead_hours: int) -> xr.DataArray:
-    """Same real alignment convention as `run_tier0_baseline.py`'s own
-    `_align_to_imd_day` -- kept as a local copy rather than a shared import
-    since each `run_tierN_*.py`/`run_daily_*.py` script owns its own
-    alignment step by this project's established convention.
+    """Reindex a forecast from init_time to the IMD day its lead validates on,
+    via the shared `weavr.grid.imd_day_for` (IMD labels a day by its end date).
     """
-    init_times = pd.DatetimeIndex(da["time"].values)
-    valid_time = init_times + pd.Timedelta(hours=lead_hours)
-    imd_day = (valid_time - pd.Timedelta(hours=IMD_DAY_START_HOUR_UTC)).normalize()
+    imd_day = imd_day_for(pd.DatetimeIndex(da["time"].values), lead_hours)
     return da.assign_coords(time=imd_day).rename(time="sample")
 
 
