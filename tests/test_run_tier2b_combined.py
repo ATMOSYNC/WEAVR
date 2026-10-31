@@ -482,6 +482,8 @@ class TestDayAccumulatorBrier:
         metrics = {
             "crps": np.ones_like(obs, dtype=float),
             "pit": np.full_like(obs, 0.5, dtype=float),
+            "pit_mad_from_half": np.full_like(obs, 0.25, dtype=float),
+            "pit_central_90_coverage": np.full_like(obs, 0.9, dtype=float),
             "exceed": np.asarray(exceed, dtype=float).reshape(len(self.THRESHOLDS), -1),
         }
         _accumulate_day_sums(
@@ -519,10 +521,11 @@ class TestDayAccumulatorBrier:
         broken = float(np.mean((prob - obs_mm) ** 2))
         assert broken > 100.0
 
-    def test_exceedance_uses_strictly_greater_than(self):
-        # obs exactly at the threshold is not an exceedance.
+    def test_exceedance_is_at_least_the_threshold(self):
+        # obs exactly at 7.5 mm IS an exceedance (IMD's categories are "at
+        # least"); a forecast of 0 there is a certain miss at 7.5 mm only.
         got = self._run([[0.0], [0.0]], [7.5])
-        assert np.allclose(got, 0.0)
+        assert np.allclose(got, [1.0, 0.0])
 
 
 class TestNominateByLead:
@@ -565,3 +568,34 @@ class TestNominateByLead:
 
     def test_empty_frame(self):
         assert nominate_by_lead(self._frame([])) == {}
+
+
+class TestEventIsAtLeastAndReliabilityColumnsReachTheTables:
+    """Follow-ups 1 and 2 of #112: `>=` events, and the PIT columns written out."""
+
+    def test_an_observation_exactly_on_the_threshold_is_an_event(self):
+        # IMD's categories are "at least 7.5 mm". The old `obs > t` scored a
+        # 7.5 mm day as a non-event, so a forecast of 1.0 there was penalised.
+        assert compute_brier_score(np.array([1.0]), np.array([7.5]), 7.5) == pytest.approx(0.0)
+        acc = _new_day_accumulator(n_days=1, thresholds=[7.5])
+        metrics = {
+            "crps": np.ones(1), "pit": np.full(1, 0.5),
+            "pit_mad_from_half": np.full(1, 0.25), "pit_central_90_coverage": np.ones(1),
+            "exceed": np.array([[1.0]]),
+        }
+        _accumulate_day_sums(acc, metrics, np.zeros(1, dtype=int), [7.5], np.array([7.5]))
+        assert acc["brier_num"][0, 0] == pytest.approx(0.0)
+
+    def test_the_day_table_carries_pit_mad_and_central_coverage(self):
+        from run_tier2b_combined import _day_table, arm_cell_metrics
+
+        levels = np.linspace(0.01, 0.99, 99)
+        obs = np.array([2.0, 5.0, 0.0, 9.0])
+        q = np.tile(levels * 10.0, (obs.size, 1))
+        metrics = arm_cell_metrics(q, levels, obs, [7.5])
+        acc = _new_day_accumulator(n_days=1, thresholds=[7.5])
+        _accumulate_day_sums(acc, metrics, np.zeros(obs.size, dtype=int), [7.5], obs)
+        table = _day_table(acc, pd.DatetimeIndex(["2020-07-01"]), "2020", [7.5])
+        summary = pit_summary(q, levels, obs)
+        for name in ("pit_mean", "pit_mad_from_half", "pit_central_90_coverage"):
+            assert table[name].iloc[0] == pytest.approx(summary[name])

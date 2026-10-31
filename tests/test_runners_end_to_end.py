@@ -831,6 +831,8 @@ def test_tier2b_scores_every_arm_and_writes_all_three_csvs(stores, tmp_path):
     )
     assert (out / "tier2b_combined_train.csv").exists()
     assert (out / "tier2b_combined_paired.csv").exists()
+    for column in ("pit_mean", "pit_mad_from_half", "pit_central_90_coverage"):
+        assert frame[column].between(0.0, 1.0).all(), f"{column} missing or out of [0, 1]"
 
     per_day = sorted((out / "per_day").glob("tier2b_*.csv"))
     assert len(per_day) == len(TIER2B_ARMS) * 5, (
@@ -839,6 +841,7 @@ def test_tier2b_scores_every_arm_and_writes_all_three_csvs(stores, tmp_path):
     )
     for f in per_day:
         day = pd.read_csv(f)
+        assert {"pit_mad_from_half", "pit_central_90_coverage"} <= set(day.columns), f.name
         # `.astype(str)` for the same reason as the generic test above: a
         # column of only these two values is read back as int64.
         folds = set(day["fold"].astype(str))

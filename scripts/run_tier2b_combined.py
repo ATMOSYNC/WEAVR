@@ -88,6 +88,7 @@ from weavr.emos import fit_emos_csg, predict_csgd_params  # noqa: E402
 from weavr.rain_bins import classify_rain_bin  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
 from weavr.score_io import (  # noqa: E402
+    exceedance_event,
     guard_result_overwrites,
     resolve_result_paths,
     write_per_day_scores,
@@ -133,10 +134,14 @@ VALUE_GRID_MM = np.arange(0.0, 600.0 + 1.0, 1.0)
 WEIGHT_GRID = np.round(np.arange(0.0, 1.0 + 0.05, 0.05), 2)
 
 
+#: Reliability columns written next to `pit_mean` in every per-day and per-arm table.
+PIT_RELIABILITY_COLUMNS = ("pit_mad_from_half", "pit_central_90_coverage")
+
+
 def compute_brier_score(prob: np.ndarray, obs: np.ndarray, threshold: float) -> float:
-    """Mean Brier score for event obs > threshold."""
-    event = (obs > threshold).astype(float)
-    return float(np.mean((prob - event) ** 2))
+    """Mean Brier score for the event obs >= threshold (IMD's categories are "at least")."""
+    event = exceedance_event(obs, threshold)
+    return float(np.nanmean((prob - event) ** 2))
 
 
 def score_quantiles_crps(
@@ -255,17 +260,15 @@ def pit_values(quantiles: np.ndarray, levels: np.ndarray, obs: np.ndarray) -> np
     return np.where(np.asarray(obs, dtype=float) <= 0.0, 0.5 * f_obs, f_obs)
 
 
-def pit_summary(quantiles: np.ndarray, levels: np.ndarray, obs: np.ndarray) -> dict:
-    """PIT / reliability summary read off predictive quantiles.
-
-    A calibrated forecast makes the PIT uniform on [0, 1], so the mean
-    absolute deviation from 0.5 is a monotone reliability signal, and the
-    share of observations falling inside the forecast's own central 90%
-    interval should sit near 0.9.
+def pit_cell_statistics(
+    quantiles: np.ndarray, levels: np.ndarray, obs: np.ndarray
+) -> dict[str, np.ndarray]:
+    """Per-cell PIT mean, absolute deviation from 0.5, and central-90% hit.
 
     Dry observations are scored as the randomised PIT `U * p0` (see
     `pit_values`), and each statistic takes that draw's exact expectation
-    rather than one sample of it.
+    rather than one sample of it. Per cell, so the same numbers can be summed
+    per day and per arm (`pit_summary` is their pooled mean).
     """
     f_obs = cdf_at_threshold(quantiles, levels, obs)
     dry = np.asarray(obs, dtype=float) <= 0.0
@@ -277,11 +280,24 @@ def pit_summary(quantiles: np.ndarray, levels: np.ndarray, obs: np.ndarray) -> d
     dry_central = np.where(p0 > 0.05, (np.minimum(p0, 0.95) - 0.05) / safe, 0.0)
     wet_central = ((f_obs >= 0.05) & (f_obs <= 0.95)).astype(float)
     return {
-        "pit_mean": float(np.mean(np.where(dry, 0.5 * f_obs, f_obs))),
-        "pit_mad_from_half": float(np.mean(np.where(dry, dry_mad, np.abs(f_obs - 0.5)))),
-        "pit_central_90_coverage": float(np.mean(np.where(dry, dry_central, wet_central))),
-        "n_pit_cells": int(f_obs.size),
+        "pit_mean": np.where(dry, 0.5 * f_obs, f_obs),
+        "pit_mad_from_half": np.where(dry, dry_mad, np.abs(f_obs - 0.5)),
+        "pit_central_90_coverage": np.where(dry, dry_central, wet_central),
     }
+
+
+def pit_summary(quantiles: np.ndarray, levels: np.ndarray, obs: np.ndarray) -> dict:
+    """PIT / reliability summary read off predictive quantiles.
+
+    A calibrated forecast makes the PIT uniform on [0, 1], so the mean
+    absolute deviation from 0.5 is a monotone reliability signal, and the
+    share of observations falling inside the forecast's own central 90%
+    interval should sit near 0.9.
+    """
+    cells = pit_cell_statistics(quantiles, levels, obs)
+    summary = {name: float(np.mean(values)) for name, values in cells.items()}
+    summary["n_pit_cells"] = int(np.asarray(obs).size)
+    return summary
 
 
 def nominate_by_lead(train_frame: pd.DataFrame) -> dict[int, str]:
@@ -667,9 +683,12 @@ def arm_cell_metrics(
     exceed = np.empty((len(thresholds), quantiles.shape[0]), dtype=float)
     for i, threshold in enumerate(thresholds):
         exceed[i] = 1.0 - cdf_at_threshold(quantiles, levels, float(threshold))
+    pit = pit_cell_statistics(quantiles, levels, obs_cells)
     return {
         "crps": crps_from_quantiles(quantiles, levels, obs_cells),
-        "pit": pit_values(quantiles, levels, obs_cells),
+        "pit": pit["pit_mean"],
+        "pit_mad_from_half": pit["pit_mad_from_half"],
+        "pit_central_90_coverage": pit["pit_central_90_coverage"],
         "exceed": exceed,
     }
 
@@ -693,8 +712,13 @@ def _accumulate_day_sums(
     """
     np.add.at(acc["crps_sum"], day_index, np.nan_to_num(metrics["crps"]))
     np.add.at(acc["pit_sum"], day_index, np.nan_to_num(metrics["pit"]))
+    for name in PIT_RELIABILITY_COLUMNS:
+        np.add.at(acc[name], day_index, np.nan_to_num(metrics[name]))
     for i, threshold in enumerate(thresholds):
-        obs_binary = (obs_cells > float(threshold)).astype(float)
+        # `>=` like every other runner (IMD's categories are "at least"): 6 of
+        # 1.13 M observations sit exactly on 7.5 mm, so the old `>` scored them
+        # as non-events.
+        obs_binary = exceedance_event(obs_cells, float(threshold))
         residual = metrics["exceed"][i] - obs_binary
         np.add.at(acc["brier_num"][i], day_index, residual**2)
     np.add.at(acc["n_cells"], day_index, 1)
@@ -704,6 +728,7 @@ def _new_day_accumulator(n_days: int, thresholds: list[float]) -> dict[str, np.n
     return {
         "crps_sum": np.zeros(n_days, dtype=float),
         "pit_sum": np.zeros(n_days, dtype=float),
+        **{name: np.zeros(n_days, dtype=float) for name in PIT_RELIABILITY_COLUMNS},
         "brier_num": np.zeros((len(thresholds), n_days), dtype=float),
         "n_cells": np.zeros(n_days, dtype=float),
     }
@@ -729,6 +754,8 @@ def _day_table(
     for i, threshold in enumerate(thresholds):
         table[f"brier_{threshold}"] = acc["brier_num"][i][keep] / n[keep]
     table["pit_mean"] = acc["pit_sum"][keep] / n[keep]
+    for name in PIT_RELIABILITY_COLUMNS:
+        table[name] = acc[name][keep] / n[keep]
     return table.reset_index(drop=True)
 
 
@@ -1137,6 +1164,12 @@ def main() -> int:
                     if n.sum()
                     else float("nan"),
                 }
+                for name in PIT_RELIABILITY_COLUMNS:
+                    row[name] = (
+                        float(np.average(table[name].to_numpy(dtype=float), weights=n))
+                        if n.sum()
+                        else float("nan")
+                    )
                 for threshold in IMD_THRESHOLDS:
                     key = f"brier_{threshold}"
                     row[key] = (
