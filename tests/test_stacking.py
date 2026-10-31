@@ -6,6 +6,7 @@ import pytest
 
 from weavr.emos import csgd_crps
 from weavr.stacking import (
+    DEFAULT_QUANTILE_LEVELS,
     EXCEEDANCE_LEVELS,
     crps_from_quantiles,
     exceedance_from_quantiles,
@@ -157,6 +158,26 @@ class TestCrpsFromQuantilesAccuracy:
         # Relative error should be under 1.5% across all observation points
         relative_errors = np.abs(approx_crps - exact_crps) / np.maximum(exact_crps, 1e-4)
         assert np.all(relative_errors < 0.015), f"Max relative error: {np.max(relative_errors):.4f}"
+
+
+    def test_the_runners_own_99_levels_read_low_by_under_2_percent(self):
+        """Step 13 asks for the accuracy check on the grid actually used.
+
+        `run_tier2b_combined.py` scores on DEFAULT_QUANTILE_LEVELS (99 levels,
+        0.01 to 0.99), not the 199 above. Leaving out the two 1% tails makes it
+        read low, never high, by up to 1.72% on these cases (measured 31 Oct).
+        """
+        obs_values = np.array([0.0, 1.5, 4.0, 8.0, 15.0, 40.0, 100.0])
+        for mean, std, shift in [(4.0, 3.5, -1.2), (2.0, 3.0, -1.5), (10.0, 12.0, -1.0)]:
+            q = predictive_quantiles_csgd(
+                mean=mean, std=std, shift=shift, levels=DEFAULT_QUANTILE_LEVELS
+            )
+            exact = csgd_crps(mean, std, shift, obs_values)
+            approx = np.array(
+                [crps_from_quantiles(q, DEFAULT_QUANTILE_LEVELS, y) for y in obs_values]
+            )
+            assert np.all(approx <= exact)
+            assert np.all((exact - approx) / exact < 0.02)
 
 
 class TestLinearPool:

@@ -41,8 +41,10 @@ $$\text{CRPS}(F, y) = 2 \int_0^1 (y - q(\tau)) \cdot (\tau - \mathbb{I}(y < q(\t
 Verified against closed-form `csgd_crps` with $< 1.5\%$ relative error across all test conditions in `tests/test_stacking.py`.
 
 **What the 99 levels leave out, measured (31 Oct).** The runner uses 99 levels,
-0.01 to 0.99 (`DEFAULT_QUANTILE_LEVELS`); the test above checks 199 levels from
-0.005, so it does not cover the runner's own grid. Leaving out the two 1% tails
+0.01 to 0.99 (`DEFAULT_QUANTILE_LEVELS`); the 1.5% check above uses 199 levels
+from 0.005, so it did not cover the runner's own grid. A second test now does:
+on the runner's grid the estimate is never above the closed form and at most
+2% below it (1.72% at worst on the test's cases). Leaving out the two 1% tails
 makes every arm read low. On the same days and cells, against the exact CRPS
 that Tier 2 computes for the same fits, the 99-level CRPS is lower by 0.0084–
 0.0090 mm for EMOS-CSG and 0.0090–0.0099 mm for BMA, depending on lead; the two
