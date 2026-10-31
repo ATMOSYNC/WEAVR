@@ -232,6 +232,23 @@ class TestMemberCountingBenchmark:
         assert np.isfinite(row["sedi"])
         assert row["false_zero_cells"] == 0
 
+    def test_benchmark_row_scores_only_observed_cells(self):
+        # Member counting is finite over the whole box; IMD observes land only.
+        # The unobserved half (p = 0.25) must leave the Brier, not enter it as
+        # four observed non-events (F8).
+        import numpy as np
+        from run_tail_repair_evt import benchmark_row
+
+        probs = np.full((2, 2, 2), 0.25)
+        obs = np.array([[[np.nan, 60.0], [np.nan, 60.0]]] * 2)
+        row = benchmark_row(
+            probs, obs, climatology_grid=np.full((2, 2), 0.1), threshold=50.0,
+            lead_hours=24, split_label="2018", split_kind="leave_one_year_out",
+            n_train=8, n_test=8,
+        )
+        assert row["brier"] == pytest.approx(0.75**2)
+        assert row["climatology_brier"] == pytest.approx(0.9**2)
+
     def test_no_false_zeros_when_members_exceed(self):
         import numpy as np
         from run_tail_repair_evt import benchmark_row

@@ -119,6 +119,7 @@ from weavr.rain_bins import RAIN_BIN_LABELS, classify_rain_bin  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
 from weavr.score_io import (  # noqa: E402
     FORCE_HELP,
+    exceedance_event,
     guard_result_overwrites,
     per_day_scores,
     resolve_result_paths,
@@ -549,10 +550,12 @@ def benchmark_row(
     then `compute_sedi` -- so the comparison differs only in the forecast being
     scored, never in how it is scored.
     """
-    finite = np.isfinite(probs)
     # `>=`, as the other two arms and the climatology reference define the
     # event; `>` scored a cell observing exactly the threshold differently.
-    obs_binary = (obs_test >= threshold).astype(float)
+    # NaN where nothing was observed: member counting is finite over the whole
+    # box, and an unobserved cell is not an observed non-event (F8).
+    obs_binary = exceedance_event(obs_test, threshold)
+    finite = np.isfinite(probs) & np.isfinite(obs_binary)
     p = probs[finite]
     o = obs_binary[finite]
     # The climatological reference is a per-cell `(latitude, longitude)` grid,
@@ -699,7 +702,7 @@ def _arm_frame(
         else:
             with np.errstate(invalid="ignore"):
                 frame[f"twcrps_{t}_mm"] = np.nanmean(values, axis=(1, 2))
-    counts = expected_counts(probs, (test_obs.values >= threshold).astype(float))
+    counts = expected_counts(probs, exceedance_event(test_obs.values, threshold))
     for name, values in counts.items():
         frame[f"{name}_{threshold}"] = values
     return frame
@@ -896,7 +899,7 @@ def main() -> int:
                 }
 
                 for threshold in EXTREME_THRESHOLDS:
-                    obs_binary = (obs_values >= threshold).astype(float)
+                    obs_binary = exceedance_event(obs_values, threshold)
                     baseline_probs = csgd_only_probabilities(
                         members, test_labels, results, threshold
                     )
@@ -1042,7 +1045,7 @@ def main() -> int:
                     )
                     metric_rows.append(row)
                     arm = "raw_ifs_ens_member_counting"
-                    obs_binary = (obs_values >= threshold).astype(float)
+                    obs_binary = exceedance_event(obs_values, threshold)
                     reliability_sums.setdefault((arm, threshold, lead_hours), []).append(
                         reliability_day_sums(bench_probs, obs_binary)
                     )
