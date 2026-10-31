@@ -70,14 +70,23 @@ train-fitted `quantile_avg` arm alongside the fixed w=0.5 one; without it both
 arms use 0.5). Results: `results/tier2b_combined.csv`, `_paired.csv`,
 `_train.csv` and `results/per_day/tier2b_*`.
 
-| arm | pooled CRPS (mm) | PIT mean | role |
-|---|---|---|---|
-| `quantile_avg_fixed` (w=0.5) | **4.2023** | 0.494 | combination |
-| `linear_pool` | **4.2024** | 0.494 | comparison only |
-| `quantile_avg` (w fitted on train) | 4.2039 | 0.495 | combination |
-| `per_bin` | 4.2134 | 0.501 | combination |
-| `bma` | 4.2193 | 0.500 | parent |
-| `emos_csg` | 4.2288 | 0.499 | parent |
+| arm | pooled CRPS (mm) | PIT mean | PIT MAD from 0.5 | central-90% coverage | role |
+|---|---|---|---|---|---|
+| `quantile_avg_fixed` (w=0.5) | **4.2023** | 0.494 | 0.252 | 0.899 | combination |
+| `linear_pool` | **4.2024** | 0.494 | 0.251 | 0.900 | comparison only |
+| `quantile_avg` (w fitted on train) | 4.2039 | 0.495 | 0.253 | 0.900 | combination |
+| `per_bin` | 4.2134 | 0.501 | 0.252 | 0.905 | combination |
+| `bma` | 4.2193 | 0.500 | 0.251 | 0.904 | parent |
+| `emos_csg` | 4.2288 | 0.499 | 0.250 | 0.900 | parent |
+
+A uniform PIT has mean 0.5, mean absolute deviation from 0.5 of 0.25, and 90%
+of observations inside the forecast's own central 90% interval. All six arms sit
+on those values: MAD 0.250–0.253 and coverage 0.899–0.905 pooled, and 0.896–0.909
+in every lead x fold row (`results/tier2b_combined.csv`; per day in
+`results/per_day/tier2b_*`). So the combined distributions are calibrated in
+the sense of the whole predictive distribution, not only on average; this says
+nothing about the tail above 64.5 mm (§5a). Dry observations enter as the
+expectation of the randomised PIT (`pit_cell_statistics`).
 
 Brier score by IMD threshold (cell-weighted, lower is better):
 
@@ -89,6 +98,13 @@ Brier score by IMD threshold (cell-weighted, lower is better):
 | `per_bin` | 0.13010 | 0.03672 | 0.01191 | **0.00254** | 0.00027 |
 | `bma` | 0.13021 | 0.03678 | 0.01195 | 0.00255 | 0.00027 |
 | `emos_csg` | 0.13033 | 0.03693 | 0.01200 | 0.00257 | 0.00027 |
+
+The event is `obs >= t` (IMD's categories are "at least"), the same as every
+other runner and `score_io.exceedance_event`; Tier 2b used `obs > t` until
+this follow-up. The data has 6 observations exactly on 7.5 mm and 1 on 35.5 mm
+(2020) and none on 64.5, 115.6 or 204.5, so only the 7.5 and 35.5 columns moved,
+by at most 1e-6 pooled (0.0002 on one day); the table below is unchanged at
+five decimals and no verdict moved.
 
 The Brier spread across arms is small -- the fifth decimal at 204.5 mm, the
 third at 7.5 mm -- so Brier does not separate these methods. CRPS does, which
