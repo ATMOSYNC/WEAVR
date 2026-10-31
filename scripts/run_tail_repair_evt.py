@@ -55,6 +55,10 @@ Outputs
     false-zero count and the per-method cell breakdown.
 `results/tail_repair_evt_paired.csv`
     Paired `csgd_gpd_tail` vs `csgd_only` differences with 95% CIs.
+`results/tail_repair_evt_reliability.csv`
+    Per `(lead, arm, threshold)`, pooled over folds: forecast count, mean
+    forecast probability and observed frequency in each probability bin, with
+    exact zeros in a bin of their own.
 `results/per_day/evt_{arm}_t{t}__lead<L>.csv`
     Per-day rows in `weavr.score_io.per_day_scores` schema so
     `scripts/run_scorecard.py` can bootstrap them.
@@ -81,6 +85,9 @@ from run_scorecard import (  # noqa: E402
 from run_tier2_hierarchical_baseline import (  # noqa: E402
     load_graphcast_ensemble as _tier2_load_graphcast_ensemble,
 )
+from run_tier2_hierarchical_baseline import (
+    load_ifs_ensemble as _tier2_load_ifs_ensemble,
+)
 
 from weavr.emos import (  # noqa: E402
     exceedance_probability_csgd,
@@ -100,6 +107,7 @@ from weavr.significance import paired_difference_ci  # noqa: E402
 from weavr.splits import iter_evaluation_folds  # noqa: E402
 from weavr.stores import (  # noqa: E402
     DEFAULT_BASELINE_DAILY_STORES,
+    DEFAULT_IFS_DAILY_STORES,
     DEFAULT_LAGGED_DAILY_STORES,
     open_multi_season,
     resolve_store_paths,
@@ -166,7 +174,10 @@ def csgd_only_probabilities(
     because this is the arm the GPD tail has to beat.
     """
     ensemble_mean = forecasts.mean(dim="member", skipna=True)
-    ensemble_spread = forecasts.std(dim="member", skipna=True)
+    # ddof=1, as `fit_emos_csg` computes the spread it fits on. ddof=0 here fed
+    # the regression a spread 6-9% narrower than it was trained on (6-9 lagged
+    # members), skewing every predicted distribution.
+    ensemble_spread = forecasts.std(dim="member", ddof=1, skipna=True)
     probabilities = np.full(ensemble_mean.shape, np.nan, dtype=float)
 
     labels = rain_bin_labels.values
@@ -210,6 +221,144 @@ def expected_counts(probability: np.ndarray, obs_binary: np.ndarray) -> dict[str
         "misses": (p * (1.0 - o)).sum(axis=(1, 2)),
         "false_alarms": ((1.0 - p) * o).sum(axis=(1, 2)),
         "correct_negatives": ((1.0 - p) * (1.0 - o)).sum(axis=(1, 2)),
+    }
+
+
+#: Reliability bin edges. Exact zero gets a bin of its own -- a hard 0.0 is the
+#: failure this step exists to remove -- and the rest are log-spaced, because
+#: extreme-rain probabilities live almost entirely below 0.05 and equal-width
+#: bins would put nearly every forecast in the first one.
+RELIABILITY_EDGES = np.array([0.0, 1e-4, 1e-3, 5e-3, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0])
+
+
+def reliability_counts(probability: np.ndarray, obs_binary: np.ndarray) -> pd.DataFrame:
+    """Per-bin forecast count, summed probability and summed outcome.
+
+    Sums rather than means, so folds can be pooled by adding rows; the mean
+    forecast and observed frequency are taken once the sums are complete.
+    Bin 0 holds exactly-zero probabilities; bin `k` holds `(edges[k-1], edges[k]]`.
+    """
+    finite = np.isfinite(probability) & np.isfinite(obs_binary)
+    p = np.clip(probability[finite], 0.0, 1.0)
+    o = obs_binary[finite]
+    index = np.searchsorted(RELIABILITY_EDGES, p, side="left")
+    n_bins = RELIABILITY_EDGES.size
+    return pd.DataFrame(
+        {
+            "bin": np.arange(n_bins),
+            "p_lo": np.concatenate([[0.0], RELIABILITY_EDGES[:-1]]),
+            "p_hi": RELIABILITY_EDGES,
+            "n": np.bincount(index, minlength=n_bins),
+            "sum_forecast": np.bincount(index, weights=p, minlength=n_bins),
+            "sum_observed": np.bincount(index, weights=o, minlength=n_bins),
+        }
+    )
+
+
+def member_counting_probabilities(
+    ifs_ensemble: xr.DataArray, threshold: float, test_mask: np.ndarray
+) -> np.ndarray:
+    """`P(rain > threshold)` from the raw IFS-ENS members, nothing else.
+
+    This is the benchmark step 12 is measured *against*: the empirical
+    fraction of members exceeding the threshold, with no calibration applied.
+    It is the comparison a reader should ask for before believing the spliced
+    tail adds anything, and it could not be run until step 07 produced daily
+    full-member IFS-ENS stores for both seasons (#74 recorded it as NOT RUN for
+    exactly that reason).
+
+    Returns a `(sample, latitude, longitude)` grid containing **only the test
+    samples**, so it lines up with `test_obs` rather than with the full
+    two-season series. Returning the full grid with NaN padding is the trap
+    here: the shapes then differ by the fold size and the scoring step raises
+    deep inside a boolean mask.
+    """
+    exceed = (ifs_ensemble > threshold).mean(dim="member", skipna=True)
+
+    # `_align_to_imd_day` (inside `load_ifs_ensemble`) renames the time axis to
+    # `sample` and has already selected one lead; a raw store would still carry
+    # `time`/`prediction_timedelta`. Accept either, and drop any leftover
+    # singleton axis rather than assuming a particular caller's shape.
+    time_dim = "sample" if "sample" in exceed.dims else "time"
+    for dim in (d for d in exceed.dims if d not in (time_dim, "latitude", "longitude")):
+        if exceed.sizes[dim] == 1:
+            exceed = exceed.squeeze(dim, drop=True)
+        else:
+            raise ValueError(
+                f"member_counting_probabilities expects a single lead, but "
+                f"{ifs_ensemble.name or 'the ensemble'} still has "
+                f"{exceed.sizes[dim]} values along {dim!r}. Select one lead first."
+            )
+
+    grid = exceed.transpose(time_dim, "latitude", "longitude").values.astype(float)
+    mask = np.asarray(test_mask, dtype=bool)
+    if grid.shape[0] != mask.size:
+        raise ValueError(
+            f"IFS-ENS ensemble has {grid.shape[0]} samples but the fold mask has "
+            f"{mask.size}; they must describe the same days."
+        )
+    return grid[mask]
+
+
+def benchmark_row(
+    probs: np.ndarray,
+    obs_test: np.ndarray,
+    climatology_grid: np.ndarray,
+    threshold: float,
+    lead_hours: int,
+    split_label: str,
+    split_kind: str,
+    n_train: int,
+    n_test: int,
+) -> dict:
+    """Score one (lead, fold, threshold) of the member-counting benchmark.
+
+    Scored with the *same* helpers as the spliced-tail arms -- `expected_counts`
+    then `compute_sedi` -- so the comparison differs only in the forecast being
+    scored, never in how it is scored.
+    """
+    finite = np.isfinite(probs)
+    # `>=`, as the other two arms and the climatology reference define the
+    # event; `>` scored a cell observing exactly the threshold differently.
+    obs_binary = (obs_test >= threshold).astype(float)
+    p = probs[finite]
+    o = obs_binary[finite]
+    # The climatological reference is a per-cell `(latitude, longitude)` grid,
+    # not a scalar, so it has to be broadcast up to the forecast's shape and
+    # then reduced with the same mask `finite` uses. Broadcasting (rather than
+    # collapsing the sample axis first) is what keeps it aligned: the grid
+    # repeats once per sample, exactly as the forecast does.
+    climatology_broadcast = np.broadcast_to(
+        np.asarray(climatology_grid, dtype=float), probs.shape
+    )
+    climatology_selected = climatology_broadcast[finite]
+    brier = float(np.mean((p - o) ** 2))
+    counts = expected_counts(probs, obs_binary)
+    sedi = compute_sedi(
+        float(np.sum(counts["hits"])),
+        float(np.sum(counts["misses"])),
+        float(np.sum(counts["false_alarms"])),
+        float(np.sum(counts["correct_negatives"])),
+    )
+    climat_brier = float(np.mean((climatology_selected - o) ** 2))
+    return {
+        "lead_hours": lead_hours,
+        "fold": split_label,
+        "split": split_kind,
+        "arm": "raw_ifs_ens_member_counting",
+        "threshold": threshold,
+        "n_train": n_train,
+        "n_test": n_test,
+        "brier": brier,
+        "climatology_brier": climat_brier,
+        "brier_skill_score": 1.0 - (brier / climat_brier) if climat_brier > 0 else float("nan"),
+        "sedi": sedi,
+        "rmse_of_mean_mm": float("nan"),
+        "false_zero_cells": int(np.sum(np.isfinite(probs) & (probs == 0.0))),
+        "threshold_u": float("nan"),
+        "tail_shape_xi": float("nan"),
+        "fit_bins": "",
+        "n_bins_total": 0,
     }
 
 
@@ -265,6 +414,12 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Default: <results-dir>/tail_repair_evt_paired.csv",
     )
+    parser.add_argument(
+        "--reliability-out-csv",
+        type=Path,
+        default=None,
+        help="Default: <results-dir>/tail_repair_evt_reliability.csv",
+    )
     parser.add_argument("--force", action="store_true", help=FORCE_HELP)
     parser.add_argument("--test-fraction", type=float, default=0.2)
     parser.add_argument("--block-days", type=int, default=7)
@@ -284,18 +439,21 @@ def main() -> int:
 
     _paths = resolve_result_paths(
         args.results_dir,
-        {"out_csv": "tail_repair_evt.csv", "paired_out_csv": "tail_repair_evt_paired.csv"},
-        {"out_csv": args.out_csv, "paired_out_csv": args.paired_out_csv},
+        {
+            "out_csv": "tail_repair_evt.csv",
+            "paired_out_csv": "tail_repair_evt_paired.csv",
+            "reliability_out_csv": "tail_repair_evt_reliability.csv",
+        },
+        {
+            "out_csv": args.out_csv,
+            "paired_out_csv": args.paired_out_csv,
+            "reliability_out_csv": args.reliability_out_csv,
+        },
     )
     args.out_csv = _paths["out_csv"]
     args.paired_out_csv = _paths["paired_out_csv"]
+    args.reliability_out_csv = _paths["reliability_out_csv"]
     guard_result_overwrites(_paths.values(), force=args.force)
-
-    # `to_csv` needs its parent to exist and will not create it, and
-    # `write_per_day_scores` only makes the `per_day/` subdirectory -- so a
-    # fresh --results-dir failed at the very last step after all the compute.
-    for _p in _paths.values():
-        Path(_p).parent.mkdir(parents=True, exist_ok=True)
 
     # `to_csv` needs its parent to exist and will not create it, and
     # `write_per_day_scores` only makes the `per_day/` subdirectory -- so a
@@ -307,10 +465,18 @@ def main() -> int:
     baseline_paths = resolve_store_paths(
         args.baseline_stores, legacy, DEFAULT_BASELINE_DAILY_STORES, "data/baseline_2020_jjas.zarr"
     )
-    lagged_paths = resolve_store_paths(
-        args.lagged_stores,
+    # The lagged defaults, not the IFS ones: a bad merge had passed
+    # DEFAULT_IFS_DAILY_STORES here, so a run without --lagged-stores loaded the
+    # IFS-ENS stores as the GraphCast ensemble.
+    lagged_paths = resolve_store_paths(args.lagged_stores, None, DEFAULT_LAGGED_DAILY_STORES, None)
+    # The `--ifs-ensemble-stores` flag existed but was never resolved into
+    # paths, so `ifs_available` was decided on a non-None argument that nothing
+    # then read. That is why the runner announced the benchmark as "enabled"
+    # and emitted no rows for it.
+    ifs_paths = resolve_store_paths(
+        args.ifs_ensemble_stores,
         None,
-        DEFAULT_LAGGED_DAILY_STORES,
+        DEFAULT_IFS_DAILY_STORES,
         None,
     )
 
@@ -341,21 +507,47 @@ def main() -> int:
     metric_rows: list[dict] = []
     paired_rows: list[dict] = []
     pooled_per_day: dict[tuple[str, float, str], list[pd.DataFrame]] = {}
+    reliability: dict[tuple[str, float, int], pd.DataFrame] = {}
+
+    def _add_reliability(arm: str, threshold: float, lead: int, probs, obs_bin) -> None:
+        counts = reliability_counts(probs, obs_bin)
+        key = (arm, threshold, lead)
+        if key in reliability:
+            summed = ["n", "sum_forecast", "sum_observed"]
+            reliability[key][summed] = reliability[key][summed] + counts[summed]
+        else:
+            reliability[key] = counts
 
     for lead_hours in LEAD_HOURS:
         forecasts = load_graphcast_ensemble(lagged_paths, lead_hours)
+        ifs_ensemble = (
+            _tier2_load_ifs_ensemble(ifs_paths, lead_hours) if ifs_available else None
+        )
         ensemble_mean_all = forecasts.mean(dim="member", skipna=True)
         sample_values = ensemble_mean_all["sample"].values
         obs_aligned = obs["rain"].reindex(time=sample_values).rename(time="sample")
         has_obs = ~obs_aligned.isnull().all(dim=["latitude", "longitude"])
         forecasts = forecasts.isel(sample=has_obs.values)
         obs_aligned = obs_aligned.isel(sample=has_obs.values)
+        if ifs_ensemble is not None:
+            # The IFS series comes from a different store and is not filtered by
+            # `has_obs`, so at some leads it is longer than the sample set the
+            # forecasts were trimmed to (242 vs 240 at lead 48). Reindex onto the
+            # forecasts' own `sample` axis so the benchmark is scored on exactly
+            # the days the other arms were scored on, rather than raising a
+            # length mismatch several minutes into the run.
+            ifs_ensemble = ifs_ensemble.reindex(sample=forecasts["sample"].values)
+            if bool(np.isnan(ifs_ensemble).all()):
+                raise ValueError(
+                    "the IFS-ENS ensemble shares no days with the forecast "
+                    "sample set; check that both stores cover the same season."
+                )
 
         # Derived only after the IMD filter: two IMD days in this period fall
         # outside the grid, so every array built from these stays the same
         # length as `forecasts`/`obs_aligned` and the fold masks line up.
         ensemble_mean = forecasts.mean(dim="member", skipna=True)
-        ensemble_spread = forecasts.std(dim="member", skipna=True)
+        ensemble_spread = forecasts.std(dim="member", ddof=1, skipna=True)
         rain_bin_labels = classify_rain_bin(ensemble_mean)
 
         sample_times = pd.DatetimeIndex(obs_aligned["sample"].values)
@@ -444,6 +636,15 @@ def main() -> int:
                         "false_zero_cells": int(np.sum(probs == 0.0)),
                         "threshold_u": args.threshold_u,
                         "tail_shape_xi": float(tail_fit.shape_xi),
+                        "tail_shape_xi_se": (
+                            float(tail_fit.xi_se) if tail_fit.xi_se is not None else float("nan")
+                        ),
+                        "tail_shape_xi_ci_lo": (
+                            float(tail_fit.xi_ci[0]) if tail_fit.xi_ci is not None else float("nan")
+                        ),
+                        "tail_shape_xi_ci_hi": (
+                            float(tail_fit.xi_ci[1]) if tail_fit.xi_ci is not None else float("nan")
+                        ),
                         "fit_bins": ";".join(fitable),
                         "n_bins_total": len(RAIN_BIN_LABELS),
                     }
@@ -451,6 +652,8 @@ def main() -> int:
                         for method in ("csgd", "csgd+gpd_tail", "fallback"):
                             row[f"cells_{method}"] = int(np.sum(methods == method))
                     metric_rows.append(row)
+                    _add_reliability(arm, threshold, lead_hours, probs, obs_binary.values)
+
                     pooled_per_day.setdefault((arm, threshold, lead_hours), []).append(frame)
 
                 print(
@@ -461,9 +664,57 @@ def main() -> int:
                     f"tail={int(np.sum(tail_probs == 0.0))}"
                 )
 
+            # Raw IFS-ENS member-counting benchmark: the arm step 12 is measured
+            # against, scored with the same helpers as the arms above so only
+            # the forecast differs, never the scoring. Once per fold and
+            # threshold: it used to sit inside the per-arm, per-threshold loop
+            # above, which wrote every benchmark row four times over.
+            if ifs_available and ifs_ensemble is not None:
+                for threshold in EXTREME_THRESHOLDS:
+                    bench_probs = member_counting_probabilities(
+                        ifs_ensemble, threshold, test_mask
+                    )
+                    metric_rows.append(
+                        benchmark_row(
+                            bench_probs,
+                            test_obs.values,
+                            climatology_probability[threshold].values,
+                            threshold,
+                            lead_hours,
+                            split_label,
+                            split_kind,
+                            int(train_mask.sum()),
+                            int(test_mask.sum()),
+                        )
+                    )
+                    _add_reliability(
+                        "raw_ifs_ens_member_counting",
+                        threshold,
+                        lead_hours,
+                        bench_probs,
+                        (test_obs.values >= threshold).astype(float),
+                    )
+
     metrics = pd.DataFrame(metric_rows)
     metrics.to_csv(args.out_csv, index=False)
     print(f"Wrote {args.out_csv}")
+
+    reliability_rows = []
+    for (arm, threshold, lead_hours), counts in reliability.items():
+        table = counts.assign(arm=arm, threshold=threshold, lead_hours=lead_hours)
+        n = table["n"].to_numpy(float)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            table["mean_forecast"] = np.where(n > 0, table["sum_forecast"] / n, np.nan)
+            table["observed_frequency"] = np.where(n > 0, table["sum_observed"] / n, np.nan)
+        reliability_rows.append(table)
+    reliability_columns = [
+        "lead_hours", "arm", "threshold", "bin", "p_lo", "p_hi", "n",
+        "mean_forecast", "observed_frequency", "sum_forecast", "sum_observed",
+    ]
+    pd.concat(reliability_rows, ignore_index=True)[reliability_columns].to_csv(
+        args.reliability_out_csv, index=False
+    )
+    print(f"Wrote {args.reliability_out_csv}")
 
     for (arm, threshold, lead_hours), frames in pooled_per_day.items():
         write_per_day_scores(
@@ -548,6 +799,13 @@ def main() -> int:
             f"({'eliminated' if no_zeros else 'REMAIN'}); "
             f"Brier improved at {improved}/5 leads; "
             f"SEDI improved at {int(subset['sedi_improved'].sum())}/5 leads"
+        )
+    benchmark_rows = [r for r in metric_rows if r["arm"] == "raw_ifs_ens_member_counting"]
+    if ifs_available and not benchmark_rows:
+        raise RuntimeError(
+            "IFS-ENS stores were supplied but the member-counting benchmark "
+            "produced no rows. The benchmark is either silently skipped or "
+            "broken; refusing to report the run as complete."
         )
     if not ifs_available:
         print(

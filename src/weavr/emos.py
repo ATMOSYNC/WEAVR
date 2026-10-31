@@ -244,8 +244,19 @@ def csgd_crps(
     shift_b = np.broadcast_to(shift_arr, broadcast_shape).astype(float)
     y_b = np.broadcast_to(y_arr, broadcast_shape).astype(float)
 
-    kappa = mean_b**2 / np.clip(std_b**2, _TINY, None)
-    theta = np.clip(std_b**2, _TINY, None) / mean_b
+    # `kappa` is floored at `_TINY` and `theta` derived from the floored
+    # value (keeping the mean), for the same reason `mean` is clipped above:
+    # `_gamma_cdf` and `beta_fn` below already clip the shape at `_TINY`, so
+    # an unfloored kappa under it was used raw in one term and clipped in the
+    # others, against a theta of ~1e8. The result lost every significant
+    # digit and the final clip returned 0.0 -- a perfect score the optimizer
+    # then converged to. Caught on the #106 regeneration: the dry bin at 120 h
+    # (2020 fold) fitted mean=1e-6, kappa~1e-8, theta~4e8, and scored every
+    # cell 0.0 where integrating the same CSGD gives about the observation
+    # itself. Any kappa a non-degenerate fit reaches is far above the floor,
+    # so this changes nothing there (checked to 4e-13 over a random grid).
+    kappa = np.clip(mean_b**2 / np.clip(std_b**2, _TINY, None), _TINY, None)
+    theta = mean_b / kappa
 
     c = -shift_b / theta
     y_tilde = (y_b - shift_b) / theta

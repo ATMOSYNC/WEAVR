@@ -120,6 +120,24 @@ class TestCsgdCrpsHandlesNonPositiveMean:
         assert result < 5.0
 
 
+class TestCsgdCrpsHandlesVanishingShape:
+    # Regression test for a real bug caught on the #106 regeneration: the dry
+    # bin at 120 h, 2020 fold, fitted a CSGD with kappa ~1e-8 and theta ~4e8.
+    # `_gamma_cdf`/`beta_fn` clipped the shape at `_TINY` while the rest of
+    # the formula used the raw kappa, the result lost every digit, and the
+    # final clip returned 0.0 for every cell -- so the fit "won" with a
+    # perfect score. Such a CSGD is essentially a point mass at zero, whose
+    # CRPS is the observation itself.
+    @pytest.mark.parametrize("y", [2.53, 12.16, 40.0])
+    def test_real_degenerate_fit_scores_about_the_observation(self, y):
+        # The predictive mean/std of a real cell under that fit.
+        mean, std, shift = 0.8765, 18330.0, 0.0
+
+        result = csgd_crps(mean, std, shift, y)
+
+        assert result == pytest.approx(y, rel=1e-3)
+
+
 def _synthetic_ensemble(rng: np.random.Generator, n_sample: int, n_space: int, n_member: int):
     times = np.arange(n_sample)
     lats = np.arange(n_space)

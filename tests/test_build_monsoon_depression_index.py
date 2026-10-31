@@ -67,8 +67,11 @@ class TestBuildDailyPresence:
 
         result = build_daily_presence(positions, year=2020)
 
-        assert bool(result["depression_present"].sel(time="2020-07-10").item())
-        assert result["max_imd_category"].sel(time="2020-07-10").item() == 3
+        # 06:00 and 12:00 UTC on 07-10 sit in the window 07-10T03:00 ->
+        # 07-11T03:00, which IMD labels by its end date: 2020-07-11.
+        assert bool(result["depression_present"].sel(time="2020-07-11").item())
+        assert result["max_imd_category"].sel(time="2020-07-11").item() == 3
+        assert not bool(result["depression_present"].sel(time="2020-07-10").item())
 
     def test_every_jjas_day_is_present_even_with_zero_real_rows(self):
         positions = _synthetic_catalogue().iloc[0:0]  # empty

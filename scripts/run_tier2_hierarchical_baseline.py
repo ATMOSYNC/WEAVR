@@ -335,9 +335,12 @@ def score_emos_source(
             # probabilities, and per-day files that carry only
             # hits/misses/false_alarms/correct_negatives cannot reconstruct it,
             # because a squared-probability error is not a ratio of counts.
+            # The fitted distribution's location and scale, not the raw
+            # ensemble mean and spread: the latter scored a gamma the fit never
+            # produced and roughly doubled Tier 2 EMOS's Brier at 7.5 mm.
             for threshold, grid in probability_grids.items():
                 grid[cell_mask] = exceedance_probability_csgd(
-                    mean_cells, spread_cells, shift, threshold
+                    location, scale, shift, threshold
                 )
 
         per_bin[bin_label] = {
