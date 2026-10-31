@@ -488,6 +488,19 @@ def paired_arm_comparison(
     return row
 
 
+def climatology_exceedance(
+    archive_rain: xr.DataArray, thresholds
+) -> dict[float, xr.DataArray]:
+    """Per-cell climatological P(rain >= t), the Brier skill score's reference.
+
+    `archive_rain` must already exclude the fold's test year
+    (`climatology_excluding_years`), as H3's climatology and step 11's QM
+    reference do: a reference that has seen the test season is in-sample, and
+    until 31 Oct this one had.
+    """
+    return {t: (archive_rain >= t).mean(dim="time") for t in thresholds}
+
+
 def member_counting_probabilities(
     ifs_ensemble: xr.DataArray, threshold: float, test_mask: np.ndarray
 ) -> np.ndarray:
@@ -760,13 +773,6 @@ def main() -> int:
     region_labels = assign_regions(obs["latitude"].values, obs["longitude"].values)
     region_grid = region_labels.transpose("latitude", "longitude").values
 
-    # Climatological exceedance frequency per cell: the reference the Brier
-    # skill score is measured against.
-    climatology_probability = {
-        threshold: (climatology_rain >= threshold).mean(dim="time")
-        for threshold in EXTREME_THRESHOLDS
-    }
-
     ifs_available = args.ifs_ensemble_stores is not None
     print(f"Tail repair via extreme-value tail (Step 12), u={args.threshold_u} mm")
     print(f"Lagged stores: {lagged_paths}")
@@ -840,6 +846,8 @@ def main() -> int:
             # The 15-year IMD archive minus this fold's test year (step 12 item 1).
             tail_archive = climatology_excluding_years(climatology_rain, sample_times[test_mask])
             tail_fit = fit_tail_on_obs(tail_archive, region_labels, args.threshold_u)
+            # The Brier skill reference, from the same archive without the test year.
+            climatology_probability = climatology_exceedance(tail_archive, EXTREME_THRESHOLDS)
             fitable = sorted(emos_results.keys())
 
             # Step 11's QM variant: members mapped on the training days only

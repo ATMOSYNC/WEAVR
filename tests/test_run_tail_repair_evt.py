@@ -19,6 +19,7 @@ RUNNER_PATH = (
 )
 
 from run_tail_repair_evt import (  # noqa: E402
+    climatology_exceedance,
     compute_sedi,
     expected_counts,
     main,
@@ -414,3 +415,25 @@ class TestPairedArmComparison:
         for key in ("brier_delta", "sedi_delta", "twcrps_64.5_delta", "twcrps_115.6_delta"):
             assert row[key] < 0, key
         assert row["twcrps_64.5_improved"] and not row["brier_7.5_degraded"]
+
+
+class TestClimatologyReference:
+    """The Brier skill reference must not have seen the test season."""
+
+    def test_excludes_the_test_year_through_the_archive_it_is_given(self):
+        import pandas as pd
+
+        from weavr.quantile_mapping import climatology_excluding_years
+
+        times = pd.to_datetime(["2018-07-01", "2019-07-01", "2020-07-01"])
+        rain = xr.DataArray(
+            np.array([[[0.0]], [[0.0]], [[300.0]]]),
+            dims=("time", "latitude", "longitude"),
+            coords={"time": times, "latitude": [20.0], "longitude": [80.0]},
+        )
+        archive = climatology_excluding_years(rain, pd.to_datetime(["2020-08-01"]).values)
+        p = climatology_exceedance(archive, (115.6, 204.5))
+        # Only 2018 and 2019 remain, neither above either threshold. Built on
+        # the whole archive (the old code), 2020's 300 mm made both 1/3.
+        assert float(p[115.6].squeeze()) == 0.0
+        assert float(p[204.5].squeeze()) == 0.0
