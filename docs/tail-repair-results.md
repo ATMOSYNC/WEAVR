@@ -59,7 +59,7 @@ In `HEPPI` (NCMRWF Universal Quantile Mapping, UQM), quantile mapping was shown 
 
 ### 4.1 Measured H7 verdict (Step 11)
 
-LOYO over both daily seasons (`data/baseline_{2018,2020}_jjas_daily.zarr`), Tier 1 blend scope, paired moving-block bootstrap CIs, 234–242 test days per lead. Reproduce with `scripts/run_tail_repair_qm.py`.
+LOYO over both daily seasons (`data/baseline_{2018,2020}_jjas_daily.zarr`), Tier 1 blend scope, paired moving-block bootstrap CIs, 234–242 test days per lead. Reproduce with `scripts/run_tail_repair_qm.py`. The verdict is in the ledger as `H7-QM (same_period)` and `H7-QM (climatology)` (`results/preregistration_verdicts.csv`), read from `results/tail_repair_qm_paired.csv` by `scripts/run_scorecard.py`.
 
 On the corrected pairing (#106) both verdicts stand. Every effect is in the same direction and of similar size: SEDI gains grew slightly (−0.112 … −0.256 → −0.160 … −0.279 for `same_period`), and the tw-CRPS and RMSE penalties shrank by about 10%.
 
@@ -75,35 +75,90 @@ On the corrected pairing (#106) both verdicts stand. Every effect is in the same
 - RMSE increases significantly at every lead, by roughly **+3.6 to +4.4 mm** (`same_period`) and **+5.3 to +6.2 mm** (`climatology`). The `climatology` variant pays roughly 1.7 mm more than `same_period`.
 - Brier@7.5 mm is **significantly worse at 24 and 48 h for both variants** (`same_period` +0.0062 and +0.0034, `climatology` +0.0071 and +0.0059; every interval above 0), and worse but not significantly at 72–120 h (+0.0011 … +0.0046). The guard needs no lead with the interval wholly on the worse side, so it fails. This is exactly the failure the guard exists to catch: the tail gain comes with a worse light-rain forecast. Before the rescoring the same comparison read −0.020 … +0.002, apparently an improvement, because both arms were credited with thousands of correctly forecast dry sea cells per day.
 
+**Every metric step 11 names, per source and threshold.** QM minus raw, with the leads at which the interval excludes 0 (negative = QM better; POD and CSI are oriented so that negative means higher, FAR so that negative means lower):
+
+| scope | source | variant | t | POD Δ | FAR Δ | CSI Δ | SEDI Δ |
+|---|---|---|---|---|---|---|---|
+| tier1_blend | blend | same_period | 64.5 | -0.273 … -0.226 (5/5 better, 0/5 worse) | +0.132 … +0.152 (0/5 better, 5/5 worse) | -0.083 … -0.039 (5/5 better, 0/5 worse) | -0.190 … -0.128 (5/5 better, 0/5 worse) |
+| tier1_blend | blend | same_period | 115.6 | -0.239 … -0.197 (5/5 better, 0/5 worse) | +0.028 … +0.104 (0/5 better, 3/5 worse) | -0.082 … -0.053 (5/5 better, 0/5 worse) | -0.279 … -0.160 (5/5 better, 0/5 worse) |
+| tier1_blend | blend | same_period | 204.5 | -0.080 … -0.047 (5/5 better, 0/5 worse) | -0.057 … +0.241 (3/5 better, 0/5 worse) | -0.034 … -0.009 (4/5 better, 0/5 worse) | -0.020 (0/5 better, 0/5 worse) |
+| single_source | graphcast | same_period | 64.5 | -0.280 … -0.217 (5/5 better, 0/5 worse) | +0.118 … +0.185 (0/5 better, 5/5 worse) | -0.074 … -0.039 (5/5 better, 0/5 worse) | -0.176 … -0.127 (5/5 better, 0/5 worse) |
+| single_source | graphcast | same_period | 115.6 | -0.262 … -0.202 (5/5 better, 0/5 worse) | +0.054 … +0.119 (0/5 better, 3/5 worse) | -0.088 … -0.047 (5/5 better, 0/5 worse) | -0.311 … -0.161 (5/5 better, 0/5 worse) |
+| single_source | graphcast | same_period | 204.5 | -0.106 … -0.040 (5/5 better, 0/5 worse) | -0.040 … +0.177 (1/5 better, 0/5 worse) | -0.036 … -0.004 (4/5 better, 0/5 worse) | -0.036 (0/5 better, 0/5 worse) |
+| single_source | hres | same_period | 64.5 | -0.145 … -0.108 (5/5 better, 0/5 worse) | +0.006 … +0.048 (0/5 better, 3/5 worse) | -0.020 … -0.011 (5/5 better, 0/5 worse) | -0.104 … -0.084 (5/5 better, 0/5 worse) |
+| single_source | hres | same_period | 115.6 | -0.099 … -0.071 (5/5 better, 0/5 worse) | -0.010 … +0.005 (0/5 better, 0/5 worse) | -0.016 … -0.012 (3/5 better, 0/5 worse) | -0.107 … -0.080 (5/5 better, 0/5 worse) |
+| single_source | hres | same_period | 204.5 | -0.000 … +0.030 (0/5 better, 2/5 worse) | -0.009 … +0.004 (0/5 better, 0/5 worse) | -0.002 … +0.004 (0/5 better, 0/5 worse) | -0.047 … +0.099 (1/5 better, 2/5 worse) |
+| single_source | ifs_ens_mean | same_period | 64.5 | -0.268 … -0.224 (5/5 better, 0/5 worse) | +0.106 … +0.126 (0/5 better, 5/5 worse) | -0.047 … -0.023 (5/5 better, 0/5 worse) | -0.175 … -0.125 (5/5 better, 0/5 worse) |
+| single_source | ifs_ens_mean | same_period | 115.6 | -0.236 … -0.179 (5/5 better, 0/5 worse) | +0.032 … +0.093 (0/5 better, 3/5 worse) | -0.046 … -0.031 (5/5 better, 0/5 worse) | -0.225 … -0.142 (5/5 better, 0/5 worse) |
+| single_source | ifs_ens_mean | same_period | 204.5 | -0.086 … -0.056 (5/5 better, 0/5 worse) | -0.028 … +0.098 (4/5 better, 0/5 worse) | -0.022 … -0.012 (4/5 better, 0/5 worse) | -0.081 (0/5 better, 0/5 worse) |
+| tier1_blend | blend | climatology | 64.5 | -0.282 … -0.238 (5/5 better, 0/5 worse) | +0.136 … +0.157 (0/5 better, 5/5 worse) | -0.080 … -0.038 (5/5 better, 0/5 worse) | -0.188 … -0.134 (5/5 better, 0/5 worse) |
+| tier1_blend | blend | climatology | 115.6 | -0.283 … -0.241 (5/5 better, 0/5 worse) | +0.039 … +0.117 (0/5 better, 3/5 worse) | -0.079 … -0.052 (5/5 better, 0/5 worse) | -0.296 … -0.185 (5/5 better, 0/5 worse) |
+| tier1_blend | blend | climatology | 204.5 | -0.203 … -0.113 (5/5 better, 0/5 worse) | -0.039 … +0.249 (3/5 better, 0/5 worse) | -0.033 … -0.016 (4/5 better, 0/5 worse) | -0.146 (0/5 better, 0/5 worse) |
+| single_source | graphcast | climatology | 64.5 | -0.285 … -0.230 (5/5 better, 0/5 worse) | +0.121 … +0.189 (0/5 better, 5/5 worse) | -0.073 … -0.039 (5/5 better, 0/5 worse) | -0.177 … -0.136 (5/5 better, 0/5 worse) |
+| single_source | graphcast | climatology | 115.6 | -0.292 … -0.242 (5/5 better, 0/5 worse) | +0.064 … +0.127 (0/5 better, 3/5 worse) | -0.085 … -0.048 (5/5 better, 0/5 worse) | -0.324 … -0.187 (5/5 better, 0/5 worse) |
+| single_source | graphcast | climatology | 204.5 | -0.213 … -0.130 (5/5 better, 0/5 worse) | -0.034 … +0.179 (1/5 better, 0/5 worse) | -0.030 … -0.009 (4/5 better, 0/5 worse) | -0.143 (0/5 better, 0/5 worse) |
+| single_source | hres | climatology | 64.5 | -0.153 … -0.109 (5/5 better, 0/5 worse) | +0.007 … +0.051 (0/5 better, 4/5 worse) | -0.019 … -0.011 (5/5 better, 0/5 worse) | -0.108 … -0.083 (5/5 better, 0/5 worse) |
+| single_source | hres | climatology | 115.6 | -0.130 … -0.080 (5/5 better, 0/5 worse) | -0.010 … +0.006 (0/5 better, 0/5 worse) | -0.016 … -0.012 (5/5 better, 0/5 worse) | -0.120 … -0.102 (5/5 better, 0/5 worse) |
+| single_source | hres | climatology | 204.5 | -0.043 … -0.010 (2/5 better, 0/5 worse) | -0.006 … -0.000 (0/5 better, 0/5 worse) | -0.005 … -0.001 (0/5 better, 0/5 worse) | -0.108 … -0.019 (1/5 better, 0/5 worse) |
+| single_source | ifs_ens_mean | climatology | 64.5 | -0.274 … -0.227 (5/5 better, 0/5 worse) | +0.109 … +0.130 (0/5 better, 5/5 worse) | -0.046 … -0.023 (5/5 better, 0/5 worse) | -0.177 … -0.133 (5/5 better, 0/5 worse) |
+| single_source | ifs_ens_mean | climatology | 115.6 | -0.259 … -0.196 (5/5 better, 0/5 worse) | +0.034 … +0.095 (0/5 better, 3/5 worse) | -0.049 … -0.032 (5/5 better, 0/5 worse) | -0.253 … -0.170 (5/5 better, 0/5 worse) |
+| single_source | ifs_ens_mean | climatology | 204.5 | -0.219 … -0.100 (5/5 better, 0/5 worse) | -0.026 … +0.116 (4/5 better, 0/5 worse) | -0.024 … -0.009 (4/5 better, 0/5 worse) | -0.158 (1/5 better, 0/5 worse) |
+
+QM buys detection and pays in false alarms. POD rises at every lead at 64.5 and 115.6 mm for the blend and for GraphCast and the IFS-ENS mean (by about 0.2–0.3), FAR rises with it, and CSI and SEDI improve anyway. HRES gains least; its raw forecast already detects the most heavy rain (POD at 115.6 mm 0.06–0.12, against 0.01–0.08 for the others). At 204.5 mm POD still rises at every lead for the blend, GraphCast and the IFS-ENS mean (by 0.04–0.22), FAR moves significantly in neither direction, and SEDI is defined at one lead at most, because the raw forecasts have almost no hits there.
+
+Raw and QM-corrected single sources side by side (ranges over the five leads, each the mean of the two folds; `crps_mm` equals `mae_mm` because these are point forecasts):
+
+| scope | source | variant | rmse_mm | crps_mm | twcrps_64.5_mm | brier_7.5 | pod_115.6 | far_115.6 | csi_115.6 | sedi_115.6 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| single_source | graphcast | climatology | 19.388 … 20.298 | 8.418 … 9.294 | 1.247 … 1.281 | 0.228 … 0.257 | 0.249 … 0.298 | 0.874 … 0.900 | 0.077 … 0.095 | 0.575 … 0.634 |
+| single_source | graphcast | raw | 13.036 … 13.521 | 6.580 … 7.242 | 0.456 … 0.505 | 0.219 … 0.263 | 0.007 … 0.063 | 0.763 … 0.828 | 0.006 … 0.051 | 0.296 … 0.455 |
+| single_source | graphcast | same_period | 17.269 … 18.406 | 8.106 … 8.999 | 0.999 … 1.062 | 0.227 … 0.255 | 0.223 … 0.269 | 0.868 … 0.891 | 0.080 … 0.098 | 0.560 … 0.617 |
+| single_source | hres | climatology | 19.586 … 23.737 | 9.057 … 10.789 | 1.262 … 1.624 | 0.245 … 0.285 | 0.139 … 0.243 | 0.909 … 0.957 | 0.033 … 0.071 | 0.415 … 0.576 |
+| single_source | hres | raw | 16.150 … 19.634 | 7.440 … 8.584 | 0.815 … 1.077 | 0.235 … 0.262 | 0.063 … 0.118 | 0.902 … 0.964 | 0.024 … 0.057 | 0.313 … 0.469 |
+| single_source | hres | same_period | 18.279 … 21.838 | 8.806 … 10.508 | 1.090 … 1.377 | 0.243 … 0.284 | 0.130 … 0.208 | 0.907 … 0.955 | 0.035 … 0.069 | 0.411 … 0.549 |
+| single_source | ifs_ens_mean | climatology | 20.041 … 24.643 | 8.986 … 10.932 | 1.314 … 1.875 | 0.241 … 0.283 | 0.210 … 0.316 | 0.881 … 0.938 | 0.050 … 0.095 | 0.518 … 0.647 |
+| single_source | ifs_ens_mean | raw | 13.431 … 14.725 | 7.088 … 7.647 | 0.509 … 0.521 | 0.244 … 0.274 | 0.017 … 0.081 | 0.786 … 0.944 | 0.013 … 0.063 | 0.270 … 0.482 |
+| single_source | ifs_ens_mean | same_period | 17.799 … 21.578 | 8.660 … 10.509 | 1.064 … 1.469 | 0.240 … 0.283 | 0.195 … 0.278 | 0.876 … 0.936 | 0.051 … 0.094 | 0.507 … 0.623 |
+| tier1_blend | blend | climatology | 18.125 … 19.727 | 8.442 … 9.362 | 1.117 … 1.219 | 0.236 … 0.267 | 0.240 … 0.308 | 0.865 … 0.900 | 0.075 … 0.104 | 0.567 … 0.649 |
+| tier1_blend | blend | raw | 12.877 … 13.581 | 6.699 … 7.259 | 0.468 … 0.487 | 0.229 … 0.264 | 0.012 … 0.065 | 0.749 … 0.858 | 0.011 … 0.054 | 0.307 … 0.471 |
+| tier1_blend | blend | same_period | 16.493 … 17.939 | 8.142 … 9.071 | 0.909 … 0.983 | 0.235 … 0.265 | 0.201 … 0.268 | 0.851 … 0.893 | 0.076 … 0.106 | 0.542 … 0.627 |
+
 **Out-of-sample climatology (correction).** The `climatology` reference is described above as excluding the test season, but until this revision the runner passed the full 2006–2020 climatology, which contains both LOYO test seasons — so each fold's quantile map had seen the observations it was scored against. It now drops every held-out year (`weavr.quantile_mapping.climatology_excluding_years`). Re-measured before #106, the effect was in the third decimal (tw-CRPS +0.698 → +0.699 and SEDI −0.136 → −0.135 at the edge of their ranges; RMSE unchanged at the precision quoted) and **both verdicts stand**. `same_period` never used the climatology and is byte-identical.
 
-**Correction to an earlier run.** A previous run reported `climatology` as *failing* H7 (Brier@7.5 degrading at 5/5 leads). That was a bug: the runner passed `climatology["rain"].mean(dim="time")` — a single value per grid cell — as the reference, so the fitted quantile map was degenerate. With the full climatological distribution the Brier guard passes. The numbers in this table supersede the earlier ones.
+**Correction to an earlier run.** A previous run reported `climatology` as *failing* H7 (Brier@7.5 degrading at 5/5 leads). That was a bug: the runner passed `climatology["rain"].mean(dim="time")` — a single value per grid cell — as the reference, so the fitted quantile map was degenerate. With the full climatological distribution the guard passed at the time; since Brier counts only observed cells (31 October) it fails at 24 and 48 h, for both variants, as above.
 
-### 4.2 QM on the members before EMOS-CSG — makes CRPS worse
+### 4.2 QM on the members before EMOS-CSG — worse on GraphCast, mixed on IFS-ENS
 
-§3 describes QM as a pre-processing step feeding calibrated members into Tier 2 EMOS-CSG. `scripts/run_tail_repair_qm_emos.py` tests exactly that: EMOS-CSG fitted on the raw lagged GraphCast members (`raw_members`) against EMOS-CSG refitted on members quantile-mapped per region (`qm_members_same_period`, `qm_members_climatology`), same LOYO folds, same held-out days. The maps are fitted on training-fold forecasts only, and the climatology reference drops both held-out years. Results in `results/tail_repair_qm_emos.csv` and `results/tail_repair_qm_emos_paired.csv`.
+§3 describes QM as a pre-processing step feeding calibrated members into Tier 2 EMOS-CSG. `scripts/run_tail_repair_qm_emos.py` tests exactly that, for both ensemble sources step 11 names: EMOS-CSG fitted on the raw members (`raw_members`) against EMOS-CSG refitted on members quantile-mapped per region (`qm_members_same_period`, `qm_members_climatology`), each source with its own EMOS fit, same LOYO folds and held-out days. The maps are fitted on training-fold forecasts only, the climatology reference drops both held-out years, and the rain bins are classified from the GraphCast mean for both sources, as in Tier 2. Results in `results/tail_repair_qm_emos.csv` and `results/tail_repair_qm_emos_paired.csv`; reproduce with `scripts/run_tail_repair_qm_emos.py` (`--sources`, `--leads` to subset).
 
-`raw_members` reproduces Tier 2's EMOS-GraphCast exactly (pooled CRPS 4.1390 mm at lead 24 in both, and identical at every lead and fold), which is the check that this runner scores the same thing.
+`raw_members` reproduces Tier 2's EMOS exactly for both sources: CRPS and the Brier score at every IMD threshold agree with `tier2_emos_graphcast` and `tier2_emos_ifs_ens` on every test day (pooled CRPS at 24 h 4.1390 and 4.1555 mm). That is the check that this runner scores the same thing.
 
 Paired CRPS difference, QM arm minus `raw_members` (positive = QM worse), 95% moving-block bootstrap CI:
 
-| lead | `same_period` | 95% CI | `climatology` | 95% CI |
+| lead | GraphCast `same_period` | GraphCast `climatology` | IFS-ENS `same_period` | IFS-ENS `climatology` |
 |---|---|---|---|---|
-| 24 h | +0.038 | [+0.023, +0.053] | +0.055 | [+0.041, +0.068] |
-| 48 h | +0.037 | [+0.023, +0.052] | +0.053 | [+0.040, +0.067] |
-| 72 h | +0.036 | [+0.022, +0.050] | +0.053 | [+0.040, +0.067] |
-| 96 h | +0.034 | [+0.020, +0.049] | +0.048 | [+0.034, +0.063] |
-| 120 h | +0.035 | [+0.020, +0.052] | +0.049 | [+0.034, +0.066] |
+| 24 h | +0.038 [+0.023, +0.053] | +0.055 [+0.041, +0.068] | +0.019 [+0.008, +0.030] | +0.026 [+0.016, +0.035] |
+| 48 h | +0.037 [+0.023, +0.052] | +0.053 [+0.040, +0.067] | +0.000 [−0.016, +0.014] | +0.007 [−0.008, +0.020] |
+| 72 h | +0.036 [+0.022, +0.050] | +0.053 [+0.040, +0.067] | −0.007 [−0.025, +0.008] | −0.001 [−0.017, +0.012] |
+| 96 h | +0.034 [+0.020, +0.049] | +0.048 [+0.034, +0.063] | −0.011 [−0.029, +0.003] | −0.007 [−0.021, +0.006] |
+| 120 h | +0.035 [+0.020, +0.052] | +0.049 [+0.034, +0.066] | −0.016 [−0.034, −0.002] | −0.011 [−0.025, +0.002] |
 
-**Both arms are significantly worse at every lead.** Alongside, per fold:
+**On GraphCast both arms are significantly worse at every lead. On IFS-ENS QM costs CRPS at 24 h and turns slightly helpful with lead**, significantly only at 120 h (`same_period`, −0.016 mm). IFS-ENS's raw members degrade with lead faster than GraphCast's (EMOS CRPS 4.156 → 4.623 mm against 4.139 → 4.389), which leaves QM more to correct there.
 
-- Brier@7.5 mm worsens by +0.0013 … +0.0026 in every lead and fold.
-- SEDI at 64.5 and 115.6 mm moves by at most about ±0.01 either way (−0.013 … +0.012) — no tail gain to set against the CRPS loss.
-- RMSE of the predictive mean rises by +3.1 … +4.0 mm (`same_period`) and +3.2 … +6.2 mm (`climatology`), the same double-penalty pattern §4.1 reports for the deterministic sources.
+The H7 metrics on the same comparison (QM arm minus raw; leads where the interval excludes 0):
 
-The corrected pairing (#106) shrank the CRPS penalty by about 10% and left the verdict unchanged.
+| source | arm | CRPS Δ (mm) | tw-CRPS@64.5 Δ | SEDI@115.6 Δ | Brier@7.5 Δ | H7 leads |
+|---|---|---|---|---|---|---|
+| graphcast | `qm_members_same_period` | +0.034 … +0.038 (0/5 better, 5/5 worse) | -0.002 … +0.000 (2/5 better, 0/5 worse) | -0.011 … -0.003 (0/5 better, 0/5 worse) | +0.002 … +0.002 (0/5 better, 5/5 worse) | 2/5 |
+| graphcast | `qm_members_climatology` | +0.048 … +0.055 (0/5 better, 5/5 worse) | -0.002 … +0.000 (2/5 better, 0/5 worse) | -0.019 … -0.002 (4/5 better, 0/5 worse) | +0.002 … +0.002 (0/5 better, 5/5 worse) | 4/5 |
+| ifs_ens | `qm_members_same_period` | -0.016 … +0.019 (1/5 better, 1/5 worse) | -0.004 … -0.002 (4/5 better, 0/5 worse) | -0.020 … +0.004 (0/5 better, 0/5 worse) | +0.000 … +0.001 (0/5 better, 2/5 worse) | 4/5 |
+| ifs_ens | `qm_members_climatology` | -0.011 … +0.026 (0/5 better, 1/5 worse) | -0.004 … -0.002 (4/5 better, 0/5 worse) | -0.016 … +0.001 (0/5 better, 0/5 worse) | +0.000 … +0.001 (0/5 better, 4/5 worse) | 4/5 |
 
-**Reading.** The tail improvement QM delivers on deterministic sources (§4.1, SEDI@115.6) does not survive EMOS-CSG. A plausible but untested explanation is that EMOS-CSG's own regression already corrects the members' marginal bias, so a per-region map applied first adds noise to its predictors without adding information. On this evidence QM should not be inserted ahead of EMOS-CSG. This is a measured negative result for the Tier 2 path only; it does not touch the §4.1 H7 verdict, which is scoped to the Tier 1 blend.
+**No arm passes H7's guard.** Each improves tw-CRPS@64.5 or SEDI@115.6 at 2–4 leads, and each makes Brier at 7.5 mm significantly worse at 2–5 leads. This is a measured result for the Tier 2 path, outside the pre-registered H7 scope (the Tier 1 blend, §4.1), and it points the same way.
+
+The corrected pairing (#106) shrank the GraphCast CRPS penalty by about 10% and left its verdict unchanged.
+
+**Reading.** The tail improvement QM delivers on deterministic sources (§4.1) does not survive EMOS-CSG on GraphCast. A plausible but untested explanation is that EMOS-CSG's own regression already corrects the members' marginal bias, so a per-region map applied first adds noise to its predictors without adding information; IFS-ENS, whose members drift more with lead, is the case where the map has something left to correct. On this evidence QM should not be inserted ahead of EMOS-CSG on GraphCast; on IFS-ENS the gain at long leads is small and comes with a worse light-rain Brier.
 
 ### 4.3 HEPPI directional check — low agreement, and HEPPI's UQM is the outlier
 
