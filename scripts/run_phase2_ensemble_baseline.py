@@ -72,6 +72,7 @@ from weavr.grid import imd_day_for  # noqa: E402
 from weavr.score_io import (  # noqa: E402
     FORCE_HELP,
     PerDayScoreWriter,
+    exceedance_event,
     guard_result_overwrites,
     per_day_scores,
     resolve_result_paths,
@@ -239,7 +240,7 @@ def score_precip_lead(
             t: float(
                 V.brier_score(
                     _exceedance_probability(test_ensemble, t),
-                    (test_obs >= t).astype(float),
+                    exceedance_event(test_obs, t),
                 )
             )
             for t in thresholds
@@ -298,7 +299,7 @@ def score_precip_lead(
             t: float(
                 V.brier_score(
                     _exceedance_probability(pooled_ensemble, t),
-                    (pooled_obs >= t).astype(float),
+                    exceedance_event(pooled_obs, t),
                 )
             )
             for t in thresholds

@@ -180,3 +180,31 @@ class TestScorePrecipLead:
         assert rows[2]["split"] == "leave_one_year_out"
         assert rows[2]["n_test"] == 20
 
+    def test_brier_scores_only_observed_cells(self):
+        # The lagged ensemble covers the whole box; IMD observes land only. An
+        # unobserved cell must leave the Brier mean, not enter it as a
+        # correctly forecast non-event (F8: that halved this test's score).
+        times = pd.date_range("2018-06-01", periods=10, freq="D").union(
+            pd.date_range("2020-06-01", periods=10, freq="D")
+        )
+        lat, lon = [10.0, 11.0], [75.0, 76.0]
+        members = np.zeros((20, 4, 2, 2))
+        members[:, :, 1, :] = 20.0  # observed row: every member says rain
+        ensemble = xr.DataArray(
+            members,
+            coords={"sample": times, "member": np.arange(4), "latitude": lat, "longitude": lon},
+            dims=["sample", "member", "latitude", "longitude"],
+        )
+        obs_values = np.zeros((20, 2, 2))
+        obs_values[:, 0, :] = np.nan  # unobserved row: forecast dry, nothing seen
+        obs = xr.DataArray(
+            obs_values,
+            coords={"time": times, "latitude": lat, "longitude": lon},
+            dims=["time", "latitude", "longitude"],
+        )
+
+        rows = score_precip_lead(ensemble, obs, thresholds=(7.5,), test_fraction=0.2)
+
+        # Observed cells: p = 1, no rain -> (1 - 0)^2 = 1 on every fold.
+        assert [r["brier"][7.5] for r in rows] == [1.0, 1.0, 1.0]
+
