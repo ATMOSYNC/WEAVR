@@ -140,7 +140,7 @@ neighborhood size via `--store`, `--climatology`, `--out-csv`,
 
 ---
 
-## v2 update (2026-10-01)
+## v2 update (2026-10-01; regenerated 2026-10-30 after #106)
 
 **This file's numbers above are v1 and are now superseded.** They were measured
 on the **weekly, single-season 2020** evidence base: `n_train=14`, `n_test=3-4`,
@@ -148,8 +148,9 @@ on the **weekly, single-season 2020** evidence base: `n_train=14`, `n_test=3-4`,
 intervals were computable. They are kept above as a labelled record.
 
 Step 07 regenerated every result on the **two-season daily LOYO** base
-(2018 + 2020, 122 train days per fold, 236-244 test days per lead, paired block
-bootstrap CIs). Read them in
+(2018 + 2020, about 120 train days per fold, 234-242 test days per lead, paired
+block bootstrap CIs), and every result was regenerated again on 2026-10-30
+after #106 corrected which IMD day each forecast is scored against. Read them in
 [`docs/v2-evidence-base-results.md`](v2-evidence-base-results.md).
 
 Do not set the v1 and v2 columns side by side without stating the cadence
@@ -158,8 +159,10 @@ whole season daily. Every RMSE in this file improved or worsened for sampling
 reasons before any method changed.
 
 Headline v2 findings: **H1 passes** (the blend beats the best single member on
-RMSE and on CRPS at 5 of 5 leads each, every interval excluding zero),
-**H2 fails** (the multi-source combiner is significantly worse than either
-single-source EMOS on CRPS at every lead), and **H3 fails** (Brier skill against
-climatology is about -2.6 at 64.5 mm, and SEDI is worse than the best member at
-every lead).
+RMSE and on CRPS at 5 of 5 leads each, every interval excluding zero), **H2
+passes** against EMOS-IFS (better on CRPS at 5 of 5 leads, significantly at 5)
+and is unproven against EMOS-GraphCast (better on CRPS at 24, 48 and 72 h,
+significantly only at 24 h). **H3 fails** on its SEDI leg (its Brier leg
+passes): Brier skill against climatology at 64.5 mm is +0.07 to +0.10 across the
+leads, the interval excluding zero at 5 of 5, while SEDI at 64.5 mm beats the
+best member's at 2 of 5 leads and is significantly worse at 24 h.

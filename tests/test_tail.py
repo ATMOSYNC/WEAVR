@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import xarray as xr
 
-from weavr.emos import CensoredShiftedGammaResult
+from weavr.emos import (
+    CensoredShiftedGammaResult,
+    exceedance_probability_csgd,
+    predict_csgd_params,
+)
 from weavr.tail import (
     TailFit,
     exceedance_probability_with_tail,
     fit_pooled_gpd,
     nearest_fittable_bin,
     spliced_exceedance_probability,
+    spliced_twcrps,
 )
 
 
@@ -52,6 +58,24 @@ def test_fit_pooled_gpd_synthetic() -> None:
     assert fit.xi_ci[0] < fit.shape_xi < fit.xi_ci[1]
 
 
+def test_xi_standard_error_matches_gpd_asymptotic_theory() -> None:
+    """SE(xi) must be the joint-fit SE, `(1 + xi) / sqrt(n)` for one region.
+
+    The earlier `1 / sqrt(d2 NLL / d xi2)` held the scale fixed. xi and sigma
+    are strongly correlated in a GPD, so that read 0.0128 here against the
+    theoretical 0.0174 and its nominal 95% interval covered xi 85% of the time.
+    """
+    rng = np.random.default_rng(1)
+    true_xi, n = 0.1, 4000
+    fit = fit_pooled_gpd(
+        {"WC": 64.5 + _sample_gpd(true_xi, 20.0, size=n, rng=rng)},
+        threshold_u=64.5,
+        regions=("WC",),
+    )
+    assert fit.xi_se is not None
+    assert fit.xi_se == pytest.approx((1.0 + true_xi) / np.sqrt(n), rel=0.1)
+
+
 def test_spliced_exceedance_probability_continuity_and_monotonicity() -> None:
     """spliced_exceedance_probability is continuous at u, monotone, and in [0, 1]."""
     fit = TailFit(
@@ -65,7 +89,9 @@ def test_spliced_exceedance_probability_continuity_and_monotonicity() -> None:
 
     # 1. Exact continuity at u
     assert spliced_exceedance_probability(p_u, fit, "WC", u) == pytest.approx(p_u)
-    assert spliced_exceedance_probability(p_u, fit, "WC", u - 10.0) == pytest.approx(p_u)
+    # Below u only the CSGD knows P(Y > y); this used to return p_u there.
+    with pytest.raises(ValueError, match="y >= u"):
+        spliced_exceedance_probability(p_u, fit, "WC", u - 10.0)
 
     # 2. Strict monotonicity for y > u
     y_values = np.linspace(u, 300.0, 50)
@@ -333,3 +359,91 @@ def test_exceedance_probability_with_tail_broadcasts_spatial_region() -> None:
     ci = probs[0, 0, 1]
     wc = probs[0, 1, 0]
     assert ci != wc
+
+
+
+class TestSplicedTwcrps:
+    FIT = TailFit(threshold_u=64.5, shape_xi=0.18, scale_by_region={"WC": 22.0, "CI": 15.0})
+
+    @staticmethod
+    def _quad(p_u, xi, sigma, u, y, t):
+        from scipy import integrate
+
+        def surv(x):  # 1 - F(x) above u
+            arg = 1.0 + xi * (x - u) / sigma
+            return p_u * (arg ** (-1.0 / xi) if arg > 0 else 0.0)
+
+        split = max(y, t)
+        below = (
+            integrate.quad(lambda x: (1 - surv(x)) ** 2, t, split, limit=200)[0]
+            if split > t else 0.0
+        )
+        above = integrate.quad(lambda x: surv(x) ** 2, split, np.inf, limit=400)[0]
+        return below + above
+
+    @pytest.mark.parametrize("p_u", [0.0, 0.02, 0.3, 1.0])
+    @pytest.mark.parametrize("y", [0.0, 70.0, 115.6, 300.0])
+    @pytest.mark.parametrize("t", [64.5, 115.6])
+    def test_matches_quadrature(self, p_u, y, t):
+        got = float(spliced_twcrps(p_u, self.FIT, "WC", y, t))
+        assert got == pytest.approx(self._quad(p_u, 0.18, 22.0, 64.5, y, t), abs=1e-6)
+
+    @pytest.mark.parametrize("xi", [-0.2, 0.0, 0.4])
+    def test_matches_quadrature_across_tail_shapes(self, xi):
+        fit = TailFit(threshold_u=64.5, shape_xi=xi, scale_by_region={"CI": 15.0})
+        if xi == 0.0:
+            # Exponential tail: quad of the limit, written out.
+            from scipy import integrate
+            surv = lambda x: 0.2 * np.exp(-(x - 64.5) / 15.0)  # noqa: E731
+            want = integrate.quad(lambda x: (1 - surv(x)) ** 2, 64.5, 90.0)[0] + integrate.quad(
+                lambda x: surv(x) ** 2, 90.0, np.inf)[0]
+        else:
+            want = self._quad(0.2, xi, 15.0, 64.5, 90.0, 64.5)
+        assert float(spliced_twcrps(0.2, fit, "CI", 90.0, 64.5)) == pytest.approx(want, abs=1e-6)
+
+    def test_matches_the_ensemble_identity_on_draws(self):
+        from weavr.verify import twcrps_ensemble
+
+        rng = np.random.default_rng(5)
+        n, p_u, u = 400_000, 0.15, 64.5
+        exceeds = rng.uniform(size=n) < p_u
+        draws = np.where(exceeds, u + _sample_gpd(0.18, 22.0, n, rng), rng.uniform(0, u, n))
+        for y, t in ((80.0, 64.5), (150.0, 115.6), (10.0, 115.6)):
+            sampled = float(twcrps_ensemble(
+                xr.DataArray(draws, dims="member"), xr.DataArray(y), t, member_dim="member"))
+            got = float(spliced_twcrps(p_u, self.FIT, "WC", y, t))
+            assert got == pytest.approx(sampled, rel=0.02, abs=1e-3)
+
+    def test_a_point_mass_below_the_threshold_scores_the_excess(self):
+        got = float(spliced_twcrps(0.0, self.FIT, "WC", 150.0, 115.6))
+        assert got == pytest.approx(150.0 - 115.6)
+
+    def test_vectorised_over_regions(self):
+        out = spliced_twcrps(
+            np.array([0.1, 0.1]), self.FIT, np.array(["WC", "CI"]), np.array([90.0, 90.0]), 64.5
+        )
+        assert out.shape == (2,) and out[0] != out[1]
+
+    def test_refuses_a_threshold_below_u(self):
+        with pytest.raises(ValueError, match="threshold >= u"):
+            spliced_twcrps(0.1, self.FIT, "WC", 10.0, 7.5)
+
+
+def test_with_tail_below_u_uses_the_nearest_csgd_not_p_u() -> None:
+    """An unfittable bin's P(Y >= 7.5) is the nearest fitted CSGD's, not P(Y > u)."""
+    fit = TailFit(threshold_u=64.5, shape_xi=0.15, scale_by_region={"WC": 20.0})
+    heavy = CensoredShiftedGammaResult(
+        bin_label="heavy", source="s", shift=-1.0, climatological_mean=70.0,
+        climatological_std=25.0, coefficients={"a1": 1.0, "a2": 0.9, "a3": 2.0, "a4": 0.5},
+    )
+    fallback = CensoredShiftedGammaResult(
+        bin_label="extremely_heavy", source="s", shift=0.0, climatological_mean=0.0,
+        climatological_std=0.0, coefficients={}, is_fallback=True,
+    )
+    bins = {"heavy": heavy, "extremely_heavy": fallback}
+    f, m, sd = np.array([220.0]), np.array([210.0]), np.array([30.0])
+    probs, methods = exceedance_probability_with_tail(f, m, sd, bins, fit, np.array(["WC"]), 7.5)
+    loc, scale, shift = predict_csgd_params(heavy, m, sd)
+    assert probs[0] == pytest.approx(float(exceedance_probability_csgd(loc, scale, shift, 7.5)[0]))
+    p_u = float(exceedance_probability_csgd(loc, scale, shift, 64.5)[0])
+    assert probs[0] > p_u and methods[0] == "csgd+gpd_tail"

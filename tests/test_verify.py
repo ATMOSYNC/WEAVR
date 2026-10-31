@@ -281,3 +281,54 @@ class TestContingencyScores:
         obs = xr.DataArray(np.array([[0.0, 10.0], [100.0, 250.0]]), dims=["x", "y"])
         result = contingency_scores(obs, obs, dim=["x", "y"])
         assert set(result.keys()) == {7.5, 64.5, 115.6, 204.5}
+
+
+class TestExpectedContingencyCounts:
+    """Forecasts that tell misses from false alarms apart -- the case a perfect
+    forecast cannot check, and the one `run_tail_repair_evt.expected_counts` got
+    wrong."""
+
+    def test_always_yes_has_false_alarms_and_no_misses(self):
+        from weavr.verify import expected_contingency_counts
+
+        counts = expected_contingency_counts(np.ones(4), np.array([1.0, 0.0, 0.0, 1.0]))
+        assert counts["hits"] == pytest.approx(2.0)
+        assert counts["misses"] == pytest.approx(0.0)
+        assert counts["false_alarms"] == pytest.approx(2.0)
+        assert counts["correct_negatives"] == pytest.approx(0.0)
+
+    def test_always_no_has_misses_and_no_false_alarms(self):
+        from weavr.verify import expected_contingency_counts
+
+        counts = expected_contingency_counts(np.zeros(4), np.array([1.0, 0.0, 0.0, 1.0]))
+        assert counts["hits"] == pytest.approx(0.0)
+        assert counts["misses"] == pytest.approx(2.0)
+        assert counts["false_alarms"] == pytest.approx(0.0)
+        assert counts["correct_negatives"] == pytest.approx(2.0)
+
+    def test_hard_probabilities_match_the_deterministic_table(self):
+        from weavr.verify import contingency_counts, expected_contingency_counts
+
+        rng = np.random.default_rng(0)
+        forecast = rng.gamma(0.5, 30.0, size=(5, 6, 7))
+        obs = rng.gamma(0.5, 30.0, size=(5, 6, 7))
+        hard = expected_contingency_counts(
+            (forecast >= 64.5).astype(float), (obs >= 64.5).astype(float)
+        )
+        table = contingency_counts(
+            xr.DataArray(forecast, dims=("t", "y", "x")),
+            xr.DataArray(obs, dims=("t", "y", "x")),
+            thresholds=(64.5,),
+        )[64.5]
+        for key in hard:
+            assert float(hard[key]) == pytest.approx(float(table[key]))
+
+    def test_nan_cells_contribute_nothing_and_axis_keeps_days(self):
+        from weavr.verify import expected_contingency_counts
+
+        prob = np.array([[[np.nan, 0.5]], [[0.2, 0.8]]])
+        obs = np.array([[[1.0, 1.0]], [[0.0, 1.0]]])
+        counts = expected_contingency_counts(prob, obs, axis=(1, 2))
+        np.testing.assert_allclose(sum(counts.values()), [1.0, 2.0])
+        np.testing.assert_allclose(counts["misses"], [0.5, 0.2])
+        np.testing.assert_allclose(counts["false_alarms"], [0.0, 0.2])

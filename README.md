@@ -110,17 +110,19 @@ Every stage is a small, tested module in `src/weavr/`: `grid`, `ensemble`,
 
 To repair under-forecast extreme rainfall before blending or parametric fitting, WEAVR provides empirical quantile mapping calibrated against historical IMD gauge analyses (`fit_quantile_map`, `apply_quantile_mapping`). It zeroes dry/drizzle values below a data-driven wet-day threshold (0.1 mm), performs linear quantile interpolation across wet ranks, and preserves forecast extreme anomalies above historical training maximums via an additive upper-tail extrapolation rule.
 
-Evaluated over both daily JJAS seasons (LOYO, Tier 1 blend, paired moving-block bootstrap CIs), QM passes the pre-registered H7 test **on the SEDI branch only**: SEDI at 115.6 mm improves at 5 of 5 leads with the CI excluding zero, and Brier at 7.5 mm is not degraded. The pass is not free — threshold-weighted CRPS at 64.5 mm is significantly *worse* at every lead, and RMSE rises by roughly 4–7 mm depending on reference variant. See [tail repair results](docs/tail-repair-results.md) for the table and the per-variant trade-off.
+Evaluated over both daily JJAS seasons (LOYO, Tier 1 blend, paired moving-block bootstrap CIs), QM **fails** the pre-registered H7 test, on its non-inferiority guard: SEDI at 115.6 mm improves at 5 of 5 leads with the CI excluding zero, but Brier at 7.5 mm is significantly worse at 24 and 48 h for both reference variants, which H7 does not allow. Threshold-weighted CRPS at 64.5 mm is also significantly *worse* at every lead, and RMSE rises by roughly 3.6–6.2 mm depending on reference variant. Until 31 October this read as a pass, on Brier scores that counted unobserved sea cells as correct dry forecasts. QM trades false alarms for detection: probability of detection at 115.6 mm rises by 0.2–0.3 for GraphCast, the IFS-ENS mean and the blend, and false-alarm ratio rises with it. Applied to the ensemble members before EMOS-CSG it makes CRPS worse on GraphCast at every lead and helps IFS-ENS only slightly at long leads, and every arm fails the same Brier guard. See [tail repair results](docs/tail-repair-results.md) for the tables and the per-variant trade-off.
 
 ### Tail repair: Extreme-value tail (`weavr.tail`)
 
-For rain bins where extreme events are too scarce to fit parametric EMOS-CSG (such as $\ge 204.5\text{ mm}$), WEAVR anchors probabilities on a pooled Generalized Pareto distribution (GPD) fitted across 15 years of IMD extremes (`weavr.tail`). The GPD shares a single shape parameter $\xi$ nationwide while allowing region-specific scale parameters $\sigma_r$. The tail is continuously spliced at threshold $u$ ($64.5\text{ mm}$) with the nearest fittable EMOS-CSG bin: $P(Y > y) = P_{\text{CSGD}}(Y > u) \cdot (1 + \xi (y - u)/\sigma_r)^{-1/\xi}$, eliminating false-zero fallback grey cells and providing calibrated probabilities for $115.6\text{ mm}$ and $204.5\text{ mm}$ extremes.
+For rain bins where extreme events are too scarce to fit parametric EMOS-CSG (such as $\ge 204.5\text{ mm}$), WEAVR anchors probabilities on a pooled Generalized Pareto distribution (GPD) fitted to the training season's IMD extremes, the test year held out (`weavr.tail`). The GPD shares a single shape parameter $\xi$ nationwide while allowing region-specific scale parameters $\sigma_r$. The tail is continuously spliced at threshold $u$ ($64.5\text{ mm}$) with the nearest fittable EMOS-CSG bin: $P(Y > y) = P_{\text{CSGD}}(Y > u) \cdot (1 + \xi (y - u)/\sigma_r)^{-1/\xi}$, eliminating false-zero fallback grey cells and giving every cell a real probability for $115.6\text{ mm}$ and $204.5\text{ mm}$ extremes.
 
-Measured over both daily JJAS seasons, the spliced tail does eliminate every false zero-probability cell (193 → 0 at both 115.6 mm and 204.5 mm), but it does **not** improve SEDI — SEDI worsens at all 5 leads, as the extra tail mass produces more false alarms than hits. H7 is therefore not met by this arm alone; the zero-elimination is the result that matters. See [tail repair results](docs/tail-repair-results.md).
+Measured over both daily JJAS seasons with the tail fitted on the 15-year IMD archive (test year excluded), the spliced tail eliminates every false zero-probability cell (193 → 0 at both 115.6 mm and 204.5 mm) and is calibrated in total (it forecasts 0.96× the observed count of 115.6 mm days and 1.15× at 204.5 mm, where the point-mass control forecast about half). It does **not** improve the scores H7 names: tw-CRPS and Brier are level with the control and SEDI is worse at all 5 leads, so **H7's EVT part fails**. Applying step 11's QM before EMOS-CSG changes little. See [tail repair results](docs/tail-repair-results.md).
 
 ### Tier 2b: Combiner meta-blend (`weavr.stacking`)
 
 WEAVR meta-blends distributional combiners (EMOS-CSG and BMA) through three stacking strategies (`weavr.stacking`): per-bin selection (applying each method where its training density is well-supported), linear density pooling with weights $\alpha \cdot f_{\text{EMOS}} + (1-\alpha) \cdot f_{\text{BMA}}$, and quantile averaging across the predictive distributions with exact root-finding quantile inversion for the censored shifted gamma distribution (CSGD).
+
+The pre-registered H10 test **passes at 5 of 5 leads**: the arm nominated on training data beats both EMOS-CSG and BMA on CRPS at every lead, every 95% interval excluding zero. Quantile averaging is the recommended probabilistic combiner (the only arm that beats both parents at all five leads); per-bin selection beats both at only 2 of 5, so the "strongest combiner per bin" claim is not supported. The dashboard can draw its extreme-rain map from the quantile average with `--combiner quantile_avg`; the published map stays EMOS-CSG until that map's reliability is measured. See [Tier 2b results](docs/tier2b-combined-results.md).
 
 
 
@@ -185,25 +187,32 @@ daily cadence, leave-one-year-out:
 
 - **Tier 1 beats Tier 0 at every lead** on both RMSE and ACC. Regional weights
   add value over equal weighting.
-- **GraphCast is the best single member** at every lead (RMSE 14.12–14.56 mm).
-  HRES is the worst (RMSE 17.58–19.68 mm). IFS-ENS mean is intermediate.
+- **GraphCast is the best single member** at every lead (RMSE 13.05–13.53 mm).
+  HRES is the worst (RMSE 16.15–19.69 mm). IFS-ENS mean is intermediate.
 - **The three sources are worth about 1.1 independent models.** Their errors
-  correlate at 0.74–0.84 on the daily two-season base, which is why plain
+  correlate at 0.72–0.87 on the daily two-season base, which is why plain
   averaging fails and why adding a genuinely different source matters more
   than re-weighting.
-- **The blend beats a single ensemble member, but not a single-source
-  calibration.** H1 passes twice: the blend beats the best single member on
-  RMSE and on CRPS at 5 of 5 leads each, every interval excluding zero.
-  H2 fails: the multi-source combiner is significantly **worse** than either
-  single-source EMOS on CRPS at every lead. Calibrating one good source
-  appears to capture what the mixture adds, and more.
-- **Extremes are the open problem.** GraphCast detects no 115.6 mm event at
-  any lead, and no source detects any 204.5 mm event. RMSE and warning skill
+- **The blend beats a single ensemble member, and the best single-source
+  calibration only at short leads.** H1 passes twice: the blend beats the best
+  single member on RMSE and on CRPS at 5 of 5 leads each, every interval
+  excluding zero. H2 is unproven: the multi-source combiner beats EMOS-IFS on
+  CRPS at every lead, significantly, but the best single-source EMOS
+  (GraphCast) only at 24–72 h, significantly only at 24 h (by 0.035 mm), and
+  is level with it at 96–120 h. Calibrating one good source captures most,
+  not all, of what the mixture adds.
+- **Combining the two calibrations does help.** Averaging the EMOS-CSG and BMA
+  quantile functions beats both at every lead (H10 passes, 5 of 5), by
+  0.01–0.05 mm of daily CRPS.
+- **Extremes are the open problem.** GraphCast detects 6% of 115.6 mm events
+  at 24 h and under 1% by 96 h, and only HRES detects any 204.5 mm event past
+  day 1 (1–4%) -- while being the worst source on RMSE. RMSE and warning skill
   point in opposite directions.
 - **A regime-conditioned tier was tested and rejected** against
   pre-declared criteria, and the no-go is documented.
-- **Two seasons, 244 test days** (122 × 2 folds), so comparisons now have
-  meaningful confidence intervals.
+- **Two seasons, 234–242 test days per lead** (about 120 per fold), so
+  comparisons now have meaningful confidence intervals. All numbers are on the
+  corrected forecast-observation day pairing (#106).
 
 Numbers, method and caveats:
 [v2 evidence base](docs/v2-evidence-base-results.md),
