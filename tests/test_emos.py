@@ -8,6 +8,7 @@ from weavr.emos import (
     MIN_TRAIN_DAYS_PER_BIN,
     CensoredShiftedGammaResult,
     csgd_crps,
+    csgd_twcrps,
     exceedance_probability_csgd,
     fit_emos_csg,
     predict_csgd_params,
@@ -118,6 +119,24 @@ class TestCsgdCrpsHandlesNonPositiveMean:
 
         assert result >= 0.0
         assert result < 5.0
+
+
+class TestCsgdCrpsHandlesVanishingShape:
+    # Regression test for a real bug caught on the #106 regeneration: the dry
+    # bin at 120 h, 2020 fold, fitted a CSGD with kappa ~1e-8 and theta ~4e8.
+    # `_gamma_cdf`/`beta_fn` clipped the shape at `_TINY` while the rest of
+    # the formula used the raw kappa, the result lost every digit, and the
+    # final clip returned 0.0 for every cell -- so the fit "won" with a
+    # perfect score. Such a CSGD is essentially a point mass at zero, whose
+    # CRPS is the observation itself.
+    @pytest.mark.parametrize("y", [2.53, 12.16, 40.0])
+    def test_real_degenerate_fit_scores_about_the_observation(self, y):
+        # The predictive mean/std of a real cell under that fit.
+        mean, std, shift = 0.8765, 18330.0, 0.0
+
+        result = csgd_crps(mean, std, shift, y)
+
+        assert result == pytest.approx(y, rel=1e-3)
 
 
 def _synthetic_ensemble(rng: np.random.Generator, n_sample: int, n_space: int, n_member: int):
@@ -390,3 +409,65 @@ class TestExceedanceProbabilityCsgd:
             for m, s, sh in zip(mean, std, shift, strict=True)
         ]
         np.testing.assert_allclose(result, scalar_results)
+
+
+def _numerical_twcrps(mean: float, std: float, shift: float, y: float, t: float) -> float:
+    """Brute-force `int_t^inf (F(z) - 1{y <= z})^2 dz`, split at `y`."""
+    upper = max(y, t, mean) + 60 * (std + 1)
+
+    def f2(z: float) -> float:
+        return _csgd_cdf(np.array([z]), mean, std, shift)[0] ** 2
+
+    def g2(z: float) -> float:
+        return (_csgd_cdf(np.array([z]), mean, std, shift)[0] - 1) ** 2
+
+    split = max(y, t)
+    below = integrate.quad(f2, t, split, limit=200)[0] if split > t else 0.0
+    above = integrate.quad(g2, split, upper, limit=400)[0]
+    return below + above
+
+
+class TestCsgdTwcrps:
+    @pytest.mark.parametrize(
+        "mean,std,shift,y,t",
+        [
+            (5.0, 3.0, -1.0, 0.0, 64.5),      # dry day, little mass above t
+            (20.0, 15.0, -5.0, 30.0, 64.5),   # wet day, observation below t
+            (40.0, 35.0, -3.0, 120.0, 64.5),  # heavy day, observation above t
+            (60.0, 50.0, -2.0, 70.0, 115.6),
+            (1.0, 1.0, -0.1, 0.5, 7.5),
+            (50.0, 10.0, -2.0, 60.0, 7.5),
+        ],
+    )
+    def test_matches_brute_force_integral(self, mean, std, shift, y, t):
+        assert csgd_twcrps(mean, std, shift, y, t) == pytest.approx(
+            _numerical_twcrps(mean, std, shift, y, t), abs=1e-4
+        )
+
+    def test_threshold_zero_is_the_plain_crps(self):
+        mean = np.array([5.0, 20.0, 1.0])
+        std = np.array([3.0, 15.0, 1.0])
+        shift = np.array([-1.0, -5.0, -0.1])
+        y = np.array([0.0, 30.0, 0.5])
+        np.testing.assert_allclose(
+            csgd_twcrps(mean, std, shift, y, 0.0), csgd_crps(mean, std, shift, y), rtol=1e-12
+        )
+
+    def test_matches_the_ensemble_identity_on_a_large_sample(self):
+        from weavr.verify import twcrps_ensemble
+
+        mean, std, shift, y, t = 30.0, 28.0, -4.0, 80.0, 64.5
+        kappa, theta = mean**2 / std**2, std**2 / mean
+        draws = np.clip(
+            np.random.default_rng(0).gamma(kappa, theta, 400_000) + shift, 0.0, None
+        )
+        sampled = float(
+            twcrps_ensemble(
+                xr.DataArray(draws, dims="member"), xr.DataArray(y), t, member_dim="member"
+            )
+        )
+        assert csgd_twcrps(mean, std, shift, y, t) == pytest.approx(sampled, rel=0.01)
+
+    def test_rejects_a_negative_threshold(self):
+        with pytest.raises(ValueError):
+            csgd_twcrps(5.0, 3.0, -1.0, 2.0, -1.0)

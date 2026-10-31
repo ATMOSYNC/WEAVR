@@ -305,3 +305,24 @@ def apply_regional_quantile_maps(
         attrs=forecast.attrs,
         name=forecast.name,
     )
+
+
+def climatology_excluding_years(
+    climatology: xr.DataArray,
+    held_out_times: np.ndarray,
+    time_dim: str = "time",
+) -> xr.DataArray:
+    """The climatology with every day in a held-out year removed.
+
+    The IMD JJAS climatology spans 2006-2020, so it contains both LOYO test
+    seasons. Used whole as a quantile-map reference, it puts the test year's
+    own observations inside the map that is then scored against them. Dropping
+    those years keeps the `climatology` variant on the same side of the
+    cross-validation boundary as `same_period`, which fits on training days only.
+    """
+    held_out_years = np.unique(np.asarray(held_out_times, dtype="datetime64[Y]"))
+    years = climatology[time_dim].values.astype("datetime64[Y]")
+    keep = ~np.isin(years, held_out_years)
+    if not keep.any():
+        raise ValueError("every climatology year is held out; no reference remains")
+    return climatology.isel({time_dim: keep})

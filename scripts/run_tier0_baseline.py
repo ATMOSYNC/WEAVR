@@ -65,7 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_seeps_climatology import load_climatology  # noqa: E402
 
 from weavr import verify as V  # noqa: E402
-from weavr.grid import IMD_DAY_START_HOUR_UTC  # noqa: E402
+from weavr.grid import imd_day_for  # noqa: E402
 from weavr.score_io import (  # noqa: E402
     FORCE_HELP,
     PerDayScoreWriter,
@@ -86,15 +86,14 @@ NEIGHBORHOOD_SIZE = 5  # grid cells (~1.25 deg edge) -- a representative mesosca
 def _align_to_imd_day(da: xr.DataArray, lead_hours: int) -> xr.DataArray:
     """Reindex a forecast DataArray from init_time to the IMD day its lead validates on.
 
-    valid_time = init_time + lead_hours; the IMD day it falls in is
-    `(valid_time - 3h).normalize()` -- the same 03-03 UTC window
-    `weavr.grid.resample_to_imd_day` uses, applied here to a forecast's
-    lead-adjusted valid time instead of a continuous observation series
-    (a genuinely different problem, see docs/baseline-store.md).
+    The pairing itself is `weavr.grid.imd_day_for`, the one definition every
+    runner shares: IMD labels a day by the date its 03 UTC -> 03 UTC window
+    *ends* on, so a 24 h forecast from 00 UTC on day `t` validates on IMD day
+    `t + 1`. Applied here to a forecast's lead-adjusted valid time rather than
+    a continuous observation series (a genuinely different problem, see
+    docs/baseline-store.md).
     """
-    init_times = pd.DatetimeIndex(da["time"].values)
-    valid_time = init_times + pd.Timedelta(hours=lead_hours)
-    imd_day = (valid_time - pd.Timedelta(hours=IMD_DAY_START_HOUR_UTC)).normalize()
+    imd_day = imd_day_for(pd.DatetimeIndex(da["time"].values), lead_hours)
     return da.assign_coords(time=imd_day).rename(time="sample")
 
 

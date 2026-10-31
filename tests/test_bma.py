@@ -742,14 +742,17 @@ class TestBmaPredictiveQuantiles:
         result = self._fat_tailed_wet_result()
         mean = {"a": np.full((3,), 1.0)}
         spread = {"a": None}
-        top = bma_mixture_cdf(result, mean, spread, BMA_CRPS_GRID_MM[-1:])[0, 0]
+        # A grid ending at 100 m (the default reaches 216 m, past every level of
+        # this fixture), so some levels lie beyond it and take the bisection path.
+        grid = BMA_CRPS_GRID_MM[BMA_CRPS_GRID_MM <= 1e5]
+        top = bma_mixture_cdf(result, mean, spread, grid[-1:])[0, 0]
         beyond = self.LEVELS > top
         assert beyond.any(), "the fixture must leave some levels above the grid"
 
-        q = bma_predictive_quantiles(result, mean, spread, self.LEVELS)
+        q = bma_predictive_quantiles(result, mean, spread, self.LEVELS, grid=grid)
 
         # Above the grid top, and exactly at the requested level.
-        assert np.all(q[:, beyond] > BMA_CRPS_GRID_MM[-1])
+        assert np.all(q[:, beyond] > grid[-1])
         achieved = bma_mixture_cdf(result, mean, spread, q)
         assert np.allclose(achieved[:, beyond], self.LEVELS[beyond], atol=1e-9)
         # Bounded by the distribution itself: no quantile of a cube-root gamma
@@ -825,3 +828,76 @@ class TestNearDegenerateVarianceKeepsTheDistributionWhereItIs:
         )
         assert variance[0] == pytest.approx(component.min_variance_ct)
         assert component.min_variance_ct > 1e-3
+
+
+class TestBmaCrpsAccuracy:
+    """`bma_crps` against adaptive quadrature of the same mixture CDF.
+
+    Integrated in `u = v**(1/3)`, where the CDF is smooth, so `quad` is a
+    trustworthy reference. Both 31 Oct defects fail here on the old code: the
+    observation's grid interval was counted twice in `int (1 - F)^2`, and the
+    1 mm grid could not follow the CDF's vertical rise just above zero.
+    """
+
+    @staticmethod
+    def _result(zero_intercept, mean_intercept, mean_slope, var_intercept, sources=("a",)):
+        return BmaFitResult(
+            bin_label="x", region="R1",
+            weights={s: 1.0 / len(sources) for s in sources},
+            components={
+                s: BmaComponentFit(
+                    s, "kernel_dressing", zero_intercept, 0.0, mean_intercept, mean_slope,
+                    var_intercept, 0.0, max_mean_ct=50.0,
+                )
+                for s in sources
+            },
+        )
+
+    @staticmethod
+    def _quad_crps(result, mean, y):
+        from scipy import integrate
+
+        spread = dict.fromkeys(mean, None)
+
+        def cdf(u):
+            return bma_mixture_cdf(result, mean, spread, np.array([u**3]))[0, 0]
+
+        uy = np.cbrt(y)
+        below = (
+            integrate.quad(lambda u: cdf(u) ** 2 * 3 * u * u, 0.0, uy, limit=400)[0]
+            if y > 0 else 0.0
+        )
+        above = integrate.quad(
+            lambda u: (1 - cdf(u)) ** 2 * 3 * u * u, uy, np.inf, limit=400
+        )[0]
+        return below + above
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            (0.5, 0.8, 0.0, 0.05),   # mostly dry, drizzle when wet
+            (-1.0, 1.5, 0.0, 0.2),   # light rain
+            (-3.0, 3.0, 0.0, 0.6),   # wet, fat tail
+        ],
+    )
+    @pytest.mark.parametrize("y", [0.0, 0.4, 2.0, 15.0, 120.0])
+    def test_matches_quadrature(self, params, y):
+        result = self._result(*params)
+        mean = {"a": np.array([1.0])}
+        got = bma_crps(result, mean, {"a": None}, np.array([y]))[0]
+        assert got == pytest.approx(self._quad_crps(result, mean, y), abs=2e-3)
+
+    def test_quantiles_reach_their_levels(self):
+        """Inverted in cube root, `F(Q(tau))` is `tau` to 1e-3 above the point mass."""
+        result = self._result(-1.0, 1.5, 0.0, 0.2)
+        mean = {"a": np.full((2,), 1.0)}
+        spread = {"a": None}
+        levels = np.linspace(0.01, 0.99, 99)
+        q = bma_predictive_quantiles(result, mean, spread, levels)
+        achieved = bma_mixture_cdf(result, mean, spread, q)
+        p0 = bma_mixture_cdf(result, mean, spread, np.zeros(1))[:, 0]
+        above = levels[None, :] > p0[:, None] + 1e-6
+        assert above.any()
+        np.testing.assert_allclose(
+            achieved[above], np.broadcast_to(levels, achieved.shape)[above], atol=1e-3
+        )
