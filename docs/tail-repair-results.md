@@ -1,5 +1,17 @@
 # Tail Repair Results: Part 1 — Quantile Mapping
 
+> **31 October: every Brier and Brier-skill number below was rescored, and H7's QM
+> verdict changes from PASS to FAIL.** The shared per-day scorer counted grid cells
+> with no IMD observation (sea, outside India) as correctly forecast non-events
+> (`docs/v2-evidence-base-results.md` §7, F8). Scored only where IMD observes, QM
+> makes Brier at 7.5 mm significantly worse at 24 and 48 h for both variants, which
+> fails H7's pre-registered non-inferiority guard (§4.1). The EVT arm's Brier is
+> now level with its control at every lead, and both calibrated arms beat
+> climatology on Brier at 115.6 mm (§4, §4a). SEDI in §4 and §4a is affected by a
+> separate defect (misses and false alarms swapped in `expected_counts`) and is
+> re-measured in the step 11 and step 12 PRs (#73, #74), which also rewrite this
+> document.
+
 ## 1. Overview and Problem Statement
 
 AI numerical weather prediction models (GraphCast, AIFS, GenCast) produce spatially coherent forecasts but suffer from severe intensity attenuation in extreme precipitation regimes. As documented in the WEAVR audit:
@@ -53,15 +65,15 @@ On the corrected pairing (#106) both verdicts stand. Every effect is in the same
 
 | variant | tw-CRPS@64.5 Δ | SEDI@115.6 Δ | Brier@7.5 degraded | RMSE Δ | **H7** |
 |---|---|---|---|---|---|
-| `same_period` | +0.421 … +0.513 (all 5 leads **worse**, CI excludes 0) | −0.160 … −0.279 (**improved**, all 5 leads) | no | +3.62 … +4.36 mm | **PASS** (SEDI branch) |
-| `climatology` | +0.630 … +0.751 (all 5 leads **worse**, CI excludes 0) | −0.185 … −0.296 (**improved**, all 5 leads) | no | +5.28 … +6.22 mm | **PASS** (SEDI branch) |
+| `same_period` | +0.421 … +0.513 (all 5 leads **worse**, CI excludes 0) | −0.160 … −0.279 (**improved**, all 5 leads) | **yes, at 24 and 48 h** (+0.0062, +0.0034) | +3.62 … +4.36 mm | **FAIL** (guard) |
+| `climatology` | +0.630 … +0.751 (all 5 leads **worse**, CI excludes 0) | −0.185 … −0.296 (**improved**, all 5 leads) | **yes, at 24 and 48 h** (+0.0071, +0.0059) | +5.28 … +6.22 mm | **FAIL** (guard) |
 
-**H7 (QM part) passes for both variants, but only through the SEDI branch — and it is not free.**
+**H7 (QM part) fails for both variants, on the non-inferiority guard.** The improvement leg holds through SEDI; the guard does not. Until 31 October this section read PASS, on Brier scores that counted the unobserved cells (see the note at the top).
 
 - The improvement comes entirely from SEDI@115.6 mm: 5/5 leads improve with the CI excluding 0, for both variants. The pass threshold is ≥3/5.
 - tw-CRPS@64.5 mm moves the **wrong way at every lead**, significantly (CIs exclude 0): QM sharpens the extreme tail at the cost of the threshold-weighted score it was supposed to help.
 - RMSE increases significantly at every lead, by roughly **+3.6 to +4.4 mm** (`same_period`) and **+5.3 to +6.2 mm** (`climatology`). The `climatology` variant pays roughly 1.7 mm more than `same_period`.
-- Brier@7.5 mm does **not** degrade for either variant, so the pre-registered non-inferiority guard is satisfied and the pass is not the artifact of a light-rain forecast being wrecked.
+- Brier@7.5 mm is **significantly worse at 24 and 48 h for both variants** (`same_period` +0.0062 and +0.0034, `climatology` +0.0071 and +0.0059; every interval above 0), and worse but not significantly at 72–120 h (+0.0011 … +0.0046). The guard needs no lead with the interval wholly on the worse side, so it fails. This is exactly the failure the guard exists to catch: the tail gain comes with a worse light-rain forecast. Before the rescoring the same comparison read −0.020 … +0.002, apparently an improvement, because both arms were credited with thousands of correctly forecast dry sea cells per day.
 
 **Out-of-sample climatology (correction).** The `climatology` reference is described above as excluding the test season, but until this revision the runner passed the full 2006–2020 climatology, which contains both LOYO test seasons — so each fold's quantile map had seen the observations it was scored against. It now drops every held-out year (`weavr.quantile_mapping.climatology_excluding_years`). Re-measured before #106, the effect was in the third decimal (tw-CRPS +0.698 → +0.699 and SEDI −0.136 → −0.135 at the edge of their ranges; RMSE unchanged at the precision quoted) and **both verdicts stand**. `same_period` never used the climatology and is byte-identical.
 
@@ -214,8 +226,8 @@ LOYO over both daily seasons, `csgd_only` (point-mass control) vs `csgd_gpd_tail
 
 | threshold | false-zero cell-days, control → EVT | Brier improved | SEDI improved |
 |---|---|---|---|
-| 115.6 mm | 193 → **0** | 3/5 leads | **0/5 leads** (worse at 5/5) |
-| 204.5 mm | 193 → **0** | 2/5 leads | **0/5 leads** (worse at 5/5) |
+| 115.6 mm | 193 → **0** | 0/5 leads (level at 5/5) | **0/5 leads** (worse at 5/5) |
+| 204.5 mm | 193 → **0** | 0/5 leads (level at 5/5) | **0/5 leads** (worse at 5/5) |
 
 The 193 is a total over all five leads and both folds. The control's false zeros are not spread evenly: the 2018 fold has none at any lead, and the 2020 fold has 1 at 24 h, **116 at 96 h** and 76 at 120 h. Every bin fits in every fold and lead here (`fallback bins unfitted: []` throughout), so these are cells where the fitted CSGD's exceedance probability is exactly 0, not unfitted bins. The count and its split are the same before and after #106.
 
@@ -223,7 +235,7 @@ The 193 is a total over all five leads and both folds. The control's false zeros
 
 - Every cell-day that got a hard 0.0 now receives a real spliced probability, at both thresholds.
 - SEDI is **worse at 5/5 leads** at both thresholds, every CI excluding 0: by 0.073–0.092 at 115.6 mm and 0.121–0.163 at 204.5 mm. §4b shows why.
-- Brier improves significantly at 3 of 5 leads at 115.6 mm (24, 48 and 72 h) and 2 of 5 at 204.5 mm (96 and 120 h). The rest are neutral; none is significantly worse.
+- Brier is level with the control at every lead and both thresholds: no interval excludes 0 (largest difference +0.00003 at 115.6 mm). Before the 31 October rescoring this read as a significant improvement at 3 of 5 leads (115.6 mm) and 2 of 5 (204.5 mm); that came from the unobserved cells.
 - **H7 is not met by the EVT arm on its own.** The improvement leg fails (0/5 on SEDI). The tw-CRPS leg is not measured, because the EVT arm produces an exceedance probability rather than a full predictive distribution. The zero-elimination result stands on its own and is what unblocks the dashboard fallback mask.
 
 ---
@@ -234,8 +246,8 @@ The 193 is a total over all five leads and both folds. The control's false zeros
 
 | arm | false-zero cell-days per lead-fold, @115.6 | @204.5 | BSS @115.6 | BSS @204.5 | SEDI @115.6 | SEDI @204.5 |
 |---|---|---|---|---|---|---|
-| `csgd_only` (point-mass control) | 0–116 | 0–116 | −0.044 | −0.020 | 0.321 | 0.319 |
-| `csgd_gpd_tail` (spliced EVT) | **0** | **0** | **−0.018** | **−0.007** | 0.238 | 0.181 |
+| `csgd_only` (point-mass control) | 0–116 | 0–116 | **+0.033** | **+0.003** | 0.321 | 0.319 |
+| `csgd_gpd_tail` (spliced EVT) | **0** | **0** | +0.028 | −0.000 | 0.238 | 0.181 |
 | `raw_ifs_ens_member_counting` | **1.96–2.07 million** | **2.02–2.10 million** | −0.284 | −0.255 | 0.333 | 0.256 |
 
 Each lead-fold cell scores 2.04–2.11 million grid cell-days (the full 129×135 grid, sea included, times 117–121 days), so **raw member counting assigns probability exactly 0.0 to almost every cell-day**. With 50 members an exceedance at 115.6 or 204.5 mm needs at least one member to clear the bar, which almost never happens at a daily accumulation that size. (An earlier version of this table gave 2,087,404 as if it were a total; it is one lead-fold cell, and the benchmark rows were also written four times over -- see the runner fix in this branch.) Its Brier skill is negative and far worse than either calibrated arm.
@@ -244,10 +256,10 @@ So the tail is not merely better than member counting on Brier: it is the **only
 
 **What the benchmark does not rescue:**
 
-- The tail is **still worse than climatology** on Brier at both thresholds (BSS −0.018 and −0.007). Being the least-bad probabilistic forecast is not the same as being a good one.
+- The tail **does not beat its own control** on Brier skill: +0.028 against +0.033 at 115.6 mm, about 0 for both at 204.5 mm. Both calibrated arms now beat climatology at 115.6 mm (an earlier version said the tail was still worse than climatology, BSS −0.018 and −0.007; that was before the 31 October rescoring). The benchmark row's BSS (−0.284, −0.255) still scores sea cells and is re-measured in #74.
 - Its SEDI is the **worst** of the three arms at both thresholds (0.238 at 115.6 mm against 0.321 and 0.333; 0.181 at 204.5 mm against 0.319 and 0.256).
 
-Net: the tail is the only arm that gives a non-degenerate probability at these thresholds, and it beats raw member counting on Brier. It still loses to climatology, costs SEDI, and over-forecasts (§4b).
+Net: the tail is the only arm that gives a non-degenerate probability at these thresholds. On Brier skill it is level with the control (both ahead of climatology at 115.6 mm); it costs SEDI and over-forecasts (§4b).
 
 ---
 
@@ -307,7 +319,7 @@ python scripts/diagnose_evt_tail.py --results-dir results --force   # §2 thresh
 
 ## 5. Honest Limitations
 
-- **Day alignment (#106) — resolved.** Every number in this document is measured on the corrected forecast-observation pairing. No verdict moved: H7 (QM) still passes on SEDI only, QM still hurts EMOS-CSG, and the EVT arm still removes every false zero while costing SEDI and over-forecasting about 3×.
+- **Day alignment (#106) — resolved.** Every number in this document is measured on the corrected forecast-observation pairing. No verdict moved then: H7 (QM) still passed on SEDI only (it fails since the 31 October rescoring, §4.1), QM still hurts EMOS-CSG, and the EVT arm still removes every false zero while costing SEDI and over-forecasting about 3×.
 - **Climatological Conditioning**: The GPD excess distribution describes the regional climatological tail behavior above $u$. Conditioning on the specific forecast lead and meteorological forcing enters solely through the splice anchor $P_{\text{CSGD}}(Y > u)$.
 - **Confidence Intervals**: Exceedance events $\ge 204.5\text{ mm}$ remain statistically rare (about 150 cell-days per season across the whole grid), resulting in wide paired-bootstrap confidence intervals for the uppermost thresholds.
 

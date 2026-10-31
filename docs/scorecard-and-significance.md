@@ -197,6 +197,12 @@ two verdicts) are **NOT_YET_TESTED**, each naming what is missing:
 | H10 | NOT_YET_TESTED | Step 13 |
 | H11 | NOT_YET_TESTED | Step 21 |
 
+(That table is the state before step 07. For the current verdicts see
+`docs/v2-evidence-base-results.md` §3.) A claim registered with more than one
+condition is judged leg by leg: H3 is written as `H3-Brier` and `H3-SEDI`, each
+under the default rule, then as `H3`, which passes only if every leg passes
+(`_verdicts_with_legs`; until 31 October the ledger read H3's Brier leg alone).
+
 The verdict writer refuses to run if a claim it implements has no section in
 `docs/preregistration.md` — the doc is the source of truth, and an
 unregistered claim must not be able to masquerade as a registered one.
@@ -283,9 +289,10 @@ whole season daily. Every RMSE in this file improved or worsened for sampling
 reasons before any method changed.
 
 Headline v2 findings: **H1 passes** (the blend beats the best single member on
-RMSE and on CRPS at 5 of 5 leads each, every interval excluding zero),
-**H2 fails** against EMOS-GraphCast (the multi-source combiner is significantly
-worse on CRPS at every lead) and is unproven against EMOS-IFS (better at
-72-120 h, significantly only at 96 and 120 h). **H3 fails** (Brier skill against
-climatology is about -2.4 at 64.5 mm, and SEDI at 64.5 mm is no better than the
-best member's and significantly worse at 24 h).
+RMSE and on CRPS at 5 of 5 leads each, every interval excluding zero), **H2
+passes** against EMOS-IFS (better on CRPS at 5 of 5 leads, significantly at 5)
+and is unproven against EMOS-GraphCast (better on CRPS at 24, 48 and 72 h,
+significantly only at 24 h). **H3 fails** on its SEDI leg (its Brier leg
+passes): Brier skill against climatology at 64.5 mm is +0.07 to +0.10 across the
+leads, the interval excluding zero at 5 of 5, while SEDI at 64.5 mm beats the
+best member's at 2 of 5 leads and is significantly worse at 24 h.

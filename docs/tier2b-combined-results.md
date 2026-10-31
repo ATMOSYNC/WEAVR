@@ -40,6 +40,21 @@ To evaluate quantile-averaged predictive distributions without closed forms, `cr
 $$\text{CRPS}(F, y) = 2 \int_0^1 (y - q(\tau)) \cdot (\tau - \mathbb{I}(y < q(\tau))) \, d\tau$$
 Verified against closed-form `csgd_crps` with $< 1.5\%$ relative error across all test conditions in `tests/test_stacking.py`.
 
+**What the 99 levels leave out, measured (31 Oct).** The runner uses 99 levels,
+0.01 to 0.99 (`DEFAULT_QUANTILE_LEVELS`); the test above checks 199 levels from
+0.005, so it does not cover the runner's own grid. Leaving out the two 1% tails
+makes every arm read low. On the same days and cells, against the exact CRPS
+that Tier 2 computes for the same fits, the 99-level CRPS is lower by 0.0084–
+0.0090 mm for EMOS-CSG and 0.0090–0.0099 mm for BMA, depending on lead; the two
+differ by at most 0.0010 mm at any lead. Can the omission flatter a
+combination over a parent? Per cell, by at most the gap between the two
+parents' omissions: the pinball loss is convex, so a quantile average omits no
+more than the weighted mean of what its parents omit. Pooled, that gap is at
+most 0.0010 mm, about a tenth of H10's smallest margin (0.0094 mm, 24 h vs
+`bma`). That is reassurance, not a bound, because cell-level gaps can be larger
+than their mean. The bound needs an exact CRPS for the combinations, which is
+not implemented.
+
 ---
 
 ## 3a. Measured Results
@@ -55,22 +70,22 @@ arms use 0.5). Results: `results/tier2b_combined.csv`, `_paired.csv`,
 
 | arm | pooled CRPS (mm) | PIT mean | role |
 |---|---|---|---|
-| `quantile_avg_fixed` (w=0.5) | **4.2024** | 0.494 | combination |
-| `linear_pool` | 4.2024 | 0.494 | comparison only |
-| `quantile_avg` (w fitted on train) | 4.2040 | 0.494 | combination |
-| `per_bin` | 4.2134 | 0.500 | combination |
-| `bma` | 4.2194 | 0.499 | parent |
+| `quantile_avg_fixed` (w=0.5) | **4.2023** | 0.494 | combination |
+| `linear_pool` | **4.2024** | 0.494 | comparison only |
+| `quantile_avg` (w fitted on train) | 4.2039 | 0.495 | combination |
+| `per_bin` | 4.2134 | 0.501 | combination |
+| `bma` | 4.2193 | 0.500 | parent |
 | `emos_csg` | 4.2288 | 0.499 | parent |
 
 Brier score by IMD threshold (cell-weighted, lower is better):
 
 | arm | 7.5 mm | 35.5 mm | 64.5 mm | 115.6 mm | 204.5 mm |
 |---|---|---|---|---|---|
-| `quantile_avg_fixed` | 0.12978 | **0.03660** | 0.01191 | 0.00255 | 0.00027 |
-| `linear_pool` | 0.12976 | 0.03663 | **0.01190** | **0.00254** | 0.00027 |
+| `quantile_avg_fixed` | 0.12978 | **0.03660** | 0.01191 | 0.00255 | **0.00027** |
+| `linear_pool` | 0.12976 | 0.03663 | **0.01190** | 0.00254 | 0.00027 |
 | `quantile_avg` | **0.12975** | 0.03664 | 0.01192 | 0.00255 | 0.00027 |
-| `per_bin` | 0.13010 | 0.03672 | 0.01191 | 0.00254 | 0.00027 |
-| `bma` | 0.13020 | 0.03678 | 0.01195 | 0.00255 | 0.00027 |
+| `per_bin` | 0.13010 | 0.03672 | 0.01191 | **0.00254** | 0.00027 |
+| `bma` | 0.13021 | 0.03678 | 0.01195 | 0.00255 | 0.00027 |
 | `emos_csg` | 0.13033 | 0.03693 | 0.01200 | 0.00257 | 0.00027 |
 
 The Brier spread across arms is small -- the fifth decimal at 204.5 mm, the
@@ -98,6 +113,15 @@ the run before used BMA quantiles from a library with two defects, fixed on
 #102 (a variance floor compounded by an independent `theta` clip, and Monte
 Carlo quantiles), which put BMA at 4.5918 mm.
 
+**31 October: BMA's quantiles are now inverted in cube root.** The mixture CDF
+rises steeply just above 0 mm, and interpolating it linearly in mm on a 1 mm
+grid misplaced the low quantiles. The same grid, with a double count, made
+Tier 2's exact BMA CRPS read 0.175–0.182 mm high
+(`docs/v2-evidence-base-results.md` §7, F5). The grid is now
+even in the cube root of rainfall. BMA's pooled CRPS moves by −0.00013 mm,
+every combination by less than 0.0001 mm, `emos_csg` not at all, and H10 is
+unchanged at 5 of 5. The tables above are from that run.
+
 ---
 
 ## 4. Pre-registered Hypothesis H10
@@ -115,15 +139,15 @@ paired moving-block bootstrap over both seasons (234–242 test days per lead):
 
 | lead | nominated | vs `emos_csg` | vs `bma` | both? |
 |---|---|---|---|---|
-| 24 h | `per_bin` | −0.0453 CI[−0.0654, −0.0262] | −0.0094 CI[−0.0168, −0.0034] | **pass** |
-| 48 h | `quantile_avg` | −0.0265 CI[−0.0392, −0.0141] | −0.0141 CI[−0.0218, −0.0070] | **pass** |
-| 72 h | `quantile_avg` | −0.0192 CI[−0.0311, −0.0085] | −0.0174 CI[−0.0262, −0.0095] | **pass** |
-| 96 h | `quantile_avg` | −0.0141 CI[−0.0293, −0.0012] | −0.0182 CI[−0.0290, −0.0086] | **pass** |
-| 120 h | `quantile_avg` | −0.0166 CI[−0.0339, −0.0007] | −0.0162 CI[−0.0257, −0.0080] | **pass** |
+| 24 h | `per_bin` | −0.0454 CI[−0.0655, −0.0263] | −0.0094 CI[−0.0168, −0.0034] | **pass** |
+| 48 h | `quantile_avg` | −0.0266 CI[−0.0393, −0.0141] | −0.0140 CI[−0.0218, −0.0069] | **pass** |
+| 72 h | `quantile_avg` | −0.0193 CI[−0.0311, −0.0086] | −0.0173 CI[−0.0261, −0.0094] | **pass** |
+| 96 h | `quantile_avg` | −0.0141 CI[−0.0293, −0.0012] | −0.0181 CI[−0.0290, −0.0085] | **pass** |
+| 120 h | `quantile_avg` | −0.0167 CI[−0.0339, −0.0007] | −0.0161 CI[−0.0256, −0.0080] | **pass** |
 
 **5 of 5 leads beat both parents, above the pre-registered 3. H10 passes as
 registered.** The nomination margins on train are small: `per_bin` leads
-`quantile_avg` by 0.0016 mm at 24 h, and trails it by 0.0024–0.0056 mm at
+`quantile_avg` by 0.0016 mm at 24 h, and trails it by 0.0024–0.0057 mm at
 48–120 h.
 
 Every arm is reported separately, so the verdict on the nominated arm cannot
@@ -132,7 +156,7 @@ hide how the others did:
 | arm | leads where it beat **both** parents |
 |---|---|
 | `quantile_avg` (weight fitted on train, 0.65–0.80 towards BMA) | **5 / 5** |
-| `quantile_avg_fixed` (w=0.5, the pre-registered weight) | **4 / 5** (not 24 h vs `bma`: −0.0105, CI[−0.0231, +0.0020]) |
+| `quantile_avg_fixed` (w=0.5, the pre-registered weight) | **4 / 5** (not 24 h vs `bma`: −0.0105, CI[−0.0232, +0.0022]) |
 | `linear_pool` | **4 / 5** (comparison only; not 24 h vs `bma`) |
 | `per_bin` | **2 / 5** (24 and 48 h; at 72–120 h it never separates from `emos_csg`) |
 

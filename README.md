@@ -193,13 +193,14 @@ daily cadence, leave-one-year-out:
   correlate at 0.72–0.87 on the daily two-season base, which is why plain
   averaging fails and why adding a genuinely different source matters more
   than re-weighting.
-- **The blend beats a single ensemble member, but not a single-source
-  calibration.** H1 passes twice: the blend beats the best single member on
-  RMSE and on CRPS at 5 of 5 leads each, every interval excluding zero.
-  H2 fails: the multi-source combiner is significantly **worse** than the
-  best single-source EMOS (GraphCast) on CRPS at every lead; against EMOS-IFS
-  it is better at 72–120 h but significant only at 96 and 120 h. Calibrating
-  one good source appears to capture most of what the mixture adds.
+- **The blend beats a single ensemble member, and the best single-source
+  calibration only at short leads.** H1 passes twice: the blend beats the best
+  single member on RMSE and on CRPS at 5 of 5 leads each, every interval
+  excluding zero. H2 is unproven: the multi-source combiner beats EMOS-IFS on
+  CRPS at every lead, significantly, but the best single-source EMOS
+  (GraphCast) only at 24–72 h, significantly only at 24 h (by 0.035 mm), and
+  is level with it at 96–120 h. Calibrating one good source captures most,
+  not all, of what the mixture adds.
 - **Combining the two calibrations does help.** Averaging the EMOS-CSG and BMA
   quantile functions beats both at every lead (H10 passes, 5 of 5), by
   0.01–0.05 mm of daily CRPS.

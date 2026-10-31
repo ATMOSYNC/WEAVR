@@ -38,25 +38,30 @@ scripts/gate_step07_results.py                 # evidence-base validator
 |---|---|
 | Tiers regenerated | 0, 1, 2, 3, single-source, Phase 2, independence, daily verification |
 | Test days per lead | 242 / 240 / 238 / 236 / 234 (leads 24→120h) |
-| Scorecard comparisons | 6342, 66.6% significant (now including steps 11–13's methods) |
+| Scorecard comparisons | 6342, 62.7% significant (now including steps 11–13's methods) |
 | Degenerate bootstraps | **0** |
-| Verdicts reached | **5** of 12 registered claims: H1 PASS x2, H2 FAIL (vs EMOS-GraphCast) / INSUFFICIENT_DATA (vs EMOS-IFS), H3 FAIL |
+| Verdicts reached | **5** of 12 registered claims: H1 PASS x2, H2 PASS (vs EMOS-IFS) / INSUFFICIENT_DATA (vs EMOS-GraphCast), H3 FAIL (Brier leg PASS, SEDI leg FAIL) |
 
-**All three headline claims are decided; H1 passes and H3 fails, and H2 fails
-against one comparator and is unproven against the other.** H1 passes twice
+**All three headline claims are decided: H1 passes, H2 is unproven against the
+best single-source EMOS, and H3 fails on one of its two legs.** H1 passes twice
 over: the blend beats the best single ensemble member on RMSE and on CRPS at 5
-of 5 leads each. H2 fails against EMOS-GraphCast, which beats the multi-source
-combiner significantly at every lead. Against EMOS-IFS, BMA is worse at 24 and
-48 h but better at 72–120 h, significantly so at only 96 and 120 h, so the rule
-records it as unproven rather than failed. H3 fails on its Brier leg: at 64.5 mm the
-blend's Brier is 3.4× worse than climatology (BSS −2.4, where the claim needs
-> 0). Its SEDI leg is mixed: worse than the best member at 64.5 mm at 3 of 5
-leads, but significantly so only at 24 h.
+of 5 leads each. H2 passes against EMOS-IFS (BMA better on CRPS at every lead,
+every interval excluding 0) but not against EMOS-GraphCast, the best
+single-source EMOS: BMA is better at 24–72 h, significantly only at 24 h
+(0.035 mm), and level at 96–120 h, so the rule records it as unproven rather
+than failed. H3's Brier leg passes (BSS +0.07 to +0.10 against climatology at
+64.5 mm, every interval excluding 0); its SEDI leg fails (better than the best
+member at 64.5 mm at only 2 of 5 leads, significantly worse at 24 h).
 
-So the blend is better than a single raw member (H1), worse than the best
-single-source calibration (H2), and worse than climatology on heavy-rain
-probability (H3). The declared headline, `tier2_bma`, is still behind
-EMOS-GraphCast on both probabilistic claims it was declared to win.
+So the blend is better than a single raw member (H1), level with or slightly
+better than the best single-source calibration (H2), and has real Brier skill
+on heavy-rain probability without the better event detection H3 also asks for.
+
+**Three of these verdicts moved on 31 October** (§7, "Found on 31 October"):
+H2 against both comparators, because BMA's exact CRPS read 0.175–0.182 mm high (F5),
+and H3's Brier leg, because climatology's Brier counted cells nobody observes
+(F8). The ledger now also judges H3 on both legs, as registered (F9); before,
+it read the Brier leg alone.
 
 ---
 
@@ -77,11 +82,11 @@ Pooled across both folds, from `results/tier2_hierarchical_baseline.csv`:
 
 | lead | tier0 RMSE | tier1 RMSE | EMOS-CSG CRPS | EMOS-IFS CRPS | BMA CRPS |
 |---|---|---|---|---|---|
-| 24 h | 13.22 | 12.66 | 4.139 | 4.155 | 4.279 |
-| 48 h | 13.67 | 12.80 | 4.163 | 4.285 | 4.328 |
-| 72 h | 14.07 | 12.95 | 4.199 | 4.408 | 4.376 |
-| 96 h | 14.46 | 13.21 | 4.303 | 4.547 | 4.489 |
-| 120 h | 14.64 | 13.41 | 4.389 | 4.623 | 4.572 |
+| 24 h | 13.22 | 12.66 | 4.139 | 4.155 | 4.104 |
+| 48 h | 13.67 | 12.80 | 4.163 | 4.285 | 4.151 |
+| 72 h | 14.07 | 12.95 | 4.199 | 4.408 | 4.197 |
+| 96 h | 14.46 | 13.21 | 4.303 | 4.547 | 4.308 |
+| 120 h | 14.64 | 13.41 | 4.389 | 4.623 | 4.389 |
 
 Per fold, Tier 0 RMSE is 12.78–13.81 mm on the 2018 fold and 13.65–15.42 mm
 on 2020. Tier 1 beats Tier 0 at every lead on both folds, by 0.59–1.00 mm on
@@ -110,22 +115,30 @@ every calibrated method is better at every lead, every interval excluding 0:
 
 | lead | EMOS-CSG | EMOS-IFS | BMA |
 |---|---|---|---|
-| 24 h | −0.866 | −0.849 | −0.726 |
-| 48 h | −0.854 | −0.732 | −0.689 |
-| 72 h | −0.835 | −0.625 | −0.657 |
-| 96 h | −0.741 | −0.497 | −0.556 |
-| 120 h | −0.667 | −0.434 | −0.485 |
+| 24 h | −0.866 | −0.849 | −0.901 |
+| 48 h | −0.854 | −0.732 | −0.866 |
+| 72 h | −0.835 | −0.625 | −0.836 |
+| 96 h | −0.741 | −0.497 | −0.736 |
+| 120 h | −0.667 | −0.434 | −0.667 |
 
 (CRPS difference against `climatology`, mm, pooled over both folds; negative =
-method better.) The heavy-rain *probabilities* are a different story: H3's
-Brier leg below is decisively worse than climatology at 64.5 mm and above.
+method better.) The heavy-rain *probabilities* beat it too on Brier, at 7.5,
+64.5 and 115.6 mm (H3's Brier leg, §3).
 
-**BMA sits clearly behind EMOS-GraphCast, and crosses EMOS-IFS.** 4.279
-against 4.139 mm (EMOS-CSG) and 4.155 mm (EMOS-IFS) at lead 24. EMOS-IFS
-degrades with lead about twice as fast as the other two (4.155 → 4.623 mm,
-against 4.139 → 4.389 for EMOS-GraphCast), so BMA overtakes it from 72 h on.
-EMOS-GraphCast stays ahead of BMA by 0.14–0.19 mm at every lead. Since
-`tier2_bma` is the declared headline, this directly shapes the verdicts below.
+**BMA is level with EMOS-GraphCast, ahead at the short leads, and beats
+EMOS-IFS at every lead.** 4.104 against 4.139 mm (EMOS-CSG) and 4.155 mm
+(EMOS-IFS) at lead 24. The gap to EMOS-GraphCast closes with lead: −0.035 mm
+at 24 h, −0.012 at 48 h, −0.001 at 72 h, +0.005 at 96 h and +0.000 at 120 h.
+EMOS-IFS degrades with lead about twice as fast as the other two (4.155 →
+4.623 mm, against 4.139 → 4.389 for EMOS-GraphCast and 4.104 → 4.389 for BMA).
+Since `tier2_bma` is the declared headline, this directly shapes the verdicts
+below.
+
+Until 31 October this paragraph said EMOS-GraphCast stayed ahead of BMA by
+0.14–0.19 mm at every lead. That gap was BMA's CRPS *estimator*, not BMA: the
+exact CDF integral counted the observation's grid interval twice and could not
+follow the cube-root CDF's rise at 0 mm (§7, F5). With both fixed BMA's CRPS
+falls by 0.175–0.182 mm at every lead, and no other method's CRPS moves.
 
 ## 2b. v1 vs v2, and why the columns must not simply be compared
 
@@ -140,19 +153,19 @@ EMOS-GraphCast stays ahead of BMA by 0.14–0.19 mm at every lead. Since
 
 | lead | tier0 RMSE v1 → v2 | tier1 RMSE v1 → v2 | BMA CRPS v1 → v2 |
 |---|---|---|---|
-| 24 h | 11.55 → 13.22 | 11.08 → 12.66 | 3.721 → 4.279 |
-| 48 h | 13.59 → 13.67 | 12.53 → 12.80 | 3.802 → 4.328 |
-| 72 h | 13.15 → 14.07 | 12.05 → 12.95 | 3.830 → 4.376 |
-| 96 h | 14.15 → 14.46 | 13.34 → 13.21 | 4.643 → 4.489 |
-| 120 h | 15.35 → 14.64 | 14.90 → 13.41 | 4.454 → 4.572 |
+| 24 h | 11.55 → 13.22 | 11.08 → 12.66 | 3.721 → 4.104 |
+| 48 h | 13.59 → 13.67 | 12.53 → 12.80 | 3.802 → 4.151 |
+| 72 h | 13.15 → 14.07 | 12.05 → 12.95 | 3.830 → 4.197 |
+| 96 h | 14.15 → 14.46 | 13.34 → 13.21 | 4.643 → 4.308 |
+| 120 h | 15.35 → 14.64 | 14.90 → 13.41 | 4.454 → 4.389 |
 
 **Most cells got worse, and that is not a regression.** v1 scored 4
 test days, all in the last four weeks of September
 (2020-09-07/14/21/28), on a weekly cadence. v2 scores ~120 days per fold
 across the whole season, including the early-season days that are harder to
 predict. The v1 numbers were flattered by the sample, and the v2 numbers are
-the honest ones. v2 is better at the longest leads (Tier 0 and Tier 1 at
-120 h, Tier 1 and BMA at 96 h), which is where v1's handful of test days was
+the honest ones. v2 is better at the longest leads (Tier 0 at 120 h, Tier 1
+and BMA at 96 and 120 h), which is where v1's handful of test days was
 least representative; it is not evidence that v2's methods improved there.
 
 This is why the audit in §8 says a v1-vs-v2 table must *state* the cadence
@@ -223,31 +236,39 @@ the same comparator is decided on `mae_mm`:
 
 5 of 5 leads, all intervals excluding 0.
 
-### H2 — **FAIL** against EMOS-GraphCast, **INSUFFICIENT_DATA** against EMOS-IFS
+### H2 — **PASS** against EMOS-IFS, **INSUFFICIENT_DATA** against EMOS-GraphCast
 
-The multi-source combiner does not beat the best single-source EMOS on CRPS.
-It is significantly worse than EMOS-GraphCast at every lead. Against EMOS-IFS
-it is worse at the short leads and better at the long ones.
+The multi-source combiner beats EMOS-IFS on CRPS at every lead, every interval
+excluding 0. Against EMOS-GraphCast it is better at 24, 48 and 72 h, but
+significantly so only at 24 h, and level at 96 and 120 h:
 
 | lead | vs EMOS-GraphCast | 95% CI | vs EMOS-IFS | 95% CI |
 |---|---|---|---|---|
-| 24 h | +0.1399 (BMA worse) | [+0.120, +0.162] | +0.1234 (BMA worse) | [+0.109, +0.139] |
-| 48 h | +0.1652 | [+0.146, +0.186] | +0.0430 | [+0.013, +0.066] |
-| 72 h | +0.1773 | [+0.157, +0.199] | −0.0319 (BMA better) | [−0.075, +0.003] |
-| 96 h | +0.1854 | [+0.160, +0.213] | **−0.0586** | [−0.112, −0.018] |
-| 120 h | +0.1824 | [+0.155, +0.211] | **−0.0513** | [−0.106, −0.010] |
+| 24 h | **−0.0354** | [−0.058, −0.015] | **−0.0519** | [−0.073, −0.035] |
+| 48 h | −0.0119 | [−0.031, +0.007] | **−0.1342** | [−0.170, −0.107] |
+| 72 h | −0.0012 | [−0.021, +0.017] | **−0.2104** | [−0.261, −0.169] |
+| 96 h | +0.0049 | [−0.019, +0.028] | **−0.2390** | [−0.298, −0.194] |
+| 120 h | +0.0003 | [−0.025, +0.025] | **−0.2334** | [−0.292, −0.188] |
 
-Against EMOS-GraphCast every interval excludes 0, in BMA's disfavour. Against
-EMOS-IFS, BMA is better at 3 of 5 leads but its interval excludes 0 at only 2
-(96 and 120 h), one short of the pre-registered 3, so the scorecard records
-INSUFFICIENT_DATA: unproven, not disproven.
+(`tier2_bma` minus the EMOS, mm; negative = BMA better; bold = the interval
+excludes 0.) The claim is about the *best* single-source EMOS, and that is
+EMOS-GraphCast, lower than EMOS-IFS at every lead (§2). So H2 as registered is
+**unproven, not disproven**: the direction holds at 3 of 5 leads and the
+interval excludes 0 at 1, two short of the pre-registered 3. Against EMOS-IFS
+it passes outright.
 
-**This is the one verdict #106 moved.** Before the corrected pairing, BMA was
-significantly worse than EMOS-IFS at all five leads (+0.154 → +0.085 mm). What
-changed is EMOS-IFS, not BMA: on the correct days it degrades with lead about
-twice as fast as EMOS-GraphCast or BMA (§2). It does not move the claim, which is
-about the *best* single-source EMOS. That is EMOS-GraphCast, and BMA fails
-against it decisively.
+**Both rows moved on 31 October, and not because BMA changed.** Until then this
+section read FAIL against EMOS-GraphCast (BMA worse by 0.14–0.19 mm, every
+interval excluding 0) and INSUFFICIENT_DATA against EMOS-IFS. The difference
+is BMA's CRPS estimator, which over-read by 0.175–0.182 mm (§7, F5). Both EMOS
+CRPS columns are identical before and after, and so is BMA's predictive mean,
+so H1 does not move.
+
+**#106 had moved the EMOS-IFS row once before.** Before the corrected pairing,
+BMA read significantly worse than EMOS-IFS at all five leads (+0.154 → +0.085
+mm, with the same estimator over-read). What changed then was EMOS-IFS: on the
+correct days it degrades with lead about twice as fast as EMOS-GraphCast or
+BMA (§2).
 
 **Correction to an earlier version of this section**, which reported H2 as
 INSUFFICIENT_DATA against EMOS-IFS ("nominally better at 4 of 5 leads"). That
@@ -259,9 +280,10 @@ staleness explains every other significance flip between the two scorecards;
 none is bootstrap noise (the bootstrap seed and day indices are identical).
 
 This is the finding most worth the reader's attention. The blend beats a
-single raw member decisively (H1) but does not beat a single-source
-*calibration* (H2). Calibrating one good source appears to capture most of
-what the multi-source mixture adds.
+single raw member decisively (H1). Against single-source *calibration* (H2) it
+beats EMOS-IFS everywhere but only edges the best one, EMOS-GraphCast, at the
+short leads: 0.035 mm at 24 h, significant; level at 96–120 h. Calibrating one
+good source captures most, not all, of what the multi-source mixture adds.
 
 **Method note.** The comparator is not selected on the training fold, which
 the pre-registration required. Instead BMA is compared against **both**
@@ -270,26 +292,37 @@ whichever is best, so the claim is decided without choosing a comparator on
 the data being tested. `needs_train_scores` is therefore cleared on H2, and
 that reasoning is recorded in `REFERENCE_METHODS` in `scripts/run_scorecard.py`.
 
-### H3 — **FAIL**
+### H3 — **FAIL**, on its SEDI leg (the Brier leg passes)
 
 `P(>=64.5mm)` has BSS > 0 vs climatology and higher SEDI than the best member.
-The claim needs both legs. The Brier leg fails outright, and the SEDI leg does
-not pass either.
+The claim needs both legs. The Brier leg passes at every lead; the SEDI leg
+fails, so H3 fails. The ledger records each leg as its own row (`H3-Brier`,
+`H3-SEDI`) and the claim as their conjunction.
 
-**Brier/BSS leg — fails at every threshold and every lead.** `tier2_bma` is
-*worse* than IMD climatology on Brier throughout, all significant:
+**Brier/BSS leg — passes at 5 of 5 leads.** `tier2_bma` beats IMD climatology
+on Brier at 7.5, 64.5 and 115.6 mm at every lead, every interval excluding 0.
+At 204.5 mm, a threshold the claim does not name, it is slightly worse at every
+lead (significantly at 120 h):
 
-| threshold | tier2_bma | climatology | BSS (needs > 0) |
-|---|---|---|---|
-| 7.5 mm | 0.1258 | 0.0429 | −1.93 |
-| 64.5 mm | 0.01168 | 0.00345 | **−2.38** |
-| 115.6 mm | 0.00250 | 0.00070 | −2.58 |
-| 204.5 mm | 0.00027 | 0.00007 | −2.80 |
+| threshold | tier2_bma | climatology | BSS (needs > 0) | interval excludes 0 |
+|---|---|---|---|---|
+| 7.5 mm | 0.12582 | 0.16169 | +0.222 | yes |
+| 64.5 mm | 0.01168 | 0.01300 | **+0.102** | yes |
+| 115.6 mm | 0.00250 | 0.00263 | +0.050 | yes |
+| 204.5 mm | 0.00027 | 0.00027 | −0.009 | no |
 
-(lead 24 h.) BSS at 64.5 mm is −2.38 to −2.50 across the five leads, where the claim needs
-it above 0. Climatology is a strong forecast for a rare event precisely
-because it is close to the base rate, and a 24–120 h probabilistic blend does
-not beat simply knowing how often 64.5 mm falls.
+(lead 24 h.) BSS at 64.5 mm is +0.069 to +0.102 across the five leads,
+falling with lead, every interval excluding 0.
+
+**This leg read −2.4 until 31 October, and the reversal is a scoring defect,
+not a model change.** Climatology's Brier was computed over the whole 129 × 135
+grid, sea included. IMD observes only the 4,625 land cells, and an unobserved
+cell entered the mean as a correctly forecast non-event; climatology is 0
+there, so it scored a perfect 0 on the other 12,790 cells every day and its
+Brier read 3.765 times too low (17,415 / 4,625, on every day and lead).
+`tier2_bma`'s probabilities were already restricted to scored cells, so its
+Brier did not move (§7, F8). The earlier reading, "climatology is a strong
+forecast for a rare event", explained an artefact.
 
 **SEDI leg — not better at the claim's own threshold.** Against the best member:
 
@@ -436,7 +469,7 @@ stops short of the support validates nothing beyond it.
 ### Verdicts after the fix
 
 H1-RMSE PASS, H1-CRPS PASS, H2 FAIL (now against both comparators), H3 FAIL.
-H1-RMSE strengthened from 3 to 5 significant leads and H2-vs-EMOS-IFS moved from
+(Superseded on 31 October: see §3 and "Found on 31 October" below.) H1-RMSE strengthened from 3 to 5 significant leads and H2-vs-EMOS-IFS moved from
 INSUFFICIENT_DATA to FAIL; both moves come from rebuilding the scorecard on the
 current per-day files (see the H2 correction above), not from the BMA fix,
 which moved domain BMA CRPS by at most 0.015 mm.
@@ -549,6 +582,57 @@ belong: Tier 2b's per-bin train CRPS and its nomination weight
 (`docs/tier2b-combined-results.md` §7; H10 now passes 5 of 5), and the
 dashboard map's bin classification and per-cell tail markers
 (`docs/tail-repair-results.md` §3).
+
+### Found on 31 October, re-reading the code before steps 11–13
+
+Five defects, found by reading code fresh and by cross-checking two runners
+that fit the same model. Each fix has a test that fails on the old code.
+
+1. **F5 — BMA's exact CRPS read 0.175–0.182 mm high (`weavr.bma`).** The
+   closed-form integral of `(F − 1{y ≤ x})²` counted the grid interval that
+   contains the observation twice, and a grid of 1 mm steps cannot follow the
+   cube-root mixture CDF, which rises steeply just above 0 mm. The grid is now
+   even in `u = x^(1/3)` (0.02 steps to u = 12, 0.1 to u = 60), each piece is
+   integrated exactly as `∫ g · 3u² du`, the straddling interval is split once,
+   and `bma_predictive_quantiles` interpolates in `u`. The 15 quadrature cases in
+   `TestBmaCrpsAccuracy` agree to 0.002 mm and the quantiles reach their levels to
+   1e-3; 13 of those 16 tests fail on the old code. This is what moved H2 (§3).
+2. **F1 — Tier 2 EMOS Brier scored a distribution the fit never produced.**
+   `score_emos_source` passed the raw ensemble mean and spread to
+   `exceedance_probability_csgd`, not the fitted location and scale. CRPS was
+   right; every Tier 2 EMOS Brier was not (24 h, 7.5 mm, EMOS-GraphCast:
+   0.190 → 0.127). Re-fitting every lead and fold and computing probabilities
+   through step 11's code reproduces the new per-day Brier exactly. No verdict
+   reads these rows.
+3. **F8 — a Brier score counted cells with no observation.** `per_day_scores` built the
+   observed event as `(obs >= t).astype(float)`, and `NaN >= t` is False, so a
+   cell IMD never observes (sea, outside India) became an observed non-event.
+   Wherever a probability was finite there, the cell entered that day's Brier
+   mean. Climatology is 0 off-land, so it scored a perfect 0 on 12,790 of the
+   grid's 17,415 cells every day: its Brier read exactly 17,415 / 4,625 = 3.765
+   times too low, on every day, lead and threshold. That is what H3's Brier leg
+   was compared against. The raw lagged ensemble (phase 2, also in its fold and
+   pooled Brier), the QM blends, step 11's EMOS grid and the EVT arms' climatology
+   reference were affected the same way; `tier2_bma` and the Tier 2 EMOS grids
+   were already NaN off the scored cells and did not move (Tier 2 was rerun and is
+   identical). `exceedance_event` keeps the NaN. Its other consequence is in
+   `docs/tail-repair-results.md`: QM now worsens Brier at 7.5 mm significantly at
+   24 and 48 h, which fails H7's non-inferiority guard.
+4. **F9 — the ledger judged H3 on one of its two legs.** `docs/preregistration.md` passes
+   H3 only if both conditions hold, each under the default rule. The ledger
+   evaluated the Brier comparison alone, which was harmless while it failed and
+   would have recorded H3 as PASS once F8 was fixed. A claim spec can now list
+   `legs`; each is written as its own row and the claim row passes only if every
+   leg does.
+5. **Step 13's "assert monotone" was a silent repair.** `quantile_average`
+   took a running maximum over a decreasing result; it now raises. No run
+   tripped it.
+
+Two checks of the post-run harness were too strict, and are recorded because a
+reviewer re-running it would see them: the `pooled` rows of the Tier 2/3
+breakdown tables come from iterating a Python `set` of strings, so their order
+(and the last bit of their float sums) follows the interpreter's hash seed.
+Compared on their keys, only BMA's CRPS moved.
 
 ## 8. Audit: every text still quoting a v1 number
 
