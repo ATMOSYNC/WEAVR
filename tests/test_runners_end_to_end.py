@@ -32,6 +32,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -57,6 +58,9 @@ RUNNER_STORE_KINDS: dict[str, tuple[str, ...]] = {
     "run_phase2_ensemble_baseline.py": ("baseline", "lagged"),
     "run_tier2_hierarchical_baseline.py": ("baseline", "lagged", "ifs_ens", "climatology"),
     "run_tier3_regime_conditioned_baseline.py": ("baseline", "lagged", "ifs_ens", "climatology"),
+    "run_tier2b_combined.py": ("baseline", "lagged", "ifs_ens", "climatology"),
+    "run_tail_repair_qm.py": ("baseline", "climatology"),
+    "run_tail_repair_qm_emos.py": ("baseline", "lagged", "ifs_ens", "climatology"),
 }
 
 
@@ -185,7 +189,23 @@ AGGREGATE_RUNNERS = [
     ("run_phase2_ensemble_baseline.py", "phase2_ensemble_baseline.csv", True),
     ("run_tier3_regime_conditioned_baseline.py", "tier3_regime_conditioned_baseline.csv", True),
     ("run_independence_diagnostic.py", "independence_diagnostic.csv", False),
+    ("run_tier2b_combined.py", "tier2b_combined.csv", True),
+    # Step 11: both QM runners, the member-level one with both sources.
+    ("run_tail_repair_qm.py", "tail_repair_qm.csv", True),
+    ("run_tail_repair_qm_emos.py", "tail_repair_qm_emos.csv", True),
 ]
+
+#: Step 13's arms. The two parents plus the four combinations; a run that
+#: silently dropped one would still satisfy every check above, because a
+#: shorter arm list is not an error anywhere else in the suite.
+TIER2B_ARMS = (
+    "emos_csg",
+    "bma",
+    "per_bin",
+    "quantile_avg",
+    "quantile_avg_fixed",
+    "linear_pool",
+)
 
 
 @pytest.mark.parametrize("script,filename,per_day", AGGREGATE_RUNNERS)
@@ -298,20 +318,6 @@ def test_tier2_by_bin_csv_carries_pooled_and_fold_rows(tier2_out):
 # ---------------------------------------------------------------------------
 # Fault injection: each of the failures we actually hit
 # ---------------------------------------------------------------------------
-
-
-def _preflight(stores_root: Path) -> subprocess.CompletedProcess:
-    """Run the pre-flight store check the chain gates on."""
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO / "src")
-    return subprocess.run(
-        [str(PYTHON), "/tmp/step07_gate/preflight_stores.py"],
-        cwd=REPO,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
 
 
 def test_all_zero_ifs_ens_store_is_caught_before_a_long_run(tmp_path):
@@ -457,11 +463,14 @@ def _write_valid_results(root: Path, season_days: int) -> None:
     for lead in (24, 48, 72, 96, 120):
         rows = []
         for year in (2018, 2020):
-            n = season_days - (lead // 24 - 1)
+            # A 24 h forecast from 1 June verifies on IMD day 2 June, so the
+            # first scored day moves with the lead and the last inits fall off.
+            n = season_days - lead // 24
+            first = pd.Timestamp(f"{year}-06-01") + pd.Timedelta(days=lead // 24)
             rows.append(
                 pd.DataFrame(
                     {
-                        "date": pd.date_range(f"{year}-06-01", periods=n).date,
+                        "date": pd.date_range(first, periods=n).date,
                         "fold": [str(year)] * n,
                         "crps_mm": [4.2] * n,
                     }
@@ -584,6 +593,42 @@ def test_result_gate_flags_a_degenerate_bin_region_fit(tmp_path):
     assert len(flagged) == 2, gate.advisories
     assert any("NE1" in a for a in flagged)
     assert any("SI" in a for a in flagged)
+
+
+def test_result_gate_blocks_a_fitted_bin_that_scores_zero(tmp_path):
+    """An impossibly good score is as broken as an impossibly bad one.
+
+    Measured on the #106 regeneration: EMOS-GraphCast's dry bin at 120 h, 2020
+    fold, read CRPS 0.000 over 312,251 cells with a +399.8 mm bias -- a CSGD
+    whose shape fell under the clip floor, so the closed form lost every digit
+    and clipped to 0. The outlier check only looks upward and passed it.
+    """
+    results = tmp_path / "results"
+    _write_valid_results(results, season_days=8)
+    by_bin = results / "tier2_hierarchical_baseline_by_bin.csv"
+    frame = pd.read_csv(by_bin)
+    mask = (frame["combiner"] == "emos_graphcast") & (frame["lead_hours"] == 120)
+    frame.loc[mask, "crps_mm"] = 0.0
+    frame.to_csv(by_bin, index=False)
+
+    gate = _gate(results)
+    assert gate.main() == 1, "a zero-CRPS fitted bin did not block"
+    assert any("cannot score zero" in f for f in gate.failures), gate.failures
+
+
+def test_result_gate_allows_a_zero_crps_fallback_bin(tmp_path):
+    """A point-mass fallback scoring 0 on dry cells is correct, not broken."""
+    results = tmp_path / "results"
+    _write_valid_results(results, season_days=8)
+    by_bin = results / "tier2_hierarchical_baseline_by_bin.csv"
+    frame = pd.read_csv(by_bin)
+    mask = (frame["combiner"] == "emos_graphcast") & (frame["lead_hours"] == 120)
+    frame.loc[mask, "crps_mm"] = 0.0
+    frame.loc[mask, "is_fallback"] = True
+    frame.to_csv(by_bin, index=False)
+
+    gate = _gate(results)
+    assert gate.main() == 0, gate.failures
 
 
 def test_result_gate_does_not_flag_a_uniformly_hard_bin(tmp_path):
@@ -725,11 +770,13 @@ def test_result_gate_rejects_a_missing_ifs_ens_per_day_family(tmp_path):
 
 
 def test_expected_row_count_formula_matches_two_season_daily_cadence():
-    """`122 - (lead_days - 1)` per season, verified against real outputs.
+    """`122 - lead_days` per season: IMD labels a day by the date its window ends.
 
-    The 244/242/240/238/236 sequence was read off the 40 known-good per-day
-    files the fast tiers produced against the real 122-day stores, so pinning
-    it here means a change to the cadence assumption has to be deliberate.
+    A forecast from init day `t` at lead `L` days is scored against IMD day
+    `t + L`, and the observations end on the season's last init day, so the
+    last `L` init days have nothing to score against (issue #106). Before the
+    fix the labels sat one day earlier and the sequence was 244/242/240/238/236;
+    pinning the new one here means a change to the cadence has to be deliberate.
     """
     sys.path.insert(0, str(REPO / "scripts"))
     import gate_step07_results as gate
@@ -738,11 +785,11 @@ def test_expected_row_count_formula_matches_two_season_daily_cadence():
     try:
         gate.SEASON_DAYS = 122
         assert [gate.expected_rows(lead) for lead in (24, 48, 72, 96, 120)] == [
-            244,
             242,
             240,
             238,
             236,
+            234,
         ]
     finally:
         gate.SEASON_DAYS = original
@@ -750,3 +797,297 @@ def test_expected_row_count_formula_matches_two_season_daily_cadence():
 
 def test_seasons_constant_is_two():
     assert SEASONS == (2018, 2020)
+
+
+def test_tier2b_scores_every_arm_and_writes_all_three_csvs(stores, tmp_path):
+    """Step 13's four methods are the deliverable, so all six arms must appear.
+
+    The suite's generic checks only assert that *some* rows were written. A
+    fold loop that dropped the linear pool, or emitted only the parents, would
+    pass both of those and still leave H10 unanswerable, because H10 asks
+    whether a combination beats both parents.
+    """
+    out = tmp_path / "t2b_arms"
+    run_script(
+        "run_tier2b_combined.py", stores, out,
+        extra=["--train-stride", "1", "--n-resamples", "50"],
+    )
+    frame = pd.read_csv(out / "tier2b_combined.csv")
+    assert set(frame["arm"]) == set(TIER2B_ARMS), (
+        f"tier2b_combined.csv arms={sorted(set(frame['arm']))}; "
+        f"expected all of {sorted(TIER2B_ARMS)}"
+    )
+    assert (out / "tier2b_combined_train.csv").exists()
+    assert (out / "tier2b_combined_paired.csv").exists()
+
+    per_day = sorted((out / "per_day").glob("tier2b_*.csv"))
+    assert len(per_day) == len(TIER2B_ARMS) * 5, (
+        f"wrote {len(per_day)} per-day files; expected "
+        f"{len(TIER2B_ARMS)} arms x 5 leads"
+    )
+    for f in per_day:
+        day = pd.read_csv(f)
+        # `.astype(str)` for the same reason as the generic test above: a
+        # column of only these two values is read back as int64.
+        folds = set(day["fold"].astype(str))
+        assert folds == {"2018", "2020"}, f"{f.name} folds={sorted(folds)}"
+        assert np.isfinite(day["crps_mm"].to_numpy()).any(), f"{f.name} has no finite CRPS"
+
+
+def test_tier2b_h10_is_decided_not_skipped(stores, tmp_path):
+    """H10 must reach a verdict, and the verdict must follow the pre-registered rule."""
+    out = tmp_path / "t2b_h10"
+    proc = run_script(
+        "run_tier2b_combined.py", stores, out,
+        extra=["--train-stride", "1", "--n-resamples", "50"],
+    )
+    assert "H10 PASS" in proc.stdout or "H10 FAIL" in proc.stdout, (
+        "tier2b printed no H10 verdict. The plan's third deliverable is the "
+        "verdict, so a run that scores arms without deciding one is unfinished."
+    )
+
+    paired = pd.read_csv(out / "tier2b_combined_paired.csv")
+    assert {
+        "arm", "vs_parent", "crps_difference_mm", "ci_low", "ci_high", "beats_parent"
+    } <= set(paired.columns)
+    for lead, group in paired.groupby("lead_hours"):
+        assert set(group["vs_parent"]) == {"emos_csg", "bma"}, (
+            f"lead {lead} compared against {sorted(set(group['vs_parent']))}; "
+            "H10 requires beating each parent separately."
+        )
+
+
+def test_tier2b_default_weight_is_the_fixed_one(stores, tmp_path):
+    """The fitted weight is opt-in, so a default run is the pre-registered 0.5.
+
+    The fit lost a lead to 0.5 on the measured evidence (3/5 vs 4/5), so making
+    it the default would put the weaker method in every future run.
+    """
+    out = tmp_path / "t2b_default_weight"
+    run_script(
+        "run_tier2b_combined.py", stores, out,
+        extra=["--train-stride", "1", "--n-resamples", "50"],
+    )
+    train = pd.read_csv(out / "tier2b_combined_train.csv")
+    assert np.allclose(train["vincentization_weight"], 0.5), (
+        f"default weights were {sorted(set(train['vincentization_weight']))}; "
+        "expected the pre-registered fixed 0.5 unless --fit-weight is passed"
+    )
+    # The fit is still recorded, so "we tried it" stays reproducible.
+    assert "vincentization_train_crps" in train.columns
+    assert "vincentization_weight_fitted" in train.columns
+
+
+def test_tier2b_line_pool_is_comparable_to_quantile_averaging(stores, tmp_path):
+    """The linear pool must land in the same CRPS neighbourhood as Vincentization.
+
+    These two differ only in the space they average in, and the plan keeps the
+    linear pool as a comparison arm. If it came out orders of magnitude worse,
+    the cause would be the bracketed interpolation in `linear_pool_quantiles`
+    rather than the pooling rule, and the arm would be quietly misleading.
+    """
+    out = tmp_path / "t2b_pool"
+    run_script(
+        "run_tier2b_combined.py", stores, out,
+        extra=["--train-stride", "1", "--n-resamples", "50"],
+    )
+    frame = pd.read_csv(out / "tier2b_combined.csv")
+    pooled = frame.groupby("arm")["crps_mm"].mean()
+    for arm in ("linear_pool", "quantile_avg", "quantile_avg_fixed", "emos_csg", "bma"):
+        assert np.isfinite(pooled[arm]), f"{arm} CRPS is not finite"
+    assert pooled["linear_pool"] < 10 * max(pooled["emos_csg"], 1e-9), (
+        f"linear_pool CRPS {pooled['linear_pool']:.4f} is far outside the "
+        f"parent range (emos_csg {pooled['emos_csg']:.4f}, bma {pooled['bma']:.4f}); "
+        "that is an inversion failure, not a pooling result."
+    )
+
+
+def test_tier2b_missing_store_fails_loudly(stores, tmp_path):
+    """A missing IFS store must abort before any CSV claims to be scored."""
+    partial = dict(stores)
+    partial.pop("ifs_ens_2020")
+    proc = run_script(
+        "run_tier2b_combined.py", partial, tmp_path / "t2b_missing",
+        extra=["--train-stride", "1"],
+        expect_ok=False,
+    )
+    assert proc.returncode != 0
+    assert not (tmp_path / "t2b_missing" / "tier2b_combined.csv").exists(), (
+        "tier2b wrote its domain CSV despite a missing store; the partial run "
+        "must not be readable as a finished one."
+    )
+
+
+def test_dashboard_probability_grid_fits_on_the_other_season(stores):
+    """#74: the map is re-emitted under leave-one-year-out, not fitted in sample.
+
+    With `fit_stores`, EMOS-CSG and the GPD tail come from 2018 while the
+    displayed day comes from 2020, and the NPZ says so in `fitted_on`. A fit
+    that quietly fell back to the display season would still draw a plausible
+    map, so the provenance is what is pinned.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    import export_dashboard_example_grids as export
+
+    display = tuple(str(stores[f"{kind}_2020"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    fit = tuple(str(stores[f"{kind}_2018"]) for kind in ("baseline", "lagged", "ifs_ens"))
+
+    loyo = export.build_example_probability_grids(*display, 24, fit_stores=fit)
+    in_sample = export.build_example_probability_grids(*display, 24)
+
+    assert loyo["fitted_on"] == fit[0]
+    assert in_sample["fitted_on"] == display[0]
+    assert loyo["sample_time"] == in_sample["sample_time"]
+    assert loyo["sample_time"].startswith("2020")
+    for slug in ("115p6", "204p5"):
+        probability = np.asarray(loyo[f"probability_{slug}"])
+        finite = probability[np.isfinite(probability)]
+        assert finite.size and ((finite >= 0) & (finite <= 1)).all()
+        assert set(np.unique(loyo[f"method_{slug}"])) <= {"csgd", "csgd+gpd_tail", "fallback"}
+    assert not np.array_equal(
+        np.asarray(loyo["probability_115p6"]), np.asarray(in_sample["probability_115p6"]),
+        equal_nan=True,
+    ), "fitting on 2018 produced the same map as fitting on 2020"
+
+
+def test_dashboard_probability_grid_classifies_bins_like_the_fit(stores, monkeypatch):
+    """The display day's bins come from the GraphCast mean, as the fit's do.
+
+    The tail function picks each cell's bin from `forecast_values`. Passing
+    the IFS mean there scored cells with a bin model fitted on cells chosen
+    by a different forecast; the IFS mean and spread stay the predictors.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    import export_dashboard_example_grids as export
+
+    seen = []
+    real = export.exceedance_probability_with_tail
+
+    def spy(**kwargs):
+        seen.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(export, "exceedance_probability_with_tail", spy)
+    display = tuple(str(stores[f"{kind}_2020"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    fit = tuple(str(stores[f"{kind}_2018"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    grid = export.build_example_probability_grids(*display, 24, fit_stores=fit)
+
+    forecasts, _ = export.align_all_sources(
+        export.load_graphcast_ensemble(display[1], 24),
+        export.load_ifs_ensemble(display[2], 24),
+        export.load_hres_forecast(display[0], 24),
+        xr.open_zarr(display[0], group="imd_observed", consolidated=True).load(),
+    )
+    index = export.latest_complete_sample_index(forecasts)
+    graphcast_mean = forecasts["graphcast"].mean(dim="member", skipna=True).isel(sample=index)
+    ifs_mean = forecasts["ifs_ens"].mean(dim="member", skipna=True).isel(sample=index)
+
+    assert seen, "the export never called the tail function"
+    for call in seen:
+        np.testing.assert_array_equal(np.asarray(call["forecast_values"]), graphcast_mean.values)
+        np.testing.assert_array_equal(np.asarray(call["ensemble_mean"]), ifs_mean.values)
+    assert grid["sample_time"] == str(graphcast_mean["sample"].values)
+
+
+def _tier2b_train_csv(path, weight, source="ifs_ens"):
+    path.write_text(
+        "lead_hours,fold,emos_source,vincentization_weight\n"
+        f"24,2020,{source},{weight}\n24,2018,{source},{weight}\n"
+    )
+    return path
+
+
+def test_dashboard_quantile_avg_at_weight_zero_is_the_emos_map(stores, tmp_path):
+    """#75: a quantile average with weight 0 *is* EMOS-CSG, so the new path must
+    reproduce the existing map wherever both use a fitted bin -- an end-to-end
+    check of the quantiles, P(Y > u) read off them, and the GPD splice."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import export_dashboard_example_grids as export
+
+    display = tuple(str(stores[f"{kind}_2020"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    fit = tuple(str(stores[f"{kind}_2018"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    csv_path = _tier2b_train_csv(tmp_path / "train.csv", 0.0)
+    emos = export.build_example_probability_grids(*display, 24, fit_stores=fit)
+    qavg = export.build_example_probability_grids(
+        *display, 24, fit_stores=fit, combiner="quantile_avg", tier2b_train_csv=csv_path
+    )
+    assert qavg["combiner"] == "quantile_avg" and qavg["quantile_avg_weight"] == 0.0
+    for slug in ("115p6", "204p5"):
+        a = np.asarray(emos[f"probability_{slug}"])
+        b = np.asarray(qavg[f"probability_{slug}"])
+        both = (np.asarray(emos[f"method_{slug}"]) == "csgd+gpd_tail") & ~np.asarray(
+            qavg[f"is_fallback_{slug}"]
+        ) & (a > 1e-12)
+        assert both.sum() > 20, "too few comparable cells to say anything"
+        rel = np.abs(b[both] - a[both]) / a[both]
+        assert np.median(rel) < 0.02, f"{slug}: median relative gap {np.median(rel):.3f}"
+
+
+def test_dashboard_quantile_avg_is_bounded_ordered_and_labelled(stores, tmp_path):
+    sys.path.insert(0, str(REPO / "scripts"))
+    import export_dashboard_example_grids as export
+
+    display = tuple(str(stores[f"{kind}_2020"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    fit = tuple(str(stores[f"{kind}_2018"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    grid = export.build_example_probability_grids(
+        *display, 24, fit_stores=fit, combiner="quantile_avg",
+        tier2b_train_csv=_tier2b_train_csv(tmp_path / "train.csv", 0.7, source="graphcast"),
+    )
+    assert grid["emos_source"] == "graphcast" and grid["quantile_avg_weight"] == 0.7
+    p115 = np.asarray(grid["probability_115p6"])
+    p204 = np.asarray(grid["probability_204p5"])
+    for p in (p115, p204):
+        assert np.isfinite(p).all() and ((p >= 0) & (p <= 1)).all()
+    assert (p204 <= p115 + 1e-12).all(), "P(>204.5) must never exceed P(>115.6)"
+    for slug in ("115p6", "204p5"):
+        assert set(np.unique(grid[f"method_{slug}"])) <= {"quantile_avg+gpd_tail", "fallback"}
+    assert (np.asarray(grid["method_115p6"]) == "quantile_avg+gpd_tail").any()
+
+
+def test_dashboard_quantile_avg_needs_the_fit_season_and_its_tier2b_row(stores, tmp_path):
+    sys.path.insert(0, str(REPO / "scripts"))
+    import export_dashboard_example_grids as export
+
+    display = tuple(str(stores[f"{kind}_2020"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    fit = tuple(str(stores[f"{kind}_2018"]) for kind in ("baseline", "lagged", "ifs_ens"))
+    csv_path = _tier2b_train_csv(tmp_path / "train.csv", 0.5)
+    with pytest.raises(ValueError, match="--fit-"):
+        export.build_example_probability_grids(
+            *display, 24, combiner="quantile_avg", tier2b_train_csv=csv_path
+        )
+    with pytest.raises(ValueError, match="no Tier 2b train row"):
+        export.build_example_probability_grids(
+            *display, 48, fit_stores=fit, combiner="quantile_avg", tier2b_train_csv=csv_path
+        )
+
+
+def test_dashboard_export_rejects_a_partial_fit_season(stores, tmp_path):
+    result = subprocess.run(
+        [str(PYTHON), str(REPO / "scripts" / "export_dashboard_example_grids.py"),
+         "--fit-store", str(stores["baseline_2018"]),
+         "--out-blend", str(tmp_path / "b.npz"), "--out-probability", str(tmp_path / "p.npz")],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert result.returncode == 2
+    assert "go together" in result.stderr
+
+
+def test_qm_emos_scores_both_sources_and_every_arm(stores, tmp_path):
+    """Step 11 item 4c: EMOS-CSG on QM-corrected IFS members as well as GraphCast.
+
+    A run that silently dropped a source or an arm would still write a
+    non-empty CSV, which is all the aggregate check above can see.
+    """
+    out = tmp_path / "qm_emos"
+    run_script("run_tail_repair_qm_emos.py", stores, out)
+    scores = pd.read_csv(out / "tail_repair_qm_emos.csv")
+    assert set(scores["emos_source"]) == {"graphcast", "ifs_ens"}
+    for source, group in scores.groupby("emos_source"):
+        assert set(group["arm"]) == {
+            "raw_members", "qm_members_same_period", "qm_members_climatology",
+        }, source
+    paired = pd.read_csv(out / "tail_repair_qm_emos_paired.csv")
+    assert set(paired["emos_source"]) == {"graphcast", "ifs_ens"}
+    assert "h7_lead_improved" in paired.columns
+    names = {p.name.split("__lead")[0] for p in (out / "per_day").glob("*.csv")}
+    assert {"qmemos_raw_members", "qmemos_ifs_ens_raw_members"} <= names

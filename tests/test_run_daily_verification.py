@@ -21,10 +21,10 @@ class TestAlignToImdDay:
 
         aligned = _align_to_imd_day(da, lead_hours=24)
 
-        # valid_time = init + 24h; IMD day = (valid_time - 3h).normalize()
-        # -> 2020-06-01T00:00 + 24h = 2020-06-02T00:00, - 3h = 2020-06-01T21:00,
-        # normalized (floored to the date) -> 2020-06-01.
-        expected = pd.to_datetime(["2020-06-01", "2020-06-08"])
+        # The 24 h forecast from 2020-06-01T00:00 covers 06-01T00:00 ->
+        # 06-02T00:00 UTC, matching the IMD window 06-01T03:00 -> 06-02T03:00,
+        # which IMD labels by its end date: 2020-06-02 (issue #106).
+        expected = pd.to_datetime(["2020-06-02", "2020-06-09"])
         assert aligned.dims == ("sample",)
         np.testing.assert_array_equal(pd.DatetimeIndex(aligned["sample"].values), expected)
 
@@ -34,6 +34,9 @@ class TestRollingVerificationForLead:
         lat = [10.0, 10.25]
         lon = [70.0, 70.25]
         times = pd.date_range("2020-06-01", periods=10, freq="7D")
+        # IMD labels a day by the date its window ends on, so the observation a
+        # 24 h forecast from `t` is scored against carries the label `t + 1`.
+        obs_times = times + pd.Timedelta(days=1)
         rng = np.random.default_rng(0)
 
         def _forecast_da(values):
@@ -52,7 +55,7 @@ class TestRollingVerificationForLead:
         obs_values = fc_values * 1000.0 + rng.normal(scale=0.5, size=(10, 2, 2))
         obs_da = xr.DataArray(
             obs_values,
-            coords={"time": times, "latitude": lat, "longitude": lon},
+            coords={"time": obs_times, "latitude": lat, "longitude": lon},
             dims=["time", "latitude", "longitude"],
         )
         obs_ds = xr.Dataset({"rain": obs_da})
@@ -90,6 +93,9 @@ class TestRollingVerificationForLead:
         lat = [10.0, 10.25]
         lon = [70.0, 70.25]
         times = pd.date_range("2020-06-01", periods=10, freq="7D")
+        # IMD labels a day by the date its window ends on, so the observation a
+        # 24 h forecast from `t` is scored against carries the label `t + 1`.
+        obs_times = times + pd.Timedelta(days=1)
 
         fc_values = np.full((10, 2, 2), 0.005)
         obs_values = np.full((10, 2, 2), 5.0)
@@ -105,7 +111,7 @@ class TestRollingVerificationForLead:
             {
                 "rain": xr.DataArray(
                     obs_values,
-                    coords={"time": times, "latitude": lat, "longitude": lon},
+                    coords={"time": obs_times, "latitude": lat, "longitude": lon},
                     dims=["time", "latitude", "longitude"],
                 )
             }

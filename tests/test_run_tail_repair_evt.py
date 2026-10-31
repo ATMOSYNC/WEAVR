@@ -13,6 +13,11 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from run_scorecard import _pooled_sedi  # noqa: E402
+
+RUNNER_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts" / "run_tail_repair_evt.py"
+)
+
 from run_tail_repair_evt import (  # noqa: E402
     compute_sedi,
     expected_counts,
@@ -163,3 +168,156 @@ def test_csgd_only_arm_uses_point_mass_fallback() -> None:
 
     # Well below the fitted bin's scale, the same bin saturates at 1.
     assert csgd_only_probabilities(forecasts, labels, emos_results, 64.5)[0, 0, 0] == 1.0
+
+
+class TestMemberCountingBenchmark:
+    """The IFS-ENS member-counting benchmark #74 recorded as NOT RUN.
+
+    `--ifs-ensemble-stores` existed on the runner but was never resolved into
+    paths, so `ifs_available` was decided on an argument nothing read, the
+    runner printed "enabled", and no benchmark row was ever emitted. The
+    benchmark is the comparison step 12 is measured *against*, so silently
+    omitting it makes the spliced tail look unopposed.
+    """
+
+    def test_probability_is_the_empirical_member_fraction(self):
+        import numpy as np
+        import xarray as xr
+        from run_tail_repair_evt import member_counting_probabilities
+
+        # (sample=2, member=4, lat=1, lon=2) -- the shape `load_ifs_ensemble`
+        # produces: one lead already selected, time renamed to `sample`.
+        # Members 1 and 2 exceed 5 mm at lon 70; no member does at lon 71.
+        members = np.array(
+            [
+                [[[10.0, 1.0]], [[10.0, 1.0]], [[1.0, 1.0]], [[1.0, 1.0]]],
+                [[[20.0, 2.0]], [[20.0, 2.0]], [[2.0, 2.0]], [[2.0, 2.0]]],
+            ]
+        )
+        ens = xr.DataArray(
+            members,
+            dims=("sample", "member", "latitude", "longitude"),
+            coords={
+                "sample": [0, 1],
+                "member": [1, 2, 3, 4],
+                "latitude": [10.0],
+                "longitude": [70.0, 71.0],
+            },
+        )
+        probs = member_counting_probabilities(
+            ens, 5.0, np.array([True, False])
+        )
+        # Sample 0: 2 of 4 members above 5 mm at lon 70, none at lon 71.
+        assert probs[0, 0, 0] == pytest.approx(0.5)
+        assert probs[0, 0, 1] == pytest.approx(0.0)
+        # Only the test sample is returned, so the result lines up with
+        # `test_obs` (one row per test day) rather than the full series.
+        assert probs.shape == (1, 1, 2)
+        assert not np.isnan(probs).any()
+
+    def test_benchmark_row_is_scored_with_the_shared_helpers(self):
+        import numpy as np
+        from run_tail_repair_evt import benchmark_row
+
+        probs = np.full((2, 2, 2), 0.25)
+        obs = np.array([[[0.0, 60.0], [0.0, 60.0]], [[0.0, 60.0], [0.0, 60.0]]])
+        row = benchmark_row(
+            probs, obs, climatology_grid=np.full((2, 2), 0.1), threshold=50.0,
+            lead_hours=24, split_label="2018", split_kind="leave_one_year_out",
+            n_train=8, n_test=8,
+        )
+        assert row["arm"] == "raw_ifs_ens_member_counting"
+        # Half the cells are above the threshold and predicted 0.25.
+        assert row["brier"] == pytest.approx(0.5 * 0.25**2 + 0.5 * 0.75**2)
+        assert np.isfinite(row["sedi"])
+        assert row["false_zero_cells"] == 0
+
+    def test_no_false_zeros_when_members_exceed(self):
+        import numpy as np
+        from run_tail_repair_evt import benchmark_row
+
+        probs = np.full((2, 2, 2), 0.5)  # no exact zeros
+        obs = np.zeros((2, 2, 2))
+        row = benchmark_row(
+            probs, obs, climatology_grid=np.zeros((2, 2)), threshold=115.6,
+            lead_hours=24, split_label="2018", split_kind="leave_one_year_out",
+            n_train=8, n_test=8,
+        )
+        assert row["false_zero_cells"] == 0
+
+
+class TestShapeParameterIntervalIsReported:
+    """The shape parameter's interval must reach the results file.
+
+    `fit_pooled_gpd` has always returned `TailFit.xi_se` / `TailFit.xi_ci`, but
+    the runner wrote only `tail_shape_xi` and dropped them, so no interval was
+    ever reproducible from `main` -- and `docs/tail-repair-results.md` then
+    asserted, incorrectly, that the library had no interval to give. The row
+    dict is built inline inside the fold loop, so there is no schema object to
+    assert against; this checks the emitted keys directly, which is what stops
+    the same silent drop from recurring.
+    """
+
+    def test_runner_emits_the_xi_interval_columns(self) -> None:
+        source = Path(RUNNER_PATH).read_text()
+        for column in (
+            "tail_shape_xi_se",
+            "tail_shape_xi_ci_lo",
+            "tail_shape_xi_ci_hi",
+        ):
+            assert f'"{column}"' in source, f"{column} is no longer written to the CSV"
+
+    def test_library_really_does_provide_an_interval(self) -> None:
+        # Pins the premise of the fix: if this ever stops holding, the doc's
+        # corrected wording has to change again.
+        from weavr.tail import fit_pooled_gpd
+
+        rng = np.random.default_rng(0)
+        fit = fit_pooled_gpd(
+            {
+                "WC": rng.gamma(shape=2.0, scale=8.0, size=400) + 64.5,
+                "CI": rng.gamma(shape=2.0, scale=8.0, size=400) + 64.5,
+            },
+            threshold_u=64.5,
+            regions=("WC", "CI"),
+        )
+        assert fit.xi_se is not None and fit.xi_se > 0.0
+        assert fit.xi_ci is not None
+        assert fit.xi_ci[0] < fit.shape_xi < fit.xi_ci[1]
+
+
+class TestReliabilityCounts:
+    """The reliability evidence #74 asks for alongside the H7 EVT verdict."""
+
+    def test_exact_zero_has_its_own_bin_and_sums_pool_across_folds(self) -> None:
+        from run_tail_repair_evt import RELIABILITY_EDGES, reliability_counts
+
+        probs = np.array([0.0, 0.0, 5e-5, 0.03, 0.03, 0.9, np.nan])
+        obs = np.array([0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0])
+        table = reliability_counts(probs, obs)
+
+        assert len(table) == RELIABILITY_EDGES.size
+        zero = table.loc[0]
+        # Both hard zeros land in bin 0, and one of them was an event: the
+        # false zero this step exists to remove, visible in the table.
+        assert (zero["n"], zero["sum_observed"]) == (2, 1.0)
+        assert table.loc[1, "n"] == 1  # (0, 1e-4]
+        two_to_five = table[(table["p_lo"] == 0.02) & (table["p_hi"] == 0.05)].iloc[0]
+        assert two_to_five["n"] == 2
+        assert two_to_five["sum_forecast"] == pytest.approx(0.06)
+        assert two_to_five["sum_observed"] == 1.0
+        assert table.loc[table.index[-1], "n"] == 1  # (0.5, 1]
+        # NaN forecasts are excluded, not counted as zero.
+        assert table["n"].sum() == 6
+
+    def test_benchmark_and_arms_share_one_event_definition(self) -> None:
+        from run_tail_repair_evt import benchmark_row
+
+        # A cell observing exactly the threshold is an event for every arm.
+        row = benchmark_row(
+            np.zeros((1, 1, 1)), np.full((1, 1, 1), 115.6),
+            climatology_grid=np.zeros((1, 1)), threshold=115.6,
+            lead_hours=24, split_label="2018", split_kind="leave_one_year_out",
+            n_train=1, n_test=1,
+        )
+        assert row["brier"] == pytest.approx(1.0)

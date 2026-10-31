@@ -184,6 +184,33 @@ test("a grid with no tail cells draws no dots at all", () => {
   );
 });
 
+test("a map where every fitted cell uses the tail marks none of them", () => {
+  // Any threshold above the 64.5mm splice point: every non-fallback cell is
+  // csgd+gpd_tail, so a dot on each would only hide the colours.
+  const view = loadView("js/charts/extremeProbability.js");
+  const grid = mixedMethodGrid();
+  grid.method = [
+    ["csgd+gpd_tail", "csgd+gpd_tail", "csgd+gpd_tail"],
+    ["csgd+gpd_tail", "csgd+gpd_tail", "fallback"],
+  ];
+  const host = makeElement("div");
+  view.renderExtremeProbabilityCanvas(host, grid, [[0.0, "#fff"], [1.0, "#00f"]]);
+  const canvas = host.children.find((c) => c.tagName === "canvas");
+  assert.ok(canvas, "the canvas is still appended");
+  assert.equal(canvas.context.fills.filter((f) => f.style === TAIL_STYLE).length, 0, "no dots");
+  assert.equal(canvas.context.fills.filter((f) => f.style === FALLBACK_STYLE).length, 1, "fallback still grey");
+
+  const legendHost = makeElement("div");
+  view.renderExtremeProbabilityLegend(legendHost, [[0.0, "#fff"], [1.0, "#00f"]], grid, {
+    csgd: 0,
+    tail: 5,
+    fallback: 1,
+  });
+  const tailNote = legendHost.children[0].children[3];
+  assert.match(tailNote.innerHTML, /every cell on this map \(5\)/);
+  assert.match(tailNote.innerHTML, /\(experimental\)/);
+});
+
 test("method counts come from the real per-cell flags", () => {
   const view = loadView("js/charts/extremeProbability.js");
   // The returned object is built inside the vm realm, so its prototype
@@ -209,6 +236,26 @@ test("method counts come from the real per-cell flags", () => {
     tail: 0,
     fallback: 1,
   });
+});
+
+test("a quantile_avg grid's tail cells are recognised too (#75)", () => {
+  const view = loadView("js/charts/extremeProbability.js");
+  const grid = mixedMethodGrid();
+  grid.method = [
+    ["quantile_avg", "quantile_avg+gpd_tail", "quantile_avg"],
+    ["quantile_avg", "quantile_avg", "fallback"],
+  ];
+  const counts = view.extremeProbabilityMethodCounts(grid);
+  assert.equal(counts.tail, 1);
+  assert.equal(counts.fallback, 1);
+  assert.equal(counts.csgd, 4);
+});
+
+test("the plain grid says why a map of rare-event probabilities looks pale", () => {
+  const view = loadView("js/charts/extremeProbability.js", {}, ["extremeProbabilityPaleNote"]);
+  const note = view.extremeProbabilityPaleNote(0.0234);
+  assert.match(note, /2\.3%/);
+  assert.match(note, /not missing data/);
 });
 
 test("the legend labels the threshold actually fetched", () => {
@@ -257,6 +304,10 @@ test("the caption states the tail method and its limit", () => {
   // The limit has to be stated, not just the method.
   assert.match(caption, /least certain/);
   assert.match(caption, /extrapolat/);
+  // The measured over-forecast, and that the map is fitted out of season (#74).
+  assert.match(caption, /three times as often/);
+  assert.match(caption, /fitted on the 2018 season/);
+  assert.doesNotMatch(caption, /very_heavy bins now all fit/);
   // Both real IMD thresholds are named, not just the one that used to be hardcoded.
   assert.match(caption, /115\.6mm/);
   assert.match(caption, /204\.5mm/);

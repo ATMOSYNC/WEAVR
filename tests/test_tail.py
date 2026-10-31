@@ -52,6 +52,24 @@ def test_fit_pooled_gpd_synthetic() -> None:
     assert fit.xi_ci[0] < fit.shape_xi < fit.xi_ci[1]
 
 
+def test_xi_standard_error_matches_gpd_asymptotic_theory() -> None:
+    """SE(xi) must be the joint-fit SE, `(1 + xi) / sqrt(n)` for one region.
+
+    The earlier `1 / sqrt(d2 NLL / d xi2)` held the scale fixed. xi and sigma
+    are strongly correlated in a GPD, so that read 0.0128 here against the
+    theoretical 0.0174 and its nominal 95% interval covered xi 85% of the time.
+    """
+    rng = np.random.default_rng(1)
+    true_xi, n = 0.1, 4000
+    fit = fit_pooled_gpd(
+        {"WC": 64.5 + _sample_gpd(true_xi, 20.0, size=n, rng=rng)},
+        threshold_u=64.5,
+        regions=("WC",),
+    )
+    assert fit.xi_se is not None
+    assert fit.xi_se == pytest.approx((1.0 + true_xi) / np.sqrt(n), rel=0.1)
+
+
 def test_spliced_exceedance_probability_continuity_and_monotonicity() -> None:
     """spliced_exceedance_probability is continuous at u, monotone, and in [0, 1]."""
     fit = TailFit(

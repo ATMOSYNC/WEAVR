@@ -58,6 +58,22 @@ def _spatial_mean(values: xr.DataArray, dims: Sequence[str]) -> np.ndarray:
     return np.asarray(reduced.values, dtype=float).ravel()
 
 
+def exceedance_event(obs, threshold: float):
+    """The observed event `obs >= threshold` as 1.0/0.0, and NaN where `obs` is.
+
+    `(obs >= threshold).astype(float)` makes a missing observation 0.0 -- an
+    observed non-event -- because `NaN >= t` is False. A probability that is
+    finite there (a raw ensemble or a climatology covering the whole box, where
+    IMD observes land only) was then scored against it, and the cell entered
+    the day's Brier mean: climatology's Brier read about 4x too low (F8, 31 Oct).
+    Takes a DataArray or a NumPy array and returns the same kind.
+    """
+    event = (obs >= threshold).astype(float)
+    if isinstance(obs, xr.DataArray):
+        return event.where(obs.notnull())
+    return np.where(np.isnan(obs), np.nan, event)
+
+
 def per_day_scores(
     forecast: xr.DataArray,
     obs: xr.DataArray,
@@ -131,7 +147,7 @@ def per_day_scores(
     if probabilities:
         for threshold, prob in probabilities.items():
             frame[f"brier_{threshold}"] = _spatial_mean(
-                V.brier_score(prob, (obs >= threshold).astype(float), dim=dims), dims=[]
+                V.brier_score(prob, exceedance_event(obs, threshold), dim=dims), dims=[]
             )
 
     counts = V.contingency_counts(forecast, obs, thresholds=thresholds, dim=dims)
