@@ -168,14 +168,17 @@ const EXTREME_PROBABILITY_CAPTION =
   "it should be read as the least certain number here, and as " +
   "experimental: measured on two seasons, the spliced tail removes every " +
   "false zero-probability cell but makes the extremal dependence index " +
-  "worse at 5 of 5 leads, and it forecasts these extremes about three " +
-  "times as often as they occur (docs/tail-repair-results.md). It is " +
+  "worse at 5 of 5 leads. In total it forecasts these extremes about as " +
+  "often as they occur (0.96x at 115.6mm, 1.15x at 204.5mm), where the " +
+  "point-mass control forecast them about half as often " +
+  "(docs/tail-repair-results.md). It is " +
   "calibrated for magnitude, not yet for spatial co-occurrence. The tail " +
   "is applied uniformly above 64.5mm rather than only to unfittable cells: " +
   "on the two-season base dry, light and heavy always fit, very_heavy " +
   "fits at 24-72h but not in every fit at 96-120h, and extremely_heavy " +
-  "never fits at any lead (results/bin_fittability.csv). The model is " +
-  "fitted on the 2018 season and applied to the 2020 day shown, so the " +
+  "never fits at any lead (results/bin_fittability.csv). EMOS-CSG is " +
+  "fitted on the 2018 season and the tail on the IMD archive without " +
+  "2020, then applied to the 2020 day shown, so the " +
   "map never shows a day its calibration was trained on. Grey cells are " +
   "the harder fallback: no real probability at all, because EMOS-CSG " +
   "could not fit their bin for real at this lead.";

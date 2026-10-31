@@ -305,8 +305,9 @@ test("the caption states the tail method and its limit", () => {
   assert.match(caption, /least certain/);
   assert.match(caption, /extrapolat/);
   // The measured over-forecast, and that the map is fitted out of season (#74).
-  assert.match(caption, /three times as often/);
+  assert.match(caption, /about as often as they occur/);
   assert.match(caption, /fitted on the 2018 season/);
+  assert.match(caption, /archive without 2020/);
   assert.doesNotMatch(caption, /very_heavy bins now all fit/);
   // Both real IMD thresholds are named, not just the one that used to be hardcoded.
   assert.match(caption, /115\.6mm/);

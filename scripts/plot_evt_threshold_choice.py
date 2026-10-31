@@ -63,9 +63,6 @@ def plot_threshold_choice(diagnostics: pd.DataFrame, out: Path) -> Path:
                            color=color, alpha=0.15, linewidth=0)
         right.plot(u, group["xi"], color=color, linewidth=2, marker="o", markersize=5,
                    label=f"{fold} held out")
-        for ax, y in ((left, group["mean_residual_life_mm"]), (right, group["xi"])):
-            ax.annotate(fold, (u.iloc[-1], y.iloc[-1]), xytext=(6, 0), textcoords="offset points",
-                        va="center", color=TEXT_PRIMARY, fontsize=9)
 
     left.set_title("Mean residual life", color=TEXT_PRIMARY, loc="left")
     left.set_ylabel("mean excess over u (mm)")
