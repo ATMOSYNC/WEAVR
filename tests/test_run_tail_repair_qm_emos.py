@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from run_tail_repair_qm_emos import (  # noqa: E402
     parse_args,
+    probability_score,
     probability_sedi,
     quantile_mapped_members,
 )
@@ -84,6 +85,19 @@ def test_sedi_scores_probabilities_not_values() -> None:
     prob = np.where(obs > 0, 0.95, 0.02)
     assert probability_sedi(prob, obs, 115.6) > 0.8
     assert probability_sedi(1.0 - prob, obs, 115.6) < 0.0
+
+
+def test_unobserved_cells_leave_the_probability_scores() -> None:
+    """The EMOS grid covers the whole box; IMD observes land only (F8).
+
+    An unobserved cell given p = 0.9 must not count as a false alarm: with it
+    dropped, every forecast "yes" here is a hit and FAR is exactly 0.
+    """
+    obs = np.full((1, 2, 2), 150.0)
+    obs[0, 0, :] = np.nan
+    prob = np.full((1, 2, 2), 0.9)
+    assert probability_score(prob, obs, 115.6, "far") == pytest.approx(0.0)
+    assert probability_score(prob, obs, 115.6, "pod") == pytest.approx(0.9)
 
 
 def test_test_fraction_default_matches_the_other_runners() -> None:

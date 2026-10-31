@@ -104,6 +104,7 @@ from weavr.rain_bins import RAIN_BIN_LABELS, classify_rain_bin  # noqa: E402
 from weavr.regions import assign_regions  # noqa: E402
 from weavr.score_io import (  # noqa: E402
     FORCE_HELP,
+    exceedance_event,
     guard_result_overwrites,
     per_day_scores,
     resolve_result_paths,
@@ -241,7 +242,9 @@ def probability_score(
     passed to it with a threshold in mm never exceeds it and the score is
     meaningless. Expected counts avoid inventing a decision threshold.
     """
-    counts = expected_contingency_counts(probability, (obs >= threshold).astype(float))
+    # The event is NaN where nothing was observed, so those cells drop out
+    # (F8): the EMOS grid is finite over the whole box, IMD observes land.
+    counts = expected_contingency_counts(probability, exceedance_event(obs, threshold))
     return _pooled_categorical(tuple(counts[k] for k in COUNT_KEYS), score)
 
 
@@ -369,7 +372,7 @@ def evaluate_arm(
         raise RuntimeError("per_day_scores rows are not in test-sample order")
     for threshold in CATEGORICAL_THRESHOLDS:
         counts = expected_contingency_counts(
-            probability_grids[threshold], (obs_values >= threshold).astype(float), axis=(1, 2)
+            probability_grids[threshold], exceedance_event(obs_values, threshold), axis=(1, 2)
         )
         for key in COUNT_KEYS:
             frame[f"prob_{key}_{threshold}"] = counts[key]
@@ -389,7 +392,7 @@ def evaluate_arm(
         per_threshold[threshold] = {
             "brier": float(
                 np.nanmean(
-                    (grid[valid] - (obs_values[valid] >= threshold).astype(float)) ** 2
+                    (grid[valid] - exceedance_event(obs_values[valid], threshold)) ** 2
                 )
             ),
             **{
