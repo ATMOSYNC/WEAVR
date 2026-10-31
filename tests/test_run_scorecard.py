@@ -13,6 +13,7 @@ from run_scorecard import (  # noqa: E402
     _pooled_csi,
     _pooled_sedi,
     _verdict_for_claim,
+    _verdicts_with_legs,
     build_scorecard,
     compare_methods,
     measure_block_length,
@@ -291,6 +292,82 @@ class TestVerdicts:
         assert verdict["status"] == "NOT_YET_TESTED"
         assert "No pass/fail" in verdict["reason"]
 
+    def _leg_rows(self, metric, method_b, diffs, significant):
+        return [
+            {**self._scorecard_row(lead, d, significant, method_b=method_b),
+             "metric": metric, "threshold": "64.5"}
+            for lead, d in zip((24, 48, 72, 96, 120), diffs)
+        ]
+
+    def _two_leg_spec(self):
+        return {
+            **self._spec(),
+            "metric": "brier",
+            "threshold": "64.5",
+            "legs": [
+                {"claim": "HX-Brier", "summary": "leg 1", "method_b": "ref"},
+                {"claim": "HX-SEDI", "summary": "leg 2", "method_b": "ref2", "metric": "sedi"},
+            ],
+        }
+
+    def test_a_claim_fails_when_one_of_its_legs_fails(self):
+        # H3: the Brier leg passing must not pass a claim whose SEDI leg fails.
+        scorecard = pd.DataFrame(
+            self._leg_rows("brier", "ref", [-1.0] * 5, True)
+            + self._leg_rows("sedi", "ref2", [0.01, 0.01, -0.01, 0.01, -0.01], False)
+        )
+
+        rows = _verdicts_with_legs(self._two_leg_spec(), scorecard, {"m", "ref", "ref2"})
+
+        assert [r["claim"] for r in rows] == ["HX-Brier", "HX-SEDI", "HX"]
+        assert [r["status"] for r in rows] == ["PASS", "FAIL", "FAIL"]
+        assert rows[-1]["reason"] == "Needs every leg: HX-Brier PASS; HX-SEDI FAIL."
+
+    def test_a_claim_passes_only_when_every_leg_passes(self):
+        both = pd.DataFrame(
+            self._leg_rows("brier", "ref", [-1.0] * 5, True)
+            + self._leg_rows("sedi", "ref2", [-0.1] * 5, True)
+        )
+        unproven = pd.DataFrame(
+            self._leg_rows("brier", "ref", [-1.0] * 5, True)
+            + self._leg_rows("sedi", "ref2", [-0.1] * 5, False)
+        )
+        available = {"m", "ref", "ref2"}
+
+        assert _verdicts_with_legs(self._two_leg_spec(), both, available)[-1]["status"] == "PASS"
+        assert (
+            _verdicts_with_legs(self._two_leg_spec(), unproven, available)[-1]["status"]
+            == "INSUFFICIENT_DATA"
+        )
+        untested = _verdicts_with_legs(self._two_leg_spec(), both, {"m", "ref"})
+        assert [r["status"] for r in untested] == ["PASS", "NOT_YET_TESTED", "NOT_YET_TESTED"]
+
+    def test_h3_is_judged_on_both_legs_of_the_preregistration(self, tmp_path):
+        # docs/preregistration.md, H3: "Pass. Both conditions". The ledger used
+        # to read the Brier leg alone.
+        h3 = next(spec for spec in CLAIM_SPECS if spec["claim"] == "H3")
+        legs = [{**h3, **leg} for leg in h3["legs"]]
+        assert [(leg["method_b"], leg["metric"], leg["threshold"]) for leg in legs] == [
+            ("climatology", "brier", "64.5"),
+            ("best_single_member_on_train", "sedi", "64.5"),
+        ]
+        scorecard = pd.DataFrame(
+            [{**r, "method_a": h3["method_a"], "method_b": "climatology"}
+             for r in self._leg_rows("brier", "x", [-1.0] * 5, True)]
+            + [{**r, "method_a": h3["method_a"], "method_b": "best_single_member_on_train"}
+               for r in self._leg_rows("sedi", "x", [0.01] * 5, False)]
+        )
+        per_day = pd.concat(
+            [_per_day(m, 24, 5, 100.0)
+             for m in (h3["method_a"], "climatology", "best_single_member_on_train")]
+        )
+        write_verdicts(scorecard, per_day, tmp_path, str(PREREGISTRATION))
+        written = pd.read_csv(tmp_path / "preregistration_verdicts.csv").set_index("claim")
+
+        assert written.loc["H3-Brier", "status"] == "PASS"
+        assert written.loc["H3-SEDI", "status"] == "FAIL"
+        assert written.loc["H3", "status"] == "FAIL"
+
     def test_every_claim_in_the_specs_exists_in_the_preregistration_doc(self, tmp_path):
         # The doc is the source of truth; a claim implemented here but absent
         # there would be an unregistered claim masquerading as a registered
@@ -299,7 +376,9 @@ class TestVerdicts:
         write_verdicts(pd.DataFrame(), per_day, tmp_path, str(PREREGISTRATION))
         written = pd.read_csv(tmp_path / "preregistration_verdicts.csv")
 
-        assert set(written["claim"]) == {spec["claim"] for spec in CLAIM_SPECS}
+        assert set(written["claim"]) == {spec["claim"] for spec in CLAIM_SPECS} | {
+            leg["claim"] for spec in CLAIM_SPECS for leg in spec.get("legs", [])
+        }
 
     def test_rejects_a_claim_missing_from_the_doc(self, tmp_path):
         fake = tmp_path / "preregistration.md"

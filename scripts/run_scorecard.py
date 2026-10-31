@@ -446,6 +446,21 @@ CLAIM_SPECS: list[dict] = [
         "metric": "brier",
         "threshold": "64.5",
         "produced_by": "07 (headline declared; tier2_bma probabilities absent)",
+        # docs/preregistration.md: "Pass. Both conditions, each under the
+        # default rule." The row above is the Brier leg alone; deciding H3 on
+        # it would pass a claim whose SEDI leg fails.
+        "legs": [
+            {
+                "claim": "H3-Brier",
+                "summary": "H3, first leg: P(>=64.5mm) has BSS > 0 vs climatology",
+            },
+            {
+                "claim": "H3-SEDI",
+                "summary": "H3, second leg: higher SEDI at 64.5mm than the best member",
+                "method_b": "best_single_member_on_train",
+                "metric": "sedi",
+            },
+        ],
     },
     {
         "claim": "H4",
@@ -633,6 +648,42 @@ def _verdict_for_claim(
     }
 
 
+def _verdicts_with_legs(
+    spec: dict, scorecard: pd.DataFrame, available: set[str]
+) -> list[dict]:
+    """A claim that needs every leg to pass: one row per leg, then the claim.
+
+    Each leg is judged by the default rule on its own comparison. The claim
+    fails if any leg fails, is untested if any leg is (and none failed),
+    unproven if any leg is unproven, and passes only when every leg passes.
+    """
+    legs = [_verdict_for_claim({**spec, **leg}, scorecard, available) for leg in spec["legs"]]
+    statuses = [leg["status"] for leg in legs]
+    status = next(
+        (s for s in ("FAIL", "NOT_YET_TESTED", "INSUFFICIENT_DATA") if s in statuses), "PASS"
+    )
+    common = set(legs[0]["leads_significant"].split("+")) - {""}
+    for leg in legs[1:]:
+        common &= set(leg["leads_significant"].split("+")) - {""}
+    claim = {
+        "claim": spec["claim"],
+        "summary": spec["summary"],
+        "method_a": spec.get("method_a") or "(not yet declared)",
+        "method_b": " + ".join(leg["method_b"] for leg in legs),
+        "metric": " + ".join(leg["metric"] for leg in legs),
+        "threshold": spec["threshold"],
+        "n_leads_improved": min(leg["n_leads_improved"] for leg in legs),
+        "n_leads_significant": min(leg["n_leads_significant"] for leg in legs),
+        "leads_significant": "+".join(sorted(common, key=int)),
+        "evidence_rows": sum(leg["evidence_rows"] for leg in legs),
+        "status": status,
+        "reason": "Needs every leg: " + "; ".join(
+            f"{leg['claim']} {leg['status']}" for leg in legs
+        ) + ".",
+    }
+    return [*legs, claim]
+
+
 def write_verdicts(
     scorecard: pd.DataFrame, per_day: pd.DataFrame, out_dir: Path, preregistration: str
 ) -> Path:
@@ -654,7 +705,15 @@ def write_verdicts(
 
     available = set(per_day["method"].unique())
     verdicts = pd.DataFrame(
-        [_verdict_for_claim(spec, scorecard, available) for spec in CLAIM_SPECS]
+        [
+            row
+            for spec in CLAIM_SPECS
+            for row in (
+                _verdicts_with_legs(spec, scorecard, available)
+                if spec.get("legs")
+                else [_verdict_for_claim(spec, scorecard, available)]
+            )
+        ]
     )
     path = out_dir / "preregistration_verdicts.csv"
     verdicts.to_csv(path, index=False)
