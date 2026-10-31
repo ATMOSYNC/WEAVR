@@ -13,8 +13,10 @@ from run_tail_repair_qm import (  # noqa: E402
     VARIANTS,
     deterministic_per_day,
     main,
+    paired_metrics,
     parse_args,
     pooled_categorical,
+    summary_metrics,
 )
 
 
@@ -106,3 +108,62 @@ class TestMainIsNotAStub:
         assert "Tail repair QM runner initialized" not in (
             SCRIPTS / "run_tail_repair_qm.py"
         ).read_text()
+
+
+def _per_day_frame(n_days: int, scale: float, hits: float, false_alarms: float) -> pd.DataFrame:
+    """Synthetic per-day rows in `deterministic_per_day`'s schema."""
+    rng = np.random.default_rng(int(scale * 100))
+    frame = pd.DataFrame(
+        {
+            "date": pd.date_range("2020-06-01", periods=n_days, freq="D"),
+            "mse_mm2": scale * (1.0 + rng.random(n_days)),
+            "mae_mm": scale * (0.5 + rng.random(n_days)),
+            "twcrps_64.5_mm": scale * 0.1 * (1.0 + rng.random(n_days)),
+            "brier_7.5": 0.2 + 0.01 * rng.random(n_days),
+        }
+    )
+    for t in (7.5, 64.5, 115.6, 204.5):
+        frame[f"hits_{t}"] = hits + rng.integers(0, 2, n_days)
+        frame[f"misses_{t}"] = 10.0 - hits + rng.integers(0, 2, n_days)
+        frame[f"false_alarms_{t}"] = false_alarms + rng.integers(0, 2, n_days)
+        frame[f"correct_negatives_{t}"] = 500.0 + rng.integers(0, 2, n_days)
+    return frame
+
+
+class TestSummaryMetrics:
+    def test_keeps_the_legacy_columns_first_and_adds_every_prompt_metric(self):
+        row = summary_metrics(_per_day_frame(30, 1.0, 5.0, 3.0))
+        assert list(row)[:6] == [
+            "rmse_mm", "mae_mm", "twcrps_64.5_mm", "brier_7.5", "sedi_115.6", "csi_64.5",
+        ]
+        for t in (64.5, 115.6, 204.5):
+            for score in ("pod", "far", "csi", "sedi"):
+                assert np.isfinite(row[f"{score}_{t}"]), f"{score}_{t}"
+
+    def test_crps_of_a_point_forecast_is_its_mae(self):
+        row = summary_metrics(_per_day_frame(30, 1.0, 5.0, 3.0))
+        assert row["crps_mm"] == row["mae_mm"]
+
+
+class TestPairedMetrics:
+    def test_a_better_qm_arm_reads_negative_on_every_loss_and_score(self):
+        raw = _per_day_frame(60, 2.0, 3.0, 8.0)
+        qm = _per_day_frame(60, 1.0, 8.0, 1.0)  # lower errors, more hits, fewer false alarms
+        qm["date"] = raw["date"]
+        row = paired_metrics(qm, raw, block_days=7, n_resamples=200, seed=0)
+        for key in ("rmse_delta_mm", "crps_delta_mm", "twcrps_64.5_delta"):
+            assert row[key] < 0, key
+        for t in (64.5, 115.6, 204.5):
+            for score in ("pod", "far", "csi", "sedi"):
+                assert row[f"{score}_{t}_delta"] < 0, f"{score}_{t}"
+        assert row["twcrps_64.5_improved"] and row["h7_lead_improved"]
+
+    def test_h7_columns_keep_their_names(self):
+        raw = _per_day_frame(30, 1.0, 5.0, 3.0)
+        row = paired_metrics(raw, raw.copy(), block_days=7, n_resamples=100, seed=0)
+        for key in (
+            "twcrps_64.5_improved", "sedi_115.6_improved", "brier_7.5_degraded",
+            "h7_lead_improved", "bootstrap_degenerate", "rmse_worse",
+        ):
+            assert key in row
+        assert not row["h7_lead_improved"]

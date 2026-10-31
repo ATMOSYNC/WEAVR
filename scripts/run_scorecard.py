@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -125,6 +126,33 @@ def _pooled_sedi(
     return float(numerator / denominator) if denominator != 0 else float("nan")
 
 
+def _pooled_pod(hits: float, misses: float) -> float:
+    denominator = hits + misses
+    return float(hits / denominator) if denominator > 0 else float("nan")
+
+
+def _pooled_far(hits: float, misses: float, false_alarms: float) -> float:
+    """False alarm *ratio*, as `weavr.verify.contingency_scores` defines it."""
+    denominator = hits + false_alarms
+    return float(false_alarms / denominator) if denominator > 0 else float("nan")
+
+
+# score -> (pooled function, how many leading count columns it takes, sign
+# that turns "A minus B" into a loss difference). The count columns are
+# (hits, misses, false_alarms, correct_negatives), in that order.
+CATEGORICAL_SCORES: dict[str, tuple[Callable[..., float], int, float]] = {
+    "csi": (_pooled_csi, 3, -1.0),
+    "sedi": (_pooled_sedi, 4, -1.0),
+    "pod": (_pooled_pod, 2, -1.0),
+    "far": (_pooled_far, 3, 1.0),
+}
+
+
+def _pooled_categorical(counts: tuple[np.ndarray, ...], score: str) -> float:
+    fn, n_args, _ = CATEGORICAL_SCORES[score]
+    return fn(*[float(np.sum(c)) for c in counts[:n_args]])
+
+
 def _bootstrap_categorical_difference(
     counts_a: tuple[np.ndarray, ...],
     counts_b: tuple[np.ndarray, ...],
@@ -135,22 +163,26 @@ def _bootstrap_categorical_difference(
 ) -> DifferenceCI:
     """CI for a pooled categorical score difference, rebuilt per replicate.
 
-    Positively-oriented scores (CSI, SEDI: higher is better) are negated so
-    that, like every loss in this file, a **negative difference means method
-    A is better**. Keeping one orientation everywhere is what lets the
-    scorecard's `significant` column be read without a per-metric lookup.
+    Positively-oriented scores (CSI, SEDI, POD: higher is better) are negated
+    so that, like every loss in this file, a **negative difference means
+    method A is better**; FAR is a loss already and keeps its sign. Keeping
+    one orientation everywhere is what lets the scorecard's `significant`
+    column be read without a per-metric lookup. An unknown score raises: it
+    used to fall through to SEDI.
     """
     from weavr.significance import block_bootstrap_indices, bootstrap_is_degenerate
 
-    score_fn = _pooled_csi if score == "csi" else _pooled_sedi
-    n_args = 3 if score == "csi" else 4
+    if score not in CATEGORICAL_SCORES:
+        known = sorted(CATEGORICAL_SCORES)
+        raise ValueError(f"Unsupported categorical score {score!r}; known: {known}")
+    score_fn, n_args, sign = CATEGORICAL_SCORES[score]
 
     def pooled(counts: tuple[np.ndarray, ...], index: np.ndarray | None = None) -> float:
         selected = [c if index is None else c[index] for c in counts[:n_args]]
         return score_fn(*[float(np.sum(c)) for c in selected])
 
     n_days = counts_a[0].size
-    estimate = -(pooled(counts_a) - pooled(counts_b))
+    estimate = sign * (pooled(counts_a) - pooled(counts_b))
 
     # Same guard as paired_difference_ci: a block that spans the whole series
     # has one possible resample, so the interval would have zero width and
@@ -168,7 +200,7 @@ def _bootstrap_categorical_difference(
 
     indices = block_bootstrap_indices(n_days, block_days, n_resamples, seed)
     replicates = np.array(
-        [-(pooled(counts_a, idx) - pooled(counts_b, idx)) for idx in indices]
+        [sign * (pooled(counts_a, idx) - pooled(counts_b, idx)) for idx in indices]
     )
     finite = replicates[np.isfinite(replicates)]
     if finite.size == 0:
@@ -242,19 +274,21 @@ def compare_methods(
             }
         )
 
-    # RMSE, from daily MSE.
+    # RMSE, from daily MSE. A probabilistic-only method (Tier 2b) has no
+    # point forecast, so its MSE is all NaN and it gets no RMSE row.
     mse_a, mse_b = _rmse_from_mse(frame_a), _rmse_from_mse(frame_b)
-    ci = paired_difference_ci(
-        mse_a, mse_b, block_days, n_resamples, seed, aggregate="rmse"
-    )
-    record(
-        "rmse_mm",
-        "",
-        float(np.sqrt(np.mean(mse_a))),
-        float(np.sqrt(np.mean(mse_b))),
-        ci,
-        diebold_mariano(mse_a, mse_b).p_value,
-    )
+    if np.isfinite(mse_a).any() and np.isfinite(mse_b).any():
+        ci = paired_difference_ci(
+            mse_a, mse_b, block_days, n_resamples, seed, aggregate="rmse"
+        )
+        record(
+            "rmse_mm",
+            "",
+            float(np.sqrt(np.mean(mse_a))),
+            float(np.sqrt(np.mean(mse_b))),
+            ci,
+            diebold_mariano(mse_a, mse_b).p_value,
+        )
 
     for metric, column in MEAN_METRICS.items():
         if column not in frame_a.columns or column not in frame_b.columns:
@@ -291,14 +325,14 @@ def compare_methods(
 
         counts_a = _categorical_from_counts(frame_a, threshold, "csi")
         counts_b = _categorical_from_counts(frame_b, threshold, "csi")
+        if not (np.isfinite(counts_a[0]).any() and np.isfinite(counts_b[0]).any()):
+            continue
         for score in ("csi", "sedi"):
             ci = _bootstrap_categorical_difference(
                 counts_a, counts_b, score, block_days, n_resamples, seed
             )
-            fn = _pooled_csi if score == "csi" else _pooled_sedi
-            n_args = 3 if score == "csi" else 4
-            estimate_a = fn(*[float(np.sum(c)) for c in counts_a[:n_args]])
-            estimate_b = fn(*[float(np.sum(c)) for c in counts_b[:n_args]])
+            estimate_a = _pooled_categorical(counts_a, score)
+            estimate_b = _pooled_categorical(counts_b, score)
             record(score, str(threshold), estimate_a, estimate_b, ci, float("nan"))
 
     return rows
@@ -442,6 +476,21 @@ CLAIM_SPECS: list[dict] = [
         "metric": "brier",
         "threshold": "64.5",
         "produced_by": "07 (headline declared; tier2_bma probabilities absent)",
+        # docs/preregistration.md: "Pass. Both conditions, each under the
+        # default rule." The row above is the Brier leg alone; deciding H3 on
+        # it would pass a claim whose SEDI leg fails.
+        "legs": [
+            {
+                "claim": "H3-Brier",
+                "summary": "H3, first leg: P(>=64.5mm) has BSS > 0 vs climatology",
+            },
+            {
+                "claim": "H3-SEDI",
+                "summary": "H3, second leg: higher SEDI at 64.5mm than the best member",
+                "method_b": "best_single_member_on_train",
+                "metric": "sedi",
+            },
+        ],
     },
     {
         "claim": "H4",
@@ -471,14 +520,55 @@ CLAIM_SPECS: list[dict] = [
         "threshold": "",
         "produced_by": "09",
     },
+    # H7 and H10 have compound rules (H7: tw-CRPS *or* SEDI, guarded by Brier;
+    # H10: beat *both* parents) that their runners already apply to paired
+    # tables with CIs. The ledger reads those tables (`runner_table`) instead of
+    # leaving the claims NOT_YET_TESTED, which is what it did until 31 Oct
+    # while the runners and docs recorded verdicts.
     {
-        "claim": "H7",
-        "summary": "Tail repair improves tw-CRPS or SEDI without harming Brier at 7.5mm",
-        "method_a": "tail_repaired",
-        "method_b": None,
-        "metric": "twcrps_64.5_mm",
+        "claim": "H7-QM (same_period)",
+        "summary": (
+            "Quantile mapping (same-period reference) improves tw-CRPS@64.5 or "
+            "SEDI@115.6 of the Tier 1 blend without a worse Brier@7.5"
+        ),
+        "method_a": "qm_same_period_blend",
+        "method_b": "qm_raw_blend",
+        "metric": "twcrps_64.5_mm or sedi@115.6; brier@7.5 guard",
         "threshold": "",
-        "produced_by": "11, 12",
+        "produced_by": "11",
+        "runner_table": "tail_repair_qm_paired.csv",
+        "rule": "h7",
+        "rows": {"scope": "tier1_blend", "variant": "same_period"},
+    },
+    {
+        "claim": "H7-QM (climatology)",
+        "summary": (
+            "Quantile mapping (climatology reference) improves tw-CRPS@64.5 or "
+            "SEDI@115.6 of the Tier 1 blend without a worse Brier@7.5"
+        ),
+        "method_a": "qm_climatology_blend",
+        "method_b": "qm_raw_blend",
+        "metric": "twcrps_64.5_mm or sedi@115.6; brier@7.5 guard",
+        "threshold": "",
+        "produced_by": "11",
+        "runner_table": "tail_repair_qm_paired.csv",
+        "rule": "h7",
+        "rows": {"scope": "tier1_blend", "variant": "climatology"},
+    },
+    {
+        "claim": "H7-EVT",
+        "summary": (
+            "The spliced extreme-value tail improves tw-CRPS@64.5 or SEDI@115.6 over "
+            "the point-mass fallback without a worse Brier@7.5"
+        ),
+        "method_a": "evt_csgd_gpd_tail",
+        "method_b": "evt_csgd_only",
+        "metric": "twcrps_64.5_mm or sedi@115.6; brier@7.5 guard",
+        "threshold": "",
+        "produced_by": "12",
+        "runner_table": "tail_repair_evt_paired.csv",
+        "rule": "h7",
+        "rows": {"comparison": "csgd_gpd_tail_vs_csgd_only", "threshold": 115.6},
     },
     {
         "claim": "H8",
@@ -502,11 +592,13 @@ CLAIM_SPECS: list[dict] = [
     {
         "claim": "H10",
         "summary": "A stacked combiner beats both EMOS and BMA on CRPS",
-        "method_a": "tier2b_stacked",
-        "method_b": None,
+        "method_a": "tier2b nominated arm",
+        "method_b": "tier2b_emos_csg and tier2b_bma",
         "metric": "crps_mm",
         "threshold": "",
         "produced_by": "13",
+        "runner_table": "tier2b_combined_paired.csv",
+        "rule": "h10",
     },
     {
         "claim": "H11",
@@ -629,6 +721,122 @@ def _verdict_for_claim(
     }
 
 
+def _verdicts_with_legs(
+    spec: dict, scorecard: pd.DataFrame, available: set[str]
+) -> list[dict]:
+    """A claim that needs every leg to pass: one row per leg, then the claim.
+
+    Each leg is judged by the default rule on its own comparison. The claim
+    fails if any leg fails, is untested if any leg is (and none failed),
+    unproven if any leg is unproven, and passes only when every leg passes.
+    """
+    legs = [_verdict_for_claim({**spec, **leg}, scorecard, available) for leg in spec["legs"]]
+    statuses = [leg["status"] for leg in legs]
+    status = next(
+        (s for s in ("FAIL", "NOT_YET_TESTED", "INSUFFICIENT_DATA") if s in statuses), "PASS"
+    )
+    common = set(legs[0]["leads_significant"].split("+")) - {""}
+    for leg in legs[1:]:
+        common &= set(leg["leads_significant"].split("+")) - {""}
+    claim = {
+        "claim": spec["claim"],
+        "summary": spec["summary"],
+        "method_a": spec.get("method_a") or "(not yet declared)",
+        "method_b": " + ".join(leg["method_b"] for leg in legs),
+        "metric": " + ".join(leg["metric"] for leg in legs),
+        "threshold": spec["threshold"],
+        "n_leads_improved": min(leg["n_leads_improved"] for leg in legs),
+        "n_leads_significant": min(leg["n_leads_significant"] for leg in legs),
+        "leads_significant": "+".join(sorted(common, key=int)),
+        "evidence_rows": sum(leg["evidence_rows"] for leg in legs),
+        "status": status,
+        "reason": "Needs every leg: " + "; ".join(
+            f"{leg['claim']} {leg['status']}" for leg in legs
+        ) + ".",
+    }
+    return [*legs, claim]
+
+
+def _verdict_from_runner_table(spec: dict, results_dir: Path) -> dict:
+    """A claim decided from its runner's paired table (`spec["runner_table"]`).
+
+    Same statuses as `_verdict_for_claim`. `h7`: tw-CRPS@64.5 or SEDI@115.6
+    must improve at >= 3 leads with the CI excluding 0, and the paired Brier@7.5
+    CI must not lie wholly on the worse side at any lead (otherwise FAIL);
+    direction at >= 3 leads without the CIs is INSUFFICIENT_DATA. `h10`: the
+    nominated arm must beat *both* parents at a lead for that lead to count,
+    then the default rule.
+    """
+    base = {
+        "claim": spec["claim"],
+        "summary": spec["summary"],
+        "method_a": spec["method_a"],
+        "method_b": spec["method_b"],
+        "metric": spec["metric"],
+        "threshold": spec["threshold"],
+        "n_leads_improved": 0,
+        "n_leads_significant": 0,
+        "leads_significant": "",
+        "evidence_rows": 0,
+    }
+    path = Path(results_dir) / spec["runner_table"]
+    if not path.is_file():
+        return {**base, "status": "NOT_YET_TESTED",
+                "reason": f"Awaiting step {spec['produced_by']}: {path.name} not found."}
+    table = pd.read_csv(path)
+    for column, value in spec.get("rows", {}).items():
+        table = table[table[column] == value]
+
+    if spec["rule"] == "h7":
+        by_lead = table.set_index("lead_hours").sort_index()
+        legs = {
+            "tw-CRPS@64.5": (by_lead["twcrps_64.5_delta"] < 0, by_lead["twcrps_64.5_improved"]),
+            "SEDI@115.6": (by_lead["sedi_115.6_delta"] < 0, by_lead["sedi_115.6_improved"]),
+        }
+        degraded = by_lead.index[by_lead["brier_7.5_degraded"].astype(bool)].tolist()
+    elif spec["rule"] == "h10":
+        nominated = table[table["is_nominated"]]
+        grouped = nominated.groupby("lead_hours")
+        direction = grouped["crps_difference_mm"].apply(lambda d: bool((d < 0).all()))
+        significant = grouped.apply(
+            lambda g: bool((g["beats_parent"] & ~g["degenerate"]).all() and len(g) == 2)
+        )
+        legs = {"CRPS vs both parents": (direction, significant)}
+        degraded = []
+    else:
+        raise ValueError(f"Unknown runner rule {spec['rule']!r}")
+
+    # The leg that decides: most significant leads, then most leads in direction.
+    name, (direction, significant) = max(
+        legs.items(), key=lambda kv: (int(kv[1][1].sum()), int(kv[1][0].sum()))
+    )
+    n_dir, n_sig = int(direction.sum()), int(significant.sum())
+    base.update(
+        {
+            "n_leads_improved": n_dir,
+            "n_leads_significant": n_sig,
+            "leads_significant": "+".join(
+                str(int(x)) for x in significant.index[significant.values]
+            ),
+            "evidence_rows": int(len(direction)),
+        }
+    )
+    if degraded:
+        return {**base, "status": "FAIL", "reason": (
+            f"Brier@7.5 significantly worse at leads {degraded}: the non-inferiority "
+            "guard fails whatever the tail scores do.")}
+    if n_sig >= MIN_LEADS_FOR_PASS:
+        return {**base, "status": "PASS", "reason": (
+            f"{name}: improvement at {n_dir} of {len(direction)} leads, CI excluding 0 at "
+            f"{n_sig} ({spec['runner_table']}).")}
+    if n_dir >= MIN_LEADS_FOR_PASS:
+        return {**base, "status": "INSUFFICIENT_DATA", "reason": (
+            f"{name}: improvement at {n_dir} leads but the CI excludes 0 at only {n_sig}.")}
+    return {**base, "status": "FAIL", "reason": (
+        f"{name}: improvement at only {n_dir} of {len(direction)} leads; the rule needs "
+        f"{MIN_LEADS_FOR_PASS}.")}
+
+
 def write_verdicts(
     scorecard: pd.DataFrame, per_day: pd.DataFrame, out_dir: Path, preregistration: str
 ) -> Path:
@@ -650,7 +858,17 @@ def write_verdicts(
 
     available = set(per_day["method"].unique())
     verdicts = pd.DataFrame(
-        [_verdict_for_claim(spec, scorecard, available) for spec in CLAIM_SPECS]
+        [
+            row
+            for spec in CLAIM_SPECS
+            for row in (
+                _verdicts_with_legs(spec, scorecard, available)
+                if spec.get("legs")
+                else [_verdict_from_runner_table(spec, out_dir)]
+                if "runner_table" in spec
+                else [_verdict_for_claim(spec, scorecard, available)]
+            )
+        ]
     )
     path = out_dir / "preregistration_verdicts.csv"
     verdicts.to_csv(path, index=False)

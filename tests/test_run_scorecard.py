@@ -13,6 +13,8 @@ from run_scorecard import (  # noqa: E402
     _pooled_csi,
     _pooled_sedi,
     _verdict_for_claim,
+    _verdict_from_runner_table,
+    _verdicts_with_legs,
     build_scorecard,
     compare_methods,
     measure_block_length,
@@ -105,6 +107,24 @@ class TestPooledCategoricalScores:
         assert result.estimate == pytest.approx(0.0)
         assert not result.significant
 
+    def test_pod_and_far_keep_the_loss_orientation(self):
+        # A detects more (POD 20/22 vs 5/15) and raises fewer false alarms
+        # (FAR 2/22 vs 10/15): both differences must read "A is better".
+        better = tuple(np.full(20, x, dtype=float) for x in (20.0, 2.0, 2.0, 76.0))
+        worse = tuple(np.full(20, x, dtype=float) for x in (5.0, 10.0, 10.0, 75.0))
+
+        pod = _bootstrap_categorical_difference(better, worse, "pod", 7, 200, 0)
+        far = _bootstrap_categorical_difference(better, worse, "far", 7, 200, 0)
+
+        assert pod.estimate == pytest.approx(-(20 / 22 - 5 / 15))
+        assert far.estimate == pytest.approx(2 / 22 - 10 / 15)
+        assert pod.estimate < 0 and far.estimate < 0
+
+    def test_unknown_score_is_rejected_not_scored_as_sedi(self):
+        counts = tuple(np.full(20, x, dtype=float) for x in (10.0, 5.0, 5.0, 80.0))
+        with pytest.raises(ValueError):
+            _bootstrap_categorical_difference(counts, counts, "ets", 7, 100, 0)
+
 
 class TestCompareMethods:
     def test_produces_rows_for_every_available_metric(self):
@@ -153,6 +173,22 @@ class TestCompareMethods:
     def test_returns_nothing_when_a_method_is_absent(self):
         per_day = _per_day("a", 24, 30, 100.0)
         assert compare_methods(per_day, "a", "missing", 24, 7, 100, 0) == []
+
+    def test_a_method_without_a_point_forecast_gets_no_rmse_or_categorical_rows(self):
+        # Tier 2b writes only probabilistic scores: no MSE, no contingency counts.
+        probabilistic = _per_day("p", 24, 30, 100.0, seed=9)
+        probabilistic["mse_mm2"] = np.nan
+        for threshold in V.IMD_RAIN_THRESHOLDS_MM:
+            for name in ("hits", "misses", "false_alarms", "correct_negatives"):
+                probabilistic[f"{name}_{threshold}"] = np.nan
+        per_day = pd.concat([probabilistic, _per_day("b", 24, 30, 120.0)], ignore_index=True)
+
+        rows = compare_methods(per_day, "p", "b", 24, 7, 100, 0)
+
+        metrics = {row["metric"] for row in rows}
+        assert "crps_mm" in metrics
+        assert not metrics & {"rmse_mm", "csi", "sedi"}
+        assert all(np.isfinite(row["diff"]) for row in rows)
 
     def test_returns_nothing_with_fewer_than_two_shared_days(self):
         per_day = pd.concat(
@@ -275,6 +311,82 @@ class TestVerdicts:
         assert verdict["status"] == "NOT_YET_TESTED"
         assert "No pass/fail" in verdict["reason"]
 
+    def _leg_rows(self, metric, method_b, diffs, significant):
+        return [
+            {**self._scorecard_row(lead, d, significant, method_b=method_b),
+             "metric": metric, "threshold": "64.5"}
+            for lead, d in zip((24, 48, 72, 96, 120), diffs)
+        ]
+
+    def _two_leg_spec(self):
+        return {
+            **self._spec(),
+            "metric": "brier",
+            "threshold": "64.5",
+            "legs": [
+                {"claim": "HX-Brier", "summary": "leg 1", "method_b": "ref"},
+                {"claim": "HX-SEDI", "summary": "leg 2", "method_b": "ref2", "metric": "sedi"},
+            ],
+        }
+
+    def test_a_claim_fails_when_one_of_its_legs_fails(self):
+        # H3: the Brier leg passing must not pass a claim whose SEDI leg fails.
+        scorecard = pd.DataFrame(
+            self._leg_rows("brier", "ref", [-1.0] * 5, True)
+            + self._leg_rows("sedi", "ref2", [0.01, 0.01, -0.01, 0.01, -0.01], False)
+        )
+
+        rows = _verdicts_with_legs(self._two_leg_spec(), scorecard, {"m", "ref", "ref2"})
+
+        assert [r["claim"] for r in rows] == ["HX-Brier", "HX-SEDI", "HX"]
+        assert [r["status"] for r in rows] == ["PASS", "FAIL", "FAIL"]
+        assert rows[-1]["reason"] == "Needs every leg: HX-Brier PASS; HX-SEDI FAIL."
+
+    def test_a_claim_passes_only_when_every_leg_passes(self):
+        both = pd.DataFrame(
+            self._leg_rows("brier", "ref", [-1.0] * 5, True)
+            + self._leg_rows("sedi", "ref2", [-0.1] * 5, True)
+        )
+        unproven = pd.DataFrame(
+            self._leg_rows("brier", "ref", [-1.0] * 5, True)
+            + self._leg_rows("sedi", "ref2", [-0.1] * 5, False)
+        )
+        available = {"m", "ref", "ref2"}
+
+        assert _verdicts_with_legs(self._two_leg_spec(), both, available)[-1]["status"] == "PASS"
+        assert (
+            _verdicts_with_legs(self._two_leg_spec(), unproven, available)[-1]["status"]
+            == "INSUFFICIENT_DATA"
+        )
+        untested = _verdicts_with_legs(self._two_leg_spec(), both, {"m", "ref"})
+        assert [r["status"] for r in untested] == ["PASS", "NOT_YET_TESTED", "NOT_YET_TESTED"]
+
+    def test_h3_is_judged_on_both_legs_of_the_preregistration(self, tmp_path):
+        # docs/preregistration.md, H3: "Pass. Both conditions". The ledger used
+        # to read the Brier leg alone.
+        h3 = next(spec for spec in CLAIM_SPECS if spec["claim"] == "H3")
+        legs = [{**h3, **leg} for leg in h3["legs"]]
+        assert [(leg["method_b"], leg["metric"], leg["threshold"]) for leg in legs] == [
+            ("climatology", "brier", "64.5"),
+            ("best_single_member_on_train", "sedi", "64.5"),
+        ]
+        scorecard = pd.DataFrame(
+            [{**r, "method_a": h3["method_a"], "method_b": "climatology"}
+             for r in self._leg_rows("brier", "x", [-1.0] * 5, True)]
+            + [{**r, "method_a": h3["method_a"], "method_b": "best_single_member_on_train"}
+               for r in self._leg_rows("sedi", "x", [0.01] * 5, False)]
+        )
+        per_day = pd.concat(
+            [_per_day(m, 24, 5, 100.0)
+             for m in (h3["method_a"], "climatology", "best_single_member_on_train")]
+        )
+        write_verdicts(scorecard, per_day, tmp_path, str(PREREGISTRATION))
+        written = pd.read_csv(tmp_path / "preregistration_verdicts.csv").set_index("claim")
+
+        assert written.loc["H3-Brier", "status"] == "PASS"
+        assert written.loc["H3-SEDI", "status"] == "FAIL"
+        assert written.loc["H3", "status"] == "FAIL"
+
     def test_every_claim_in_the_specs_exists_in_the_preregistration_doc(self, tmp_path):
         # The doc is the source of truth; a claim implemented here but absent
         # there would be an unregistered claim masquerading as a registered
@@ -283,7 +395,9 @@ class TestVerdicts:
         write_verdicts(pd.DataFrame(), per_day, tmp_path, str(PREREGISTRATION))
         written = pd.read_csv(tmp_path / "preregistration_verdicts.csv")
 
-        assert set(written["claim"]) == {spec["claim"] for spec in CLAIM_SPECS}
+        assert set(written["claim"]) == {spec["claim"] for spec in CLAIM_SPECS} | {
+            leg["claim"] for spec in CLAIM_SPECS for leg in spec.get("legs", [])
+        }
 
     def test_rejects_a_claim_missing_from_the_doc(self, tmp_path):
         fake = tmp_path / "preregistration.md"
@@ -297,3 +411,98 @@ class TestVerdicts:
         per_day = _per_day("tier0", 24, 5, 100.0)
         with pytest.raises(FileNotFoundError, match="meaningless without"):
             write_verdicts(pd.DataFrame(), per_day, tmp_path, str(tmp_path / "absent.md"))
+
+
+
+class TestVerdictFromRunnerTable:
+    """H7 and H10 are read from their runners' paired tables (31 Oct, F2)."""
+
+    H7 = {
+        "claim": "H7-QM (x)", "summary": "s", "method_a": "a", "method_b": "b",
+        "metric": "m", "threshold": "", "produced_by": "11",
+        "runner_table": "qm.csv", "rule": "h7", "rows": {"scope": "tier1_blend"},
+    }
+    H10 = {
+        "claim": "H10", "summary": "s", "method_a": "a", "method_b": "b",
+        "metric": "crps_mm", "threshold": "", "produced_by": "13",
+        "runner_table": "t2b.csv", "rule": "h10",
+    }
+
+    def _h7(self, tmp_path, tw_delta, tw_sig, sedi_delta, sedi_sig, brier_bad):
+        pd.DataFrame(
+            {
+                "scope": "tier1_blend",
+                "lead_hours": [24, 48, 72, 96, 120],
+                "twcrps_64.5_delta": tw_delta,
+                "twcrps_64.5_improved": tw_sig,
+                "sedi_115.6_delta": sedi_delta,
+                "sedi_115.6_improved": sedi_sig,
+                "brier_7.5_degraded": brier_bad,
+            }
+        ).to_csv(tmp_path / "qm.csv", index=False)
+        return _verdict_from_runner_table(self.H7, tmp_path)
+
+    def test_h7_passes_on_either_leg(self, tmp_path):
+        v = self._h7(tmp_path, [0.4] * 5, [False] * 5, [-0.2] * 5, [True] * 4 + [False],
+                     [False] * 5)
+        assert v["status"] == "PASS" and v["n_leads_significant"] == 4
+        assert "SEDI" in v["reason"]
+
+    def test_h7_fails_when_brier_is_worse_at_any_lead(self, tmp_path):
+        v = self._h7(tmp_path, [-0.4] * 5, [True] * 5, [-0.2] * 5, [True] * 5,
+                     [False] * 4 + [True])
+        assert v["status"] == "FAIL" and "non-inferiority" in v["reason"]
+
+    def test_h7_direction_without_ci_is_insufficient(self, tmp_path):
+        v = self._h7(tmp_path, [-0.1] * 5, [False] * 5, [0.1] * 5, [False] * 5, [False] * 5)
+        assert v["status"] == "INSUFFICIENT_DATA"
+
+    def test_h10_needs_both_parents_beaten_at_a_lead(self, tmp_path):
+        rows = []
+        for lead in (24, 48, 72, 96, 120):
+            for parent, diff in (("emos_csg", -0.02), ("bma", -0.01 if lead < 72 else 0.01)):
+                rows.append({"lead_hours": lead, "arm": "quantile_avg", "is_nominated": True,
+                             "vs_parent": parent, "crps_difference_mm": diff,
+                             "beats_parent": diff < 0, "degenerate": False})
+        pd.DataFrame(rows).to_csv(tmp_path / "t2b.csv", index=False)
+        v = _verdict_from_runner_table(self.H10, tmp_path)
+        assert v["status"] == "FAIL" and v["n_leads_improved"] == 2
+
+    def test_missing_table_is_not_yet_tested(self, tmp_path):
+        assert _verdict_from_runner_table(self.H10, tmp_path)["status"] == "NOT_YET_TESTED"
+
+
+def _bootstrap_categorical_difference_before_31_oct(counts_a, counts_b, score, block_days,
+                                                     n_resamples, seed):
+    """Verbatim logic of the function as it was at 217ff05 (CSI/SEDI only)."""
+    from weavr.significance import block_bootstrap_indices, bootstrap_is_degenerate
+
+    score_fn = _pooled_csi if score == "csi" else _pooled_sedi
+    n_args = 3 if score == "csi" else 4
+
+    def pooled(counts, index=None):
+        selected = [c if index is None else c[index] for c in counts[:n_args]]
+        return score_fn(*[float(np.sum(c)) for c in selected])
+
+    n_days = counts_a[0].size
+    estimate = -(pooled(counts_a) - pooled(counts_b))
+    if bootstrap_is_degenerate(n_days, block_days):
+        return estimate, float("nan"), float("nan")
+    indices = block_bootstrap_indices(n_days, block_days, n_resamples, seed)
+    replicates = np.array([-(pooled(counts_a, idx) - pooled(counts_b, idx)) for idx in indices])
+    finite = replicates[np.isfinite(replicates)]
+    lo, hi = np.quantile(finite, [0.025, 0.975])
+    return estimate, float(lo), float(hi)
+
+
+@pytest.mark.parametrize("score", ["csi", "sedi"])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_csi_and_sedi_bootstraps_are_unchanged_by_the_score_table(score, seed):
+    """The POD/FAR table refactor must not move a CSI or SEDI interval: the
+    EVT and QM runners' committed SEDI CIs were computed with the old code."""
+    rng = np.random.default_rng(seed)
+    a = tuple(rng.integers(0, 30, 120).astype(float) for _ in range(4))
+    b = tuple(rng.integers(0, 30, 120).astype(float) for _ in range(4))
+    new = _bootstrap_categorical_difference(a, b, score, 7, 400, seed)
+    old = _bootstrap_categorical_difference_before_31_oct(a, b, score, 7, 400, seed)
+    assert (new.estimate, new.ci_lo, new.ci_hi) == old
